@@ -1,0 +1,15 @@
+{
+  "name": "datafloem",
+  "owner": {
+    "name": "Datafloem"
+  },
+  "description": "Runcast: demo videos and end-to-end tests from Playwright scenarios.",
+  "plugins": [
+    {
+      "name": "runcast",
+      "source": "./plugins/runcast",
+      "description": "Plan, write, record, narrate and publish demo videos of your web app.",
+      "category": "development"
+    }
+  ]
+}

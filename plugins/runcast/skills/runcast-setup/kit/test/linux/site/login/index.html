@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Sample App — Sign in</title>
+    <style>
+      body {
+        margin: 0;
+        font-family: sans-serif;
+        background: #0f172a;
+        color: #e2e8f0;
+        display: grid;
+        place-items: center;
+        min-height: 100vh;
+      }
+      form {
+        background: #1e293b;
+        padding: 40px;
+        border-radius: 16px;
+        width: 360px;
+        display: grid;
+        gap: 16px;
+      }
+      input {
+        padding: 12px;
+        border-radius: 8px;
+        border: 1px solid #334155;
+        background: #0f172a;
+        color: inherit;
+        font-size: 16px;
+      }
+      button {
+        padding: 12px;
+        border: 0;
+        border-radius: 8px;
+        background: #f97316;
+        color: white;
+        font-size: 16px;
+        cursor: pointer;
+      }
+    </style>
+  </head>
+  <body>
+    <form onsubmit="event.preventDefault(); location.href = '/home/';">
+      <h1>Sign in</h1>
+      <input name="username" placeholder="User name" autocomplete="off" />
+      <input name="password" type="password" placeholder="Password" />
+      <button type="submit">Sign in</button>
+    </form>
+  </body>
+</html>

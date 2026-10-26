@@ -1,0 +1,332 @@
+# Runcast
+
+Turns Playwright flows through a web app into **finished demo videos** and,
+from the same code, **end-to-end tests**. No video editing: a visible Chrome
+is screen-recorded while a virtual cursor works at a person's pace, then the
+kit renders an MP4 with a calm camera, a drawn cursor with click ripples, a
+framed 1920×1080 layout, and optionally captions, title cards, blurred fields
+and an ElevenLabs voice-over timed to the steps.
+
+It is app-agnostic. An app adds a **recording folder** (default
+`tests/recording/`) with its own config, helpers, steps, scenarios and
+`PROJECT.md`; AI assistants plan and write scenarios with the kit's skills.
+
+> **AI assistants:** if the project has no `recording.config.ts` yet, follow
+> the `runcast-setup` skill.
+
+## Contents
+
+| Path                                | What                                                                                                    |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `cli.ts`                            | The one command line: `setup`, `doctor`, `test`, `rehearsal`, `video`, `render`, `narration`, `youtube` |
+| `core/`                             | The engine: `rec` (cursor, capture, modes), `scenario()`, project and Playwright config                 |
+| `scripts/video/`                    | Recording run (`run.ts`), renderer (`render.ts`), camera (`timeline.ts`)                                |
+| `scripts/narration.ts`              | Voice-over tools: plan, generate (ElevenLabs), measure, single-take script and split                    |
+| `scripts/youtube.ts`                | YouTube upload: sign-in (OAuth) and resumable upload with metadata                                      |
+| `templates/project/`                | The recording folder a project starts from                                                              |
+| `test/linux/`                       | Self-test on Linux in a container                                                                       |
+| `../../` (`skills/` in the runtime) | AI skills: `runcast-setup`, `runcast-plan`, `runcast-scenario`, `runcast-publish`                       |
+
+## Requirements
+
+- Node 22.18+ (runs TypeScript directly) and Google Chrome (or Playwright's
+  Chromium with `REC_CHANNEL=chromium`). Playwright and canvas come with the
+  kit's runtime; the project installs nothing.
+- Video mode and the narration tools: `ffmpeg`.
+  - **macOS:** `brew install ffmpeg`, and Screen Recording permission for the
+    app that runs the command (System Settings > Privacy & Security > Screen
+    Recording).
+  - **Linux:** `ffmpeg` and `xvfb` (e.g. `apt install ffmpeg xvfb`). Without a
+    screen (CI, servers, containers) the kit starts an Xvfb display of
+    `REC_XVFB_SIZE` (default 1920x1080) itself, at `REC_XVFB_SCALE` (1, or
+    2 for Retina-sharp video at four times the pixels); with a desktop session it
+    records `DISPLAY` (X11; under Wayland run it with `xvfb-run`). On ARM
+    Linux there is no Google Chrome: `REC_CHANNEL=chromium` and
+    `node <recording folder>/.kit/node_modules/@playwright/test/cli.js install chromium`.
+  - **Windows:** not supported for video yet.
+- Test and rehearsal modes run anywhere, CI included.
+
+## Adding it to a project
+
+Install the plugin (see the repository's README for Claude Code, Codex and
+Antigravity), or copy the plugin folder (`plugins/runcast/`) somewhere
+and use its `skills/runcast-setup/kit/cli.ts`. Then ask your AI assistant to **set up recordings** (the
+`runcast-setup` skill), or run setup yourself from the project root:
+
+```bash
+node <plugin>/skills/runcast-setup/kit/cli.ts setup --dir tests/recording --name "My App" --base-url http://localhost:3000
+```
+
+Setup:
+
+1. builds the **runtime** once per kit version: the kit, its skills and its
+   npm dependencies in `~/.cache/runcast/<version>-<hash>/`
+   (`REC_KIT_HOME` moves it);
+2. creates the **recording folder** from `templates/project/`, keeping files
+   that exist;
+3. links `<recording folder>/.kit` to the runtime and adds `.kit` to the
+   folder's `.gitignore`;
+4. runs `doctor`: what is installed, what is missing.
+
+Without the plugin, add `--skills .claude/skills,.agents/skills` to copy the
+skills where Claude Code, Codex and other Agent Skills tools find them.
+
+The AI then reads the app's code and fills in `recording.config.ts`, the login
+helper and step, and `PROJECT.md` (screen map, forms, selectors, known
+behaviours), and runs the login scenario. Plan the first video with "plan a
+new demo video" (`runcast-plan`).
+
+Everything else runs through the link: `node tests/recording/.kit/cli.ts <command>`.
+A project may add npm scripts for these, but needs none.
+
+### Updating the kit
+
+Update the plugin (or replace the copied folder) and run `setup` again: it
+builds the new runtime, relinks `.kit`, keeps the newest three runtimes, and
+never overwrites the project's own files. After a fresh clone of a project,
+`setup` restores the `.kit` link.
+
+## Project layout
+
+```
+tests/recording/
+  recording.config.ts   app name, base URL, locale, start-up localStorage, colour scheme, brand
+  playwright.config.ts  definePlaywrightConfig(project), nothing else
+  kit.ts                re-exports the kit (and Playwright types) from .kit
+  .kit                  link to the kit's runtime, made by setup (gitignored)
+  PROJECT.md            what scenarios need to know about the app
+  AGENTS.md, CLAUDE.md  entry point for AI assistants
+  helpers/              screen operations (selectors, the app's quirks)
+  steps/                reusable steps that check their result
+  scenarios/            <name>.md (text), <name>.spec.ts (test), <name>.narration.json
+  .env.local            settings and secrets (gitignored); .env.example lists them
+  .results/ videos/ narration/   output (gitignored)
+```
+
+`recording.config.ts`:
+
+```ts
+import { defineProject, loadProjectEnv } from "./.kit/core/project.ts";
+
+loadProjectEnv(import.meta.dirname); // .env.local first
+
+export default defineProject({
+  dir: import.meta.dirname,
+  name: "My App",
+  baseURL: process.env.APP_BASE_URL ?? "http://localhost:3000",
+  locale: "en-US", // scenarios find controls by labels in this locale
+  localStorage: { theme: JSON.stringify("dark") }, // written before the first page load
+  colorScheme: "dark",
+  brand: { color: "#f97316", logo: "../../public/logo.svg" }, // logo relative to this folder
+});
+```
+
+The CLI takes the recording folder from `--dir`, else `REC_PROJECT`, else
+`tests/recording` under the working directory.
+
+## Modes
+
+| Mode      | Command                                      | What                                                                                    |
+| --------- | -------------------------------------------- | --------------------------------------------------------------------------------------- |
+| Video     | `node tests/recording/.kit/cli.ts video`     | Records Chrome with ffmpeg, then renders `videos/<scenario>.mp4`. macOS, Linux          |
+| Rehearsal | `node tests/recording/.kit/cli.ts rehearsal` | The video's pace and narration timing, headless and not recorded. Measures step lengths |
+| Test      | `node tests/recording/.kit/cli.ts test`      | Headless, Playwright's own clicks, no pauses. Any OS and CI; HTML report in `.report/`  |
+
+`REC_MODE` selects the mode (the CLI sets it). Scenarios, steps and
+helpers are the same in all modes; only `rec` behaves differently.
+
+Add a scenario name to run one: `node tests/recording/.kit/cli.ts test login`.
+
+## Video
+
+1. Chrome fills the screen's usable area; the page takes its size and the
+   renderer fits it into the frame. ffmpeg records that area at screen
+   resolution, 30 fps (`.results/<test>/capture/screen.mkv`); the real cursor
+   is not recorded. A virtual cursor moves inside the page, and every click,
+   keystroke, hover and navigation is logged (`capture/events.json`).
+2. The renderer produces the MP4:
+   - **Camera:** calm. Actions on the same page without a long pause form a
+     scene, framed once and held. Clustered actions get a gentle zoom (at most
+     1.5×); spread-out or short scenes stay full view. Tuning:
+     `defaultCameraOptions` in `scripts/video/timeline.ts`.
+   - **Cursor:** a drawn arrow, a ripple in the brand colour on clicks.
+   - **Look:** 1920×1080, dark background with a brand glow, rounded framed
+     page with a shadow.
+   - **Captions (optional):** `scenario({ captions: true })` shows each step's
+     message while it lasts.
+   - **Title cards (optional):** `scenario({ intro: { title, subtitle }, outro: { ... } })`
+     adds an opening card (cross-fades into the recording) and a closing card
+     (fades in over the last frame) with the brand logo. Defaults 3 s / 4 s.
+   - **Blur (optional):** `scenario({ blur: ['[name="email"]'] })` blurs
+     matching fields in every mode once they hold a value: empty fields stay
+     readable, the blur starts with the first typed character and covers
+     prefilled values on later screens.
+   - **Voice-over:** each audio segment is mixed in at the second its step starts.
+3. Re-render without recording again: `node tests/recording/.kit/cli.ts render <scenario>`.
+
+While recording, keep other windows off Chrome and the mouse away from it.
+With several screens the window opens on the main one; set `REC_SCREEN` if
+ffmpeg picks the wrong screen.
+
+## Starting from a step
+
+Steps are numbered. `REC_FROM` / `REC_TO` (number or id) record only part of
+a scenario; earlier steps run quickly and silently before the recording:
+
+```bash
+REC_FROM=7 node tests/recording/.kit/cli.ts video demo
+REC_FROM=8 REC_TO=8 node tests/recording/.kit/cli.ts test demo   # try one step
+```
+
+Each step's time, message and narration go to `.results/<test>/steps.json`.
+
+## Voice-over
+
+A narration file next to the scenario, `scenarios/<name>.narration.json`, has
+one text segment per recorded step (example:
+`skills/runcast-plan/narration.example.json` in the runtime). While recording, a
+step does not end before its segment (plus a short gap) does, so every voice
+sits on its step. The AI writes the text to fit each step's word budget.
+
+1. Steps' own lengths (writes to the backend, records nothing):
+   `REC_NARRATION=0 node tests/recording/.kit/cli.ts rehearsal <name>`
+2. Fit report and word budgets: `node tests/recording/.kit/cli.ts narration plan <name>`
+3. Audio, one of:
+   - **By command:** `ELEVENLABS_API_KEY` and `ELEVENLABS_VOICE_ID` in
+     `.env.local`, then `node tests/recording/.kit/cli.ts narration generate <name>` (only changed
+     segments; `--force` all, `--only=<step>` one).
+   - **By hand:** save each segment as `narration/<name>/<NN>-<step id>.mp3`,
+     then `node tests/recording/.kit/cli.ts narration measure <name>`.
+   - **Single take** (voices the API cannot use, e.g. library voices on a free
+     plan): `node tests/recording/.kit/cli.ts narration script <name>` writes
+     `narration/<name>/full-text.txt`; generate it in the ElevenLabs web app
+     with **Eleven Multilingual v2**, save `narration/<name>/full.mp3`, then
+     `node tests/recording/.kit/cli.ts narration split <name>`.
+4. Each audio command prints the voice's measured speaking rate; put it in
+   the file's `wordsPerMinute` if it differs, so later budgets fit.
+5. Check: `node tests/recording/.kit/cli.ts rehearsal <name>`; lengthen segments that warn.
+6. Record: `node tests/recording/.kit/cli.ts video <name>`.
+
+Segments with step `intro` / `outro` are spoken over the title cards.
+
+## Publishing to YouTube
+
+Ask your AI assistant to upload a video (the `runcast-publish` skill): it
+guides the one-time Google Cloud setup and drafts the metadata. By hand:
+
+1. In Google Cloud: a project, **YouTube Data API v3** enabled, an OAuth
+   consent screen (External; your account as a test user), and an OAuth
+   client of type **Desktop app**. Save its JSON as
+   `<recording folder>/.youtube/client_secret.json` (gitignored).
+2. `node tests/recording/.kit/cli.ts youtube auth`: sign in in the browser once; the refresh token
+   goes to `.youtube/token.json`. Apps left in Testing status must sign in
+   again every 7 days.
+3. Write `scenarios/<name>.youtube.json`:
+
+   ```json
+   {
+     "title": "Create your first order in Example App",
+     "description": "How to add a customer and place an order.",
+     "tags": ["orders", "tutorial"],
+     "categoryId": "28",
+     "privacyStatus": "unlisted",
+     "madeForKids": false,
+     "language": "en",
+     "thumbnailAt": 1.5
+   }
+   ```
+
+4. `node tests/recording/.kit/cli.ts youtube upload <name>` uploads `videos/<name>.mp4` (or `video`
+   in the file), prints the link and stores it in the file as `result`. A
+   second upload of the same scenario needs `--force`.
+
+`node tests/recording/.kit/cli.ts youtube check` shows what is missing. YouTube allows about 100
+uploads per day per Google Cloud project.
+
+## Writing scenarios
+
+Code has three layers; each job is written once:
+
+| Layer    | Where                      | What                                                           |
+| -------- | -------------------------- | -------------------------------------------------------------- |
+| Scenario | `scenarios/<name>.spec.ts` | The order of steps and scenario-specific values. No other code |
+| Step     | `steps/`                   | Reusable unit of work; checks its result                       |
+| Helper   | `helpers/`                 | One screen operation; selectors live here                      |
+
+```ts
+import { scenario, test } from "../kit.ts";
+import * as steps from "../steps/index.ts";
+
+test(
+  "demo: new customer",
+  scenario({
+    require: ["APP_USERNAME", "APP_PASSWORD"],
+    steps: [
+      steps.login({ note: "Sign in" }),
+      steps.createCustomer({
+        name: "Northwind Traders",
+        email: "orders@northwind.example",
+        note: "A new customer",
+      }),
+      steps.hold(),
+    ],
+  }),
+);
+```
+
+Steps and helpers move through `rec`, never `page.click`:
+
+- `rec.click`, `rec.hover`, `rec.doubleClick`, `rec.rightClick`,
+  `rec.drag(from, to)`: the cursor travels there; the camera sees it.
+- `spot(locator, x, y)`: a point inside an element (0–1), e.g. on a canvas.
+- `rec.type`: clicks the field and types; `rec.typeSecret` for passwords.
+- `rec.pause(ms)`: time for the viewer to read (skipped in tests).
+
+The full rules are in the `runcast-scenario` skill (`skills/runcast-scenario/SKILL.md` in the runtime).
+
+## Settings (`.env.local`)
+
+| Setting                                     | Default            | What                                                           |
+| ------------------------------------------- | ------------------ | -------------------------------------------------------------- |
+| `REC_MODE`                                  | `test`             | `video`, `rehearsal` or `test` (the CLI commands set it)       |
+| `REC_PROJECT`                               | `tests/recording`  | The recording folder, when `--dir` is not given                |
+| `REC_KIT_HOME`                              | `~/.cache/runcast` | Where setup builds the kit's runtime                           |
+| `REC_FROM`, `REC_TO`                        | first, last        | Recording starts / ends at this step (number or id)            |
+| `REC_NARRATION`                             | `1`                | `0` ignores the narration file                                 |
+| `REC_CAPTIONS`                              | scenario           | `1` / `0` turns captions on / off when rendering               |
+| `REC_END_HOLD_MS`                           | `2000`             | How long the last frame stays (video, rehearsal)               |
+| `REC_AIM_MS`                                | `400`              | Cursor rest on a target before clicking (video, rehearsal)     |
+| `REC_PAGE_WIDTH`                            | `1440`             | Rehearsal and test page width (16:9); video fills the screen   |
+| `REC_VIDEO_FPS`, `REC_SCREEN`               | `30`, auto         | Output frame rate; ffmpeg's screen index (macOS)               |
+| `REC_CHANNEL`                               | `chrome`           | Browser: `chrome` (Google Chrome) or `chromium` (Playwright's) |
+| `REC_XVFB_SIZE`                             | `1920x1080`        | Linux without a screen: the Xvfb page area, in CSS pixels      |
+| `REC_XVFB_SCALE`                            | `1`                | Linux without a screen: `2` draws the page at 2x, like Retina  |
+| `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID` | —                  | For `node tests/recording/.kit/cli.ts narration generate`      |
+
+The project adds its own (account, base URL, scenario values).
+
+## Self-test on Linux
+
+`test/linux/` checks the kit on Linux in a container: a sample app, a fresh
+install from the templates, a narration split with ffmpeg, test mode, then
+video mode on Xvfb with captions, blur and title cards. From the
+Runcast repository root:
+
+```bash
+docker build -f plugins/runcast/skills/runcast-setup/kit/test/linux/Dockerfile -t runcast-linux plugins/runcast
+docker run --rm -v "$PWD/kit-linux-out:/out" runcast-linux
+```
+
+It ends with "Linux self-test passed"; the video, three frames and the
+captures land in `kit-linux-out/`. The same script runs outside a container:
+`APP_DIR=<empty folder> PLUGIN_DIR=<plugin folder> OUT=<folder> bash <plugin folder>/skills/runcast-setup/kit/test/linux/run.sh`.
+
+## Limits
+
+- Video mode runs on macOS (ffmpeg avfoundation) and Linux (ffmpeg x11grab,
+  Xvfb when there is no screen); not on Windows yet. On Linux the
+  Xvfb display records at 1x by default. `REC_XVFB_SCALE=2` gives Retina-sharp
+  text (same layout, four times the pixels); on a 4-CPU VM it delivered about
+  29 instead of 30 frames per second (the drawn cursor stays smooth, page
+  content can stutter briefly), and rendering takes longer.
+- Chrome opens on the main screen at 100% zoom.

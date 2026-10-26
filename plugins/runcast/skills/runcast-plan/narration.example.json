@@ -1,0 +1,37 @@
+{
+  "language": "en",
+  "wordsPerMinute": 150,
+  "gapMs": 400,
+  "voice": {
+    "provider": "elevenlabs",
+    "voiceId": "",
+    "modelId": "eleven_multilingual_v2",
+    "speed": 1
+  },
+  "segments": [
+    {
+      "step": "intro",
+      "text": "In the next minute, we add a new customer and place their first order."
+    },
+    {
+      "step": "login",
+      "text": "We sign in with our user name and password."
+    },
+    {
+      "step": "open-customers",
+      "text": "The customer list shows everyone we sell to. We start a new entry from the top right."
+    },
+    {
+      "step": "create-customer",
+      "text": "We type the company name and its order e-mail, and save. The new customer appears in the list."
+    },
+    {
+      "step": "add-order",
+      "text": "Now we open the customer and add an order. We pick a product, set the quantity to ten, and confirm."
+    },
+    {
+      "step": "outro",
+      "text": "That is all it takes. A new customer and their first order, in a few clicks."
+    }
+  ]
+}

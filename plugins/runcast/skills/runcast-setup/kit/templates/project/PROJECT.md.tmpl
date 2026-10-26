@@ -1,0 +1,71 @@
+# {{APP_NAME}} — recording notes
+
+What scenarios need to know about {{APP_NAME}}. Written by the `runcast-setup`
+skill from the app's code; keep it current when screens change or a helper or
+step is added. Sections marked TODO are still to be filled in.
+
+## App
+
+- **Stack:** TODO (framework, router, UI library, form library)
+- **Run:** TODO (dev command) → {{BASE_URL}}
+- **Sign-in:** TODO (login path, fields, SSO?) — account in `APP_USERNAME` / `APP_PASSWORD`
+- **Roles:** TODO (which screens need an admin)
+- **Labels:** TODO (where the UI texts live, e.g. i18n files; the test locale)
+- **Start-up state:** TODO (what the app reads from localStorage/cookies on start, e.g. theme)
+
+## Screen map
+
+Where things are, which record they belong to, and where new ones are added.
+**List** = where records are listed (to pick an existing one), **Add** = the
+form for a new one.
+
+| Area / record | Where (menu) | List | Add | Notes |
+| ------------- | ------------ | ---- | --- | ----- |
+| TODO          |              |      |     |       |
+
+## Finding a screen's form
+
+TODO: the steps from a URL to its form component, its fields (`name=...`),
+labels, required fields and limits (validation schema), and where it navigates
+after saving.
+
+## Known forms
+
+| Record | Add screen | Fields (`*` = required) | Helper |
+| ------ | ---------- | ----------------------- | ------ |
+| TODO   |            |                         |        |
+
+## Selectors
+
+The app's stable hooks, in the order to prefer them: TODO (e.g. `data-testid`,
+field names, link targets, roles + labels in the test locale).
+
+## Known behaviours
+
+Quirks a scenario must survive (pagination, lazy lists, redirects after save,
+slow first load...). Solve each inside a helper and note it here.
+
+- **First load is slow:** each test opens a fresh browser; give the first
+  `expect` a long timeout (`{ timeout: 60_000 }`).
+
+## Helper catalog (`helpers/`)
+
+Every helper takes `ui = { page, rec }` first and moves the cursor through `rec`.
+
+| Helper                          | Module    | What it does                                       |
+| ------------------------------- | --------- | -------------------------------------------------- |
+| `openLogin(ui)`                 | `auth.ts` | Opens the login page and waits for it              |
+| `login(ui, username, password)` | `auth.ts` | Signs in and waits to leave the login page         |
+
+## Step catalog (`steps/`)
+
+Every step also takes `{ id?, title?, note? }`.
+
+| Step    | Options                                           | Starts → ends                                      |
+| ------- | ------------------------------------------------- | -------------------------------------------------- |
+| `login` | `username?`, `password?` (default `APP_*`)        | As first step it opens the login page → signed in  |
+| `hold`  | `ms?`                                             | Holds the screen (closing shot); skipped in tests  |
+
+## Missing helpers
+
+Screens planned scenarios will need but that have no helper yet: TODO.

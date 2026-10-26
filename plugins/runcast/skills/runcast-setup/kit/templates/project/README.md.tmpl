@@ -1,0 +1,38 @@
+# {{APP_NAME}} recordings
+
+Recorded scenarios of {{APP_NAME}}, built on Runcast (see
+[`.kit/README.md`](.kit/README.md) after setup): each runs as an end-to-end
+test or is recorded into a demo video.
+
+## Setup
+
+1. With the Runcast plugin, ask your AI assistant to set up recordings;
+   or run the plugin's `skills/runcast-setup/kit/cli.ts setup` yourself. It links `.kit` to the
+   kit's runtime (gitignored).
+2. Copy `.env.example` to `.env.local` and fill in the account.
+3. Start the app ({{BASE_URL}}).
+4. `node {{DIR}}/.kit/cli.ts test login`
+
+## Commands
+
+From the repository root, `node {{DIR}}/.kit/cli.ts <command>`:
+
+| Command                    | What                                                |
+| -------------------------- | --------------------------------------------------- |
+| `doctor`                   | What is installed, what is missing                  |
+| `test [name]`              | Headless end-to-end test                            |
+| `rehearsal [name]`         | The video's pace, headless, not recorded            |
+| `video [name]`             | Recorded video → `videos/<name>.mp4`                |
+| `render [name]`            | Re-render the last capture                          |
+| `narration <cmd> <name>`   | Voice-over tools (plan, generate, measure, ...)     |
+| `youtube <cmd> [name]`     | Upload a video to YouTube (runcast-publish skill) |
+
+## Scenarios
+
+| Scenario | Text | What it shows |
+| -------- | ---- | ------------- |
+| `login`  | —    | Sign in       |
+
+## Settings
+
+See `.env.example`; the kit's settings are in its README.

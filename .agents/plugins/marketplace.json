@@ -1,0 +1,20 @@
+{
+  "name": "datafloem",
+  "interface": {
+    "displayName": "Datafloem"
+  },
+  "plugins": [
+    {
+      "name": "runcast",
+      "source": {
+        "source": "local",
+        "path": "./plugins/runcast"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

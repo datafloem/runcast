@@ -1,0 +1,11 @@
+{
+  "language": "en",
+  "wordsPerMinute": 150,
+  "gapMs": 400,
+  "voice": { "provider": "elevenlabs", "modelId": "eleven_multilingual_v2" },
+  "segments": [
+    { "step": "intro", "text": "This is Runcast on Linux." },
+    { "step": "login", "text": "We sign in with a user name and a password." },
+    { "step": "hold", "text": "And the home page is ready." }
+  ]
+}

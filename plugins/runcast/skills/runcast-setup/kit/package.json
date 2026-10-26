@@ -1,0 +1,19 @@
+{
+  "name": "runcast-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Runtime of Runcast: Playwright scenarios recorded into demo videos.",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "dependencies": {
+    "@napi-rs/canvas": "1.0.13",
+    "@playwright/test": "1.63.0",
+    "@types/node": "^24.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.0"
+  },
+  "license": "MIT"
+}

@@ -1,0 +1,22 @@
+// {{APP_NAME}} for Runcast: where the app runs,
+// how the browser starts and how the video looks.
+import { defineProject, loadProjectEnv } from "{{KIT}}/core/project.ts";
+
+// Settings and secrets from .env.local; first, so everything below and in the
+// kit sees them.
+loadProjectEnv(import.meta.dirname);
+
+export default defineProject({
+  dir: import.meta.dirname,
+  name: "{{APP_NAME}}",
+  baseURL: process.env.APP_BASE_URL ?? "{{BASE_URL}}",
+  // Scenarios find controls by their labels in this locale.
+  locale: "en-US",
+  // Seed what the app reads from localStorage on start (e.g. a theme), as raw strings:
+  // localStorage: { theme: JSON.stringify("dark") },
+  // colorScheme: "dark",
+  brand: {
+    color: "#f97316",
+    // logo: "../../public/logo.svg", // relative to this folder; shown on title cards
+  },
+});

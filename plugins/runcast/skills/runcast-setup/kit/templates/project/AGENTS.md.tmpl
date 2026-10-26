@@ -1,0 +1,49 @@
+# AGENTS.md — {{APP_NAME}} recordings
+
+This folder holds {{APP_NAME}}'s recorded scenarios: Playwright flows that run as
+end-to-end tests or are recorded into demo videos with Runcast. For
+AI assistants that write or fix scenarios here.
+
+Read before working:
+
+1. [`PROJECT.md`](PROJECT.md): the app's screens and records, known forms,
+   selectors, known behaviours, and the catalogs of helpers and steps.
+2. The kit's skills: from the Runcast plugin (Claude Code, Codex, Antigravity),
+   and also in `.kit/skills/` (the runtime link, present after setup):
+   - [`runcast-setup`](.kit/skills/runcast-setup/SKILL.md): onboarding a
+     project; keeping `PROJECT.md` and the login flow up to date.
+   - [`runcast-plan`](.kit/skills/runcast-plan/SKILL.md):
+     plan a new scenario with the user, question by question, into
+     `scenarios/<name>.md`.
+   - [`runcast-scenario`](.kit/skills/runcast-scenario/SKILL.md): turn the
+     text into `scenarios/<name>.spec.ts`; the rules for steps and helpers.
+   - [`runcast-publish`](.kit/skills/runcast-publish/SKILL.md): upload a
+     rendered video to YouTube.
+3. The kit's guide: [`.kit/README.md`](.kit/README.md).
+
+Commands: `node {{DIR}}/.kit/cli.ts <command>` from the repository root
+(`setup`, `doctor`, `test`, `rehearsal`, `video`, `render`, `narration`,
+`youtube`). If `.kit` is missing, run the plugin's `setup` again (see the
+runcast-setup skill).
+
+Most important rules:
+
+- Three layers: scenarios (`scenarios/*.spec.ts`) only order **steps**; steps
+  (`steps/`) are reusable and check their result; helpers (`helpers/`) do the
+  screen work. Missing ones are added there and listed in `PROJECT.md`.
+- Every click, drag and hover goes through `rec` (`rec.click`, `rec.drag`...),
+  never `page.click`: otherwise the cursor and the camera miss it.
+- Steps never call `rec.step`; `scenario()` marks them and the step's `note` is
+  its on-screen message. Nothing is drawn in the page.
+- Project code imports the kit (and Playwright types) only through `kit.ts`.
+- A new scenario is first written as text with the user (`scenarios/<name>.md`)
+  and only then as a test; both stay in sync.
+- Values come from `.env.local` and are listed in `.env.example`. Passwords
+  never reach code, logs or chats (`rec.typeSecret`).
+- Every scenario passes in all modes (`test`, `rehearsal`, `video`).
+  `rec.pause` is for the viewer only.
+- Ask the user about voice-over, captions, title cards and blurred fields when
+  planning a video (plan skill, phase 1).
+- Scenarios write to a real backend: ask before running them.
+- The kit is shared and app-agnostic: never edit files under `.kit`; changes
+  belong in the Runcast repository.

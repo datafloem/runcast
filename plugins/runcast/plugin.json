@@ -1,0 +1,20 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "runcast",
+  "version": "0.1.0",
+  "description": "Turn Playwright flows through your web app into finished demo videos and end-to-end tests: planning interviews, scenario writing, screen capture with a calm camera, captions, title cards, ElevenLabs voice-over and YouTube upload.",
+  "author": {
+    "name": "Datafloem"
+  },
+  "homepage": "https://github.com/datafloem/runcast",
+  "repository": "https://github.com/datafloem/runcast",
+  "license": "MIT",
+  "keywords": [
+    "playwright",
+    "demo-video",
+    "e2e",
+    "screen-recording",
+    "voice-over",
+    "youtube"
+  ]
+}

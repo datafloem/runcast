@@ -1,0 +1,21 @@
+import { expect, type Ui } from "../kit.ts";
+
+// TODO(runcast-setup): confirm the login path and selectors in the app's code.
+const LOGIN_PATH = "/login";
+const USERNAME = 'input[name="username"]';
+const PASSWORD = 'input[name="password"]';
+const SUBMIT = 'button[type="submit"]';
+
+/** Opens the login page and waits for it (a cold dev server can be slow). */
+export async function openLogin({ page }: Ui): Promise<void> {
+  await page.goto(LOGIN_PATH);
+  await expect(page.locator(USERNAME)).toBeVisible({ timeout: 60_000 });
+}
+
+/** Types the credentials, signs in and waits to leave the login page. */
+export async function login({ page, rec }: Ui, username: string, password: string) {
+  await rec.type(page.locator(USERNAME), username);
+  await rec.typeSecret(page.locator(PASSWORD), password);
+  await rec.click(page.locator(SUBMIT));
+  await expect(page).not.toHaveURL(new RegExp(LOGIN_PATH), { timeout: 30_000 });
+}
