@@ -82,6 +82,8 @@ interface StepsFile {
     title: string;
     note?: string;
     narration?: { audio: string | null };
+    /** "cube": a cube turn over this step, from the frame before to the one after. */
+    transition?: string;
   }>;
 }
 
@@ -259,10 +261,85 @@ export async function render(captureDir: string): Promise<string> {
     }
   };
 
+  // Steps marked with a transition: over their time (recording ms) the video
+  // shows a cube turn from the frame where the step starts to the frame where
+  // the next one starts, instead of what the page did meanwhile.
+  const transitions = steps.flatMap((step, i) =>
+    step.transition === "cube"
+      ? [
+          {
+            from: step.seconds * 1000,
+            to: (steps.at(i + 1)?.seconds ?? sceneMs / 1000) * 1000,
+          },
+        ]
+      : [],
+  );
+  const faceA = createCanvas(contentW, contentH);
+  const faceB = createCanvas(contentW, contentH);
+  const grabContent = (face: typeof faceA) => {
+    const faceCtx = face.getContext("2d");
+    faceCtx.clearRect(0, 0, contentW, contentH);
+    faceCtx.drawImage(
+      canvas,
+      contentX,
+      contentY,
+      contentW,
+      contentH,
+      0,
+      0,
+      contentW,
+      contentH,
+    );
+  };
+
   const totalMs = introMs + sceneMs + outroMs;
   const totalFrames = Math.ceil((totalMs / 1000) * FPS);
+  const emit = async (i: number, t: number) => {
+    const pixels = ctx.getImageData(0, 0, OUT_WIDTH, OUT_HEIGHT).data;
+    await write(
+      ffmpeg.stdin,
+      Buffer.from(pixels.buffer, pixels.byteOffset, pixels.byteLength),
+    );
+    if (i % FPS === 0) {
+      process.stdout.write(
+        `\r${capture.scenario}: ${(t / 1000).toFixed(0)} / ${(totalMs / 1000).toFixed(0)} s`,
+      );
+    }
+  };
   for (let i = 0; i < totalFrames; i++) {
     const t = (i * 1000) / FPS;
+
+    const turn = transitions.find(
+      (tr) => t - introMs >= tr.from && t - introMs < tr.to,
+    );
+    if (turn && t >= introMs) {
+      // Face A: the page as the step starts; face B: as the next one starts,
+      // read ahead through the frames the turn replaces.
+      if (firstFrameReady) firstFrameReady = false;
+      else await nextFrame();
+      drawScene(t - introMs);
+      grabContent(faceA);
+      const end = Math.min(
+        totalFrames,
+        Math.ceil(((introMs + turn.to) / 1000) * FPS),
+      );
+      for (let j = i + 1; j < end; j++) await nextFrame();
+      drawScene(turn.to);
+      grabContent(faceB);
+      for (let j = i; j < end; j++) {
+        ctx.drawImage(background, 0, 0);
+        drawCubeTurn(ctx, faceA, faceB, (j - i) / Math.max(1, end - i), {
+          x: contentX,
+          y: contentY,
+          w: contentW,
+          h: contentH,
+        });
+        await emit(j, (j * 1000) / FPS);
+      }
+      turn.to = -1; // done
+      i = end - 1;
+      continue;
+    }
 
     if (t < introMs && stepsData?.intro) {
       // Intro: the card fades in; in its last half second the recording's
@@ -310,16 +387,7 @@ export async function render(captureDir: string): Promise<string> {
       }
     }
 
-    const pixels = ctx.getImageData(0, 0, OUT_WIDTH, OUT_HEIGHT).data;
-    await write(
-      ffmpeg.stdin,
-      Buffer.from(pixels.buffer, pixels.byteOffset, pixels.byteLength),
-    );
-    if (i % FPS === 0) {
-      process.stdout.write(
-        `\r${capture.scenario}: ${(t / 1000).toFixed(0)} / ${(totalMs / 1000).toFixed(0)} s`,
-      );
-    }
+    await emit(i, t);
   }
   await frames.return(undefined);
   ffmpeg.stdin.end();
@@ -584,6 +652,80 @@ function drawCursor(
   ctx.strokeStyle = "#ffffff";
   ctx.stroke();
   ctx.restore();
+}
+
+/**
+ * One frame of a cube turn: face A (the page before) turns away to the left
+ * while face B (the page after) comes in from the right as the cube's next
+ * side, in perspective, with the turning faces shaded. `p` runs 0 → 1; `box`
+ * is where the recording sits in the frame (face A fills it at p = 0, face B
+ * at p = 1).
+ */
+function drawCubeTurn(
+  ctx: SKRSContext2D,
+  faceA: Parameters<SKRSContext2D["drawImage"]>[0],
+  faceB: Parameters<SKRSContext2D["drawImage"]>[0],
+  p: number,
+  box: { x: number; y: number; w: number; h: number },
+) {
+  const eased = p < 0.5 ? 4 * p * p * p : 1 - (-2 * p + 2) ** 3 / 2;
+  const angle = (eased * Math.PI) / 2;
+  const half = box.w / 2; // the cube's half width; its centre is this deep
+  const camera = half + box.w * 1.6; // distance from the viewer to the front plane's centre
+  const centreX = box.x + half;
+  const centreY = box.y + box.h / 2;
+  const cos = Math.cos(angle);
+  const sin = Math.sin(angle);
+  // A point of the cube (u across, w in depth, around its centre) on screen.
+  const project = (u: number, w: number) => {
+    const x = u * cos + w * sin;
+    const z = -u * sin + w * cos; // -half = front plane
+    const scale = (camera - half) / (camera + z);
+    return { x: centreX + x * scale, scale, z };
+  };
+  // Face A: u from -half to half at w = -half; face B: w from -half to half at u = half.
+  const faces = [
+    {
+      image: faceA,
+      at: (k: number) => project(-half + k * box.w, -half),
+      light: cos,
+    },
+    {
+      image: faceB,
+      at: (k: number) => project(half, -half + k * box.w),
+      light: sin,
+    },
+  ].sort((a, b) => b.at(0.5).z - a.at(0.5).z); // far face first
+
+  const STRIPS = 160;
+  for (const face of faces) {
+    if (face.light <= 0.001) continue;
+    for (let s = 0; s < STRIPS; s++) {
+      const left = face.at(s / STRIPS);
+      const right = face.at((s + 1) / STRIPS);
+      const width = right.x - left.x;
+      if (width <= 0) continue;
+      const scale = (left.scale + right.scale) / 2;
+      const height = box.h * scale;
+      const top = centreY - height / 2;
+      ctx.drawImage(
+        face.image,
+        (s / STRIPS) * box.w,
+        0,
+        box.w / STRIPS,
+        box.h,
+        left.x,
+        top,
+        width + 0.75,
+        height,
+      );
+      const shade = 0.55 * (1 - face.light);
+      if (shade > 0.01) {
+        ctx.fillStyle = `rgba(0, 0, 0, ${shade.toFixed(3)})`;
+        ctx.fillRect(left.x, top, width + 0.75, height);
+      }
+    }
+  }
 }
 
 /** A step note at the bottom of the frame: white text on a dark pill. */

@@ -33,5 +33,6 @@ export {
   type Step,
   type StepContext,
   type StepOptions,
+  type StepTransition,
   type VideoCard,
 } from "./scenario.ts";

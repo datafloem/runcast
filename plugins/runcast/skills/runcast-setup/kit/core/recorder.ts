@@ -49,6 +49,8 @@ interface StepMark {
   /** The on-screen message for this step (scenario-specific). */
   note?: string;
   narration?: StepNarration;
+  /** A transition the renderer draws over this step ("cube"). */
+  transition?: string;
   /** How long the step ran (filled at the end). */
   durationMs?: number;
   /** How much longer the step ran than its narration plus gap. */
@@ -128,7 +130,7 @@ export class Recorder {
   step(
     title: string,
     note?: string,
-    extra: { id?: string; narration?: StepNarration } = {},
+    extra: { id?: string; narration?: StepNarration; transition?: string } = {},
   ): Promise<void> {
     if (!this.live) {
       console.log(`(preparation) ${title}`);
@@ -145,6 +147,7 @@ export class Recorder {
       title,
       note,
       narration: extra.narration,
+      transition: extra.transition,
     });
     console.log(`[${at}] ${title}${note ? ` — ${note}` : ""}`);
     return Promise.resolve();

@@ -33,6 +33,13 @@ export interface Step {
   /** The on-screen message for this step (scenario-specific). */
   note?: string;
   /**
+   * How the video moves from the step before into the one after this step.
+   * "cube": the renderer turns a cube from the last frame before this step to
+   * the first frame after it, over this step's time (e.g. from a scene to the
+   * app while the app loads). The step should last at least ~1 s.
+   */
+  transition?: StepTransition;
+  /**
    * Brings a fresh page to where this step starts, when it is the first step
    * of the scenario (e.g. login opens the login page). Runs before recording.
    */
@@ -41,11 +48,15 @@ export interface Step {
   run: (ctx: StepContext) => Promise<void>;
 }
 
+/** A transition the renderer draws over a step (see Step.transition). */
+export type StepTransition = "cube";
+
 /** Per-use overrides every step factory accepts. */
 export interface StepOptions {
   id?: string;
   title?: string;
   note?: string;
+  transition?: StepTransition;
 }
 
 export interface ScenarioDefinition {
@@ -150,7 +161,11 @@ export function scenario(
       const title = `${index + 1}. ${step.title}`;
       const voice = rec.isLive ? narrationFor(narration, step.id) : undefined;
       const startedMs = rec.elapsedMs();
-      await rec.step(title, step.note, { id: step.id, narration: voice });
+      await rec.step(title, step.note, {
+        id: step.id,
+        narration: voice,
+        transition: step.transition,
+      });
       await test.step(title, () => step.run(ctx));
 
       if (voice && narration) {
