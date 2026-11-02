@@ -34,6 +34,7 @@ import {
   rmSync,
   statSync,
   symlinkSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
@@ -216,7 +217,8 @@ function link(runtime: string): void {
     );
   }
   if (current !== runtime) {
-    rmSync(kitLink, { force: true });
+    // unlinkSync, not rmSync: Node 24's rmSync refuses a link to a directory.
+    if (current !== null) unlinkSync(kitLink);
     symlinkSync(
       runtime,
       kitLink,
