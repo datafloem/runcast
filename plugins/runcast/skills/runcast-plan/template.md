@@ -10,6 +10,7 @@
 - **Captions:** <yes / no> (yes: on-screen messages show at the bottom of the video)
 - **Cards:** <none / opening: "<title>" — "<subtitle>" (3 s) / closing: "<title>" — "<subtitle>" (4 s)>
 - **Blur:** <none / blurred fields, e.g. E-mail, Phone (blurred once filled)>
+- **Transitions:** <none / cube on step N (`<step id>`): the step is replaced by a cube turn to the next screen>
 - **Recording starts at:** <step 1 / step N (`REC_FROM=N`): earlier steps run silently before recording>
 - **Test:** [`<name>.spec.ts`](<name>.spec.ts)
 - **Status:** <draft / approved>

@@ -75,6 +75,12 @@ Ask (over two or three messages; at most three questions each):
    once they hold a value: empty they stay readable, from the first typed
    character on they are blurred, and prefilled on later screens too. Write the decision ("Blur"); the test applies it
    with `scenario({ blur: ['[name="email"]', ...] })`.
+9. **"Should the video turn a 3D cube when it moves to another area of the
+   app?"** (default no). The cube replaces a step that only moves (opens
+   another area, waits for a page to load) and turns from the page before to
+   the page after; the step's own clicks are not shown. Mark those steps in
+   phase 4 ("Transition"). Write the decision ("Transitions"); the test passes
+   `transition: "cube"` to those steps.
 
 Check `scenarios/*.md` first: if a similar scenario exists, ask whether to make
 a new one or change that one. Suggest a file name (`kebab-case`, e.g.
@@ -169,6 +175,7 @@ Settle the steps in groups of 2–3. For each step:
 | Length        | Roughly how many seconds                                                                               |
 | Focus         | Where the viewer should look: where the cursor rests, what is highlighted                              |
 | Check         | What must be on screen when the step ends (a success message, a new row, a total...). The test's value |
+| Transition    | Only if chosen in phase 1: does a cube turn replace this step? Only for steps that just move elsewhere |
 
 Do not ask for details the user need not know (selectors, waits); ask only for
 decisions visible on screen. Update the text, then move to the next group.

@@ -676,11 +676,16 @@ function drawCubeTurn(
   const centreY = box.y + box.h / 2;
   const cos = Math.cos(angle);
   const sin = Math.sin(angle);
+  // Mid-turn the shared edge comes closer than the front plane and would grow
+  // past the frame: pull the cube back so that edge stays inside, a little
+  // further at the middle of the turn.
+  const nearest = (camera - half) / (camera - half * (sin + cos));
+  const pull = (1 - 0.08 * Math.sin(2 * angle)) / Math.max(1, nearest);
   // A point of the cube (u across, w in depth, around its centre) on screen.
   const project = (u: number, w: number) => {
     const x = u * cos + w * sin;
     const z = -u * sin + w * cos; // -half = front plane
-    const scale = (camera - half) / (camera + z);
+    const scale = ((camera - half) / (camera + z)) * pull;
     return { x: centreX + x * scale, scale, z };
   };
   // Face A: u from -half to half at w = -half; face B: w from -half to half at u = half.
@@ -700,14 +705,19 @@ function drawCubeTurn(
   const STRIPS = 160;
   for (const face of faces) {
     if (face.light <= 0.001) continue;
+    // The face in vertical strips, each scaled for its depth (a perspective
+    // warp); strips overlap a little so no gaps show between them.
+    const edge: Array<{ x: number; half: number }> = [];
+    for (let s = 0; s <= STRIPS; s++) {
+      const point = face.at(s / STRIPS);
+      edge.push({ x: point.x, half: (box.h * point.scale) / 2 });
+    }
     for (let s = 0; s < STRIPS; s++) {
-      const left = face.at(s / STRIPS);
-      const right = face.at((s + 1) / STRIPS);
+      const left = edge[s]!;
+      const right = edge[s + 1]!;
       const width = right.x - left.x;
       if (width <= 0) continue;
-      const scale = (left.scale + right.scale) / 2;
-      const height = box.h * scale;
-      const top = centreY - height / 2;
+      const height = left.half + right.half;
       ctx.drawImage(
         face.image,
         (s / STRIPS) * box.w,
@@ -715,15 +725,25 @@ function drawCubeTurn(
         box.w / STRIPS,
         box.h,
         left.x,
-        top,
+        centreY - height / 2,
         width + 0.75,
         height,
       );
-      const shade = 0.55 * (1 - face.light);
-      if (shade > 0.01) {
-        ctx.fillStyle = `rgba(0, 0, 0, ${shade.toFixed(3)})`;
-        ctx.fillRect(left.x, top, width + 0.75, height);
-      }
+    }
+    // The turning face darkens, drawn once over its outline (per-strip
+    // shading would double up where strips overlap and show as lines).
+    const shade = 0.55 * (1 - face.light);
+    if (shade > 0.01) {
+      ctx.beginPath();
+      edge.forEach((p, k) =>
+        k === 0
+          ? ctx.moveTo(p.x, centreY - p.half)
+          : ctx.lineTo(p.x, centreY - p.half),
+      );
+      for (const p of [...edge].reverse()) ctx.lineTo(p.x, centreY + p.half);
+      ctx.closePath();
+      ctx.fillStyle = `rgba(0, 0, 0, ${shade.toFixed(3)})`;
+      ctx.fill();
     }
   }
 }

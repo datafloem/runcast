@@ -1,6 +1,8 @@
 // The Linux self-test's scenario (run.sh copies it into the sample project):
-// the template's login step with every video option on.
-import { scenario, test } from "../kit.ts";
+// the template's login step with every video option on, and a cube
+// transition back to the login page (an inline step, kit test only: real
+// scenarios take every step from steps/).
+import { expect, scenario, test } from "../kit.ts";
 import * as steps from "../steps/index.ts";
 
 test(
@@ -11,6 +13,19 @@ test(
     blur: ['input[name="username"]'],
     intro: { title: "Runcast", subtitle: "Linux self-test" },
     outro: { title: "Done", subtitle: "Xvfb, x11grab, ffmpeg" },
-    steps: [steps.login({ note: "Sign in" }), steps.hold({ ms: 2000, note: "Home" })],
+    steps: [
+      steps.login({ note: "Sign in" }),
+      steps.hold({ ms: 1500, note: "Home" }),
+      {
+        id: "back-to-login",
+        title: "Back to login",
+        transition: "cube",
+        run: async ({ page }) => {
+          await page.goto("/login");
+          await expect(page.locator('input[name="username"]')).toBeVisible();
+        },
+      },
+      steps.hold({ id: "end", ms: 1500, note: "Login again" }),
+    ],
   }),
 );

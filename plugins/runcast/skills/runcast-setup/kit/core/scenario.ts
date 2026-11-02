@@ -22,8 +22,9 @@ export interface StepContext extends Ui {
 
 /**
  * One reusable piece of a scenario: log in, create a customer, add an order...
- * Steps live in lib/steps/ and are combined into scenarios; a scenario never
- * re-implements one.
+ * Steps live in the recording folder's steps/ and are combined into
+ * scenarios; a scenario never re-implements one. Step factories take
+ * StepOptions and pass id, title, note and transition on.
  */
 export interface Step {
   /** Unique within a scenario, kebab-case: "login", "create-customer". REC_FROM can name it. */
@@ -33,10 +34,12 @@ export interface Step {
   /** The on-screen message for this step (scenario-specific). */
   note?: string;
   /**
-   * How the video moves from the step before into the one after this step.
-   * "cube": the renderer turns a cube from the last frame before this step to
-   * the first frame after it, over this step's time (e.g. from a scene to the
-   * app while the app loads). The step should last at least ~1 s.
+   * Hides this step in the video behind a transition. "cube": the renderer
+   * turns a cube from the page as this step starts to the page as the next
+   * step starts. What happens during the step is not shown, so use it on a
+   * step that only moves somewhere else (opens another area, waits for a
+   * load). In video and rehearsal the step lasts at least
+   * TRANSITION_MIN_MS; tests ignore it.
    */
   transition?: StepTransition;
   /**
@@ -50,6 +53,9 @@ export interface Step {
 
 /** A transition the renderer draws over a step (see Step.transition). */
 export type StepTransition = "cube";
+
+/** The shortest a step with a transition lasts in the video, so the turn can be followed. */
+export const TRANSITION_MIN_MS = 1200;
 
 /** Per-use overrides every step factory accepts. */
 export interface StepOptions {
@@ -167,6 +173,13 @@ export function scenario(
         transition: step.transition,
       });
       await test.step(title, () => step.run(ctx));
+
+      if (step.transition) {
+        // A turn faster than this cannot be followed (rec.pause: video and rehearsal only).
+        const spentMs = rec.elapsedMs() - startedMs;
+        if (spentMs < TRANSITION_MIN_MS)
+          await rec.pause(TRANSITION_MIN_MS - spentMs);
+      }
 
       if (voice && narration) {
         // The step lasts at least its voice-over plus the gap before the next.
@@ -302,6 +315,7 @@ export function hold(options: StepOptions & { ms?: number } = {}): Step {
     id: options.id ?? "hold",
     title: options.title ?? "Closing",
     note: options.note,
+    transition: options.transition,
     run: ({ rec }) => rec.pause(options.ms ?? 4000),
   };
 }

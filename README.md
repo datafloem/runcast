@@ -43,7 +43,9 @@ the app yourself.
   - blur on fields the viewer must not read, such as e-mail addresses or
     server names;
   - a voice-over from ElevenLabs, timed so that each sentence plays while its
-    step is on screen.
+    step is on screen;
+  - a 3D cube turn when the video moves to another part of the app, in place
+    of the wait while the page loads.
 - **An end-to-end test** made from the same script. It runs headless (no
   window) in seconds and works in CI.
 - **YouTube upload** with a title, description, chapters and privacy setting
@@ -218,7 +220,7 @@ question:
 
 - what the video shows, who watches it, and how long it should be;
 - the language of on-screen messages;
-- captions, title cards, blurred fields, voice-over;
+- captions, title cards, blurred fields, voice-over, cube transitions;
 - which records to use: existing data, or new records created during the
   video (and their form values);
 - the flow, screen by screen, and from which step the recording starts.

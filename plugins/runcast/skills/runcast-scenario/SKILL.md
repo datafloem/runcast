@@ -98,6 +98,16 @@ shows each step separately in the Playwright report.
   once they hold a value (an input's value, otherwise its text): an empty field
   stays readable, the blur starts with the first typed character and also
   covers prefilled values on later screens. Do not try to mask secrets at render time.
+- **Transitions (optional):** if the text has "Transitions", pass
+  `transition: "cube"` to that step (`steps.openOrders({ transition: "cube" })`).
+  In the video the step is replaced by a cube that turns from the page as the
+  step starts to the page as the next step starts; what the step does is not
+  shown. So use it only on a step that moves somewhere else (opens another
+  area, waits for a load), never on one whose clicks the viewer should follow;
+  if a step does both, split it. In video and rehearsal the step lasts at
+  least 1.2 s; test mode ignores it. It is stored in `steps.json` while
+  recording, so adding or removing one needs a new `video` run, not only
+  `render`.
 
 ## Modes
 
@@ -223,6 +233,7 @@ export function createCustomer(
     id: options.id ?? "create-customer",
     title: options.title ?? "New customer",
     note: options.note,
+    transition: options.transition,
     run: async (ctx) => {
       await app.createCustomer(ctx, options.name, options.email); // screen work lives in a helper
       await expect(ctx.page.getByText(options.name).first()).toBeVisible(); // check
@@ -233,6 +244,8 @@ export function createCustomer(
 ```
 
 - Scenario-specific values (names, messages) are options, never hard-coded.
+- Pass `id`, `title`, `note` and `transition` on from `StepOptions` as above;
+  a step that drops `transition` silently loses the scenario's transition.
 - Screen details (selectors, waits) go to the helper, not the step.
 - Export it from `steps/index.ts` and add a row to `PROJECT.md` > "Step catalog".
 - Steps share state through `ctx.state` (e.g. `customer`, `order`).

@@ -161,6 +161,12 @@ Add a scenario name to run one: `node tests/recording/.kit/cli.ts test login`.
      matching fields in every mode once they hold a value: empty fields stay
      readable, the blur starts with the first typed character and covers
      prefilled values on later screens.
+   - **Cube transition (optional):** a step created with
+     `transition: "cube"` (every step factory takes it) is replaced in the
+     video by a 3D cube turning from the page as the step starts to the page
+     as the next one starts. Meant for steps that only move elsewhere, such as
+     opening another area while it loads. The step lasts at least 1.2 s in
+     video and rehearsal; tests ignore it.
    - **Voice-over:** each audio segment is mixed in at the second its step starts.
 3. Re-render without recording again: `node tests/recording/.kit/cli.ts render <scenario>`.
 
@@ -309,7 +315,7 @@ The project adds its own (account, base URL, scenario values).
 
 `test/linux/` checks the kit on Linux in a container: a sample app, a fresh
 install from the templates, a narration split with ffmpeg, test mode, then
-video mode on Xvfb with captions, blur and title cards. From the
+video mode on Xvfb with captions, blur, title cards and a cube transition. From the
 Runcast repository root:
 
 ```bash

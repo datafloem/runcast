@@ -12,6 +12,7 @@ export function login(
     id: options.id ?? "login",
     title: options.title ?? "Login",
     note: options.note,
+    transition: options.transition,
     entry: (ctx) => openLogin(ctx),
     run: (ctx) =>
       loginHelper(
