@@ -1,7 +1,7 @@
 {
   "name": "runcast",
   "displayName": "Runcast",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "Turn Playwright flows through your web app into finished demo videos and end-to-end tests: planning interviews, scenario writing, screen capture with a calm camera, captions, title cards, ElevenLabs voice-over and YouTube upload.",
   "author": {
     "name": "Datafloem"
