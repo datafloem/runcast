@@ -7,7 +7,7 @@ change a rule in GitHub, export it from the same page and replace the file here.
 
 | File        | Applies to | What it does                                                                                                                                                                                                                                  |
 | ----------- | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `main.json` | `main`     | Changes go through a pull request with 1 approval and resolved conversations; a new push dismisses earlier approvals; the `check` job must pass; code quality must report no errors; squash merge only; no force-push, no deletion. |
+| `main.json` | `main`     | Changes go through a pull request with 1 approval and resolved conversations; a new push dismisses earlier approvals; the `check` job must pass; CodeQL must find no high or critical security alerts and no error-level alerts; squash merge only; no force-push, no deletion. |
 | `tags.json` | all tags   | Only admins can create, move or delete tags.                                                                                                                                                                                                  |
 
 Repository admins can bypass `main.json` **only through a pull request**:
@@ -22,6 +22,6 @@ requests the job also checks the branch name and the title
 (`.github/scripts/check-pr-name.sh`). A ruleset can't do that for pull
 requests from forks.
 
-The `code_quality` rule needs GitHub Code Quality turned on first:
-**Settings > Code security > Code quality**. Without it, import the ruleset
-without that rule.
+The `code_scanning` rule needs CodeQL turned on first: **Settings >
+Advanced Security > CodeQL analysis > Set up > Default**. It is free for
+public repositories. (GitHub's paid Code Quality add-on is not used.)

@@ -41,9 +41,15 @@
       }
     },
     {
-      "type": "code_quality",
+      "type": "code_scanning",
       "parameters": {
-        "severity": "errors"
+        "code_scanning_tools": [
+          {
+            "tool": "CodeQL",
+            "security_alerts_threshold": "high_or_higher",
+            "alerts_threshold": "errors"
+          }
+        ]
       }
     }
   ]
