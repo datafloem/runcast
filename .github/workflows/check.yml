@@ -26,7 +26,7 @@ jobs:
     env:
       KIT: plugins/runcast/skills/runcast-setup/kit
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Branch name and pull request title
         if: github.event_name == 'pull_request'
@@ -35,7 +35,7 @@ jobs:
           TITLE: ${{ github.event.pull_request.title }}
         run: bash .github/scripts/check-pr-name.sh
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
