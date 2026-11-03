@@ -1,0 +1,54 @@
+name: Check
+
+on:
+  pull_request:
+    # "edited" re-checks the title when someone renames the pull request.
+    types: [opened, synchronize, reopened, edited]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    # This name is the required status check in .github/rulesets/main.json.
+    name: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
+    env:
+      KIT: plugins/runcast/skills/runcast-setup/kit
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Branch name and pull request title
+        if: github.event_name == 'pull_request'
+        env:
+          BRANCH: ${{ github.head_ref }}
+          TITLE: ${{ github.event.pull_request.title }}
+        run: bash .github/scripts/check-pr-name.sh
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: plugins/runcast/skills/runcast-setup/kit/package-lock.json
+
+      - name: Install the kit's dependencies
+        run: npm ci --prefix "$KIT"
+
+      - name: Typecheck the kit
+        run: node "$KIT/node_modules/typescript/bin/tsc" -p "$KIT" --noEmit
+
+      - name: Check manifests, marketplaces and skills
+        run: node .github/scripts/check-plugin.mjs
+
+      - name: CLI starts
+        run: node "$KIT/cli.ts" help

@@ -29,6 +29,7 @@ the app yourself.
 - [Troubleshooting](#troubleshooting)
 - [Glossary](#glossary)
 - [This repository](#this-repository)
+- [Contributing](#contributing)
 
 ---
 
@@ -398,6 +399,13 @@ plugin's skills.
   (modes, camera, voice-over, YouTube, all settings, limits).
 - **Changing the kit:** read [AGENTS.md](AGENTS.md) first. The kit must stay
   app-agnostic: no app names, screens or URLs in it.
+
+## Contributing
+
+Bug reports, ideas and pull requests are welcome. [CONTRIBUTING.md](CONTRIBUTING.md)
+explains how to set up the repository, try a change against the sample app
+and open a pull request. Report security problems privately, as described in
+[SECURITY.md](SECURITY.md).
 
 ## License
 

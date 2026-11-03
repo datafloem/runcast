@@ -1,0 +1,70 @@
+name: Bug report
+description: Something in Runcast doesn't work as described.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Leave out passwords, tokens and your app's private data.
+        Security problems go to [a private report](https://github.com/datafloem/runcast/security/advisories/new), not here.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The commands you ran, or the scenario code (shortened). Use the made-up customers/orders app if you can't share your own.
+      placeholder: |
+        1. node tests/recording/.kit/cli.ts setup
+        2. node tests/recording/.kit/cli.ts video orders
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Output
+      description: Full error output.
+      render: text
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of `doctor`
+      description: "Run `node <recording folder>/.kit/cli.ts doctor` and paste the result."
+      render: text
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Mode
+      multiple: true
+      options:
+        - test
+        - rehearsal
+        - video
+        - render
+        - narration
+        - youtube
+        - setup
+  - type: dropdown
+    id: tool
+    attributes:
+      label: AI tool
+      options:
+        - Claude Code
+        - Codex
+        - Antigravity
+        - Other / none
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: macOS 15.5, Ubuntu 24.04, ...
+    validations:
+      required: true
