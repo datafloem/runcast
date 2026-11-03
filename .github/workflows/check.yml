@@ -2,6 +2,8 @@ name: Check
 
 on:
   pull_request:
+    # "edited" re-checks the title when someone renames the pull request.
+    types: [opened, synchronize, reopened, edited]
   push:
     branches: [main]
 
@@ -25,6 +27,13 @@ jobs:
       KIT: plugins/runcast/skills/runcast-setup/kit
     steps:
       - uses: actions/checkout@v4
+
+      - name: Branch name and pull request title
+        if: github.event_name == 'pull_request'
+        env:
+          BRANCH: ${{ github.head_ref }}
+          TITLE: ${{ github.event.pull_request.title }}
+        run: bash .github/scripts/check-pr-name.sh
 
       - uses: actions/setup-node@v4
         with:

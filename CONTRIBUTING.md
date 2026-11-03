@@ -151,20 +151,25 @@ CI runs it on pull requests that touch those files.
 
 ## Open a pull request
 
-1. **Create a branch** from an up-to-date `main` with a short, descriptive
-   name: `fix/blur-on-scroll`, `feat/fade-transition`, `docs/codex-install`.
+1. **Create a branch** from an up-to-date `main`. The name is
+   `<type>/<short-description>`: a type from the list in step 3, a slash,
+   then lowercase words with hyphens. Examples: `fix/blur-on-scroll`,
+   `feat/fade-transition`, `docs/codex-install`. CI checks the name, so
+   `my-branch` or `Feature/Fade` fail.
 2. **Keep it focused.** One topic per pull request. A refactor and a feature
    are two pull requests.
 3. **Write commits in [Conventional Commits](https://www.conventionalcommits.org/) style:**
-   `type: short summary in the imperative`. Types: `feat`, `fix`, `docs`,
-   `refactor`, `perf`, `test`, `build`, `ci`, `chore`. Add `!` after the type
+   `type: short summary in the imperative`, with an optional scope:
+   `fix(render): ...`. Types: `feat`, `fix`, `docs`, `refactor`, `perf`,
+   `test`, `build`, `ci`, `chore`, `revert`. Add `!` after the type
    for a breaking change (`feat!: rename rec.say to rec.caption`) and explain
    it in the body.
 4. **Run the checks** from [Set up the repository](#set-up-the-repository)
    and try the change as described above.
 5. **Push to your fork and open the pull request** against `datafloem/runcast:main`.
    The title follows the same Conventional Commits style, because it becomes
-   the commit message on `main`.
+   the commit message on `main`. CI checks it, and checks it again when you
+   rename the pull request.
 6. **Fill in the template.** Say what changed, why, and how you tested it.
    For a visible change (camera, cursor, captions, title cards, transitions),
    attach a short clip or a few frames.
@@ -175,8 +180,9 @@ release.
 
 ## Review and merge
 
-- The **check** job must pass: it typechecks the kit and runs
-  `check-plugin.mjs`.
+- The **check** job must pass: it checks the branch name and the title,
+  typechecks the kit and runs `check-plugin.mjs`.
+- GitHub code quality must report no errors.
 - A maintainer reviews every pull request. New pushes dismiss earlier
   approvals, and all review conversations must be resolved before merging.
 - Pull requests are **squash-merged**, so `main` has one commit per pull
@@ -195,7 +201,8 @@ Maintainers only:
    `plugins/runcast/plugin.json` and `kit/package.json` together. Users get a
    new runtime for each version.
 2. Merge to `main`, then tag the release commit `vX.Y.Z` and create a GitHub
-   release with the notable changes.
+   release with the notable changes. Only admins can create, move or delete
+   tags.
 
 ## License
 

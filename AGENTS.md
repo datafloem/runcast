@@ -53,6 +53,7 @@ plugin there instead (README).
   "Self-test on Linux") is optional: run it only for Linux-specific changes
   (Xvfb, x11grab, Linux setup), and only where Docker or a Linux machine is
   available.
-- Pull requests follow [CONTRIBUTING.md](CONTRIBUTING.md): Conventional
-  Commits titles, one topic each, no version bump (releases only), squash
-  merge. GitHub rules live in `.github/rulesets/`.
+- Pull requests follow [CONTRIBUTING.md](CONTRIBUTING.md): branch
+  `<type>/<lowercase-words>`, Conventional Commits title (CI checks both),
+  one topic each, no version bump (releases only), squash merge. GitHub
+  rules live in `.github/rulesets/`.

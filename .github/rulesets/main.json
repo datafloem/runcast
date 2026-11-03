@@ -39,6 +39,12 @@
           { "context": "check", "integration_id": 15368 }
         ]
       }
+    },
+    {
+      "type": "code_quality",
+      "parameters": {
+        "severity": "errors"
+      }
     }
   ]
 }

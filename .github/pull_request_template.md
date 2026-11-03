@@ -1,7 +1,8 @@
 <!--
-Thanks for contributing! The title should follow Conventional Commits,
-for example "fix: keep the cursor on screen after a scroll".
-It becomes the commit message on main. See CONTRIBUTING.md.
+Thanks for contributing! CI checks two names (see CONTRIBUTING.md):
+- Branch: <type>/<lowercase-words>, for example fix/cursor-after-scroll.
+- Title: Conventional Commits, for example "fix: keep the cursor on screen
+  after a scroll". It becomes the commit message on main.
 -->
 
 ## What and why
