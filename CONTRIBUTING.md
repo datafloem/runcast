@@ -182,7 +182,8 @@ release.
 
 - The **check** job must pass: it checks the branch name and the title,
   typechecks the kit and runs `check-plugin.mjs`.
-- GitHub code quality must report no errors.
+- CodeQL code scanning must find no high or critical security alerts and
+  no error-level alerts.
 - A maintainer reviews every pull request. New pushes dismiss earlier
   approvals, and all review conversations must be resolved before merging.
 - Pull requests are **squash-merged**, so `main` has one commit per pull
