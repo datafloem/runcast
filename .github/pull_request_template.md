@@ -24,6 +24,7 @@ captions, title cards, transitions), attach a short clip or a few frames. -->
 - [ ] No real app names, screens, URLs, colours or accounts. Examples use the made-up customers/orders app.
 - [ ] Commands in docs and skills work in a project that installs nothing (`.kit/cli.ts`, no bare `npx playwright`).
 - [ ] Skills, kit README, root README and templates are updated if behaviour changed.
+- [ ] Anything new the kit downloads, contacts or writes is listed in `plugins/runcast/README.md`.
 - [ ] No breaking change to `core/index.ts`, or it is explained below.
 - [ ] The plugin version is not bumped (maintainers do this when releasing).
 

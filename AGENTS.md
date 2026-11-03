@@ -41,6 +41,10 @@ plugin there instead (README).
   (`./.kit`) and `{{DIR}}` (the recording folder from the repository root).
 - When behaviour changes, update the skills, `kit/README.md`, the root
   `README.md` (written for someone new to the kit) and the templates with it.
+  `plugins/runcast/README.md` is the Claude directory listing: keep its
+  "What Runcast installs, sends and stores" section exact. Anything the kit
+  downloads, contacts or writes that isn't listed there fails the directory's
+  security scan.
   Everything is in English.
 - Releases: bump `version` in `.claude-plugin/plugin.json`, `plugin.json` and
   `kit/package.json` together (users get a new runtime per version).

@@ -381,6 +381,8 @@ Antigravity:
 .claude-plugin/marketplace.json     Claude Code marketplace
 .agents/plugins/marketplace.json    Codex marketplace
 plugins/runcast/
+  README.md                         plugin summary, the Claude directory listing
+                                    (what it installs, sends and stores)
   .claude-plugin/plugin.json        Claude Code manifest
   plugin.json                       Codex and Antigravity manifest
   skills/

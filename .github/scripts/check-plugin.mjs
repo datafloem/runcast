@@ -1,5 +1,6 @@
 // Checks that the plugin's manifests, marketplaces and skills agree.
 // Run from the repository root: node .github/scripts/check-plugin.mjs
+import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 
@@ -74,6 +75,33 @@ for (const dir of skillDirs) {
   if (!description) fail(`${file}: description is missing`);
   if (!dir.startsWith(`${claude.name}-`)) fail(`${file}: skill folders start with "${claude.name}-"`);
 }
+
+// Claude directory rules for the plugin folder (claude.com/docs/plugins/pre-submission-checklist):
+// a README of 40+ words outside code blocks, no OS junk files, small text files.
+const readme = path.join(ROOT, PLUGIN, "README.md");
+if (!existsSync(readme)) fail(`${PLUGIN}/README.md is missing (the directory listing shows it)`);
+else {
+  const words = readFileSync(readme, "utf-8").replace(/```[\s\S]*?```/g, "").split(/\s+/).filter(Boolean);
+  if (words.length < 40) fail(`${PLUGIN}/README.md has ${words.length} words, the directory needs 40`);
+}
+// Files in git only: the directory reads the repository, not a local checkout.
+const pluginFiles = execFileSync("git", ["ls-files", "--cached", "--others", "--exclude-standard", PLUGIN], {
+  cwd: ROOT,
+  encoding: "utf-8",
+})
+  .split("\n")
+  .filter((f) => f && existsSync(path.join(ROOT, f)));
+for (const file of pluginFiles) {
+  const name = path.basename(file);
+  if ([".DS_Store", "Thumbs.db", "desktop.ini"].includes(name) || file.includes("__MACOSX")) {
+    fail(`${file}: remove it, the directory refuses OS system files`);
+  }
+  const size = statSync(path.join(ROOT, file)).size;
+  if (!/\.(png|jpe?g|gif|webp|woff2?|ttf|otf)$/i.test(file) && size > 256 * 1024) {
+    fail(`${file}: ${Math.round(size / 1024)} KiB, keep text files under 256 KiB for the directory`);
+  }
+}
+if (pluginFiles.length > 512) fail(`${PLUGIN} has ${pluginFiles.length} files, the directory allows 512`);
 
 // Docs and skills users follow: projects install nothing, so no bare
 // "npx playwright". (AGENTS.md and CONTRIBUTING.md state the rule itself.)

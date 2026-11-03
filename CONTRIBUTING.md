@@ -54,6 +54,11 @@ assistants, but it applies to people too.
 4. **Docs change with behaviour.** If you change what the kit does, update
    the skills, the [kit README](plugins/runcast/skills/runcast-setup/kit/README.md),
    the root [README](README.md) and the templates in the same pull request.
+   If the change downloads, contacts or writes something new, add it to
+   "What Runcast installs, sends and stores" in the
+   [plugin README](plugins/runcast/README.md). That README is the Claude
+   directory listing, and the directory's security scan rejects behaviour it
+   doesn't disclose.
 5. **One plugin for every tool.** Keep `plugins/runcast/.claude-plugin/plugin.json`
    (Claude Code) and `plugins/runcast/plugin.json` (Codex and Antigravity) in
    step. The CI check compares them.
@@ -89,7 +94,9 @@ You need Node 22.18 or newer, Git and, for video mode, `ffmpeg`. See the
 
    The first command typechecks the kit. The second checks that the
    manifests, marketplaces and skills agree with each other (names, versions,
-   skill front matter, no bare `npx playwright`).
+   skill front matter, no bare `npx playwright`) and that the plugin folder
+   meets the Claude directory's file rules (a README of 40+ words, no OS
+   system files, text files under 256 KiB).
 
 Where things are:
 
