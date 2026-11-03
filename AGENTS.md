@@ -45,10 +45,14 @@ plugin there instead (README).
 - Releases: bump `version` in `.claude-plugin/plugin.json`, `plugin.json` and
   `kit/package.json` together (users get a new runtime per version).
 - Check: `npm install` once in `kit/`, then
-  `node plugins/runcast/skills/runcast-setup/kit/node_modules/typescript/bin/tsc -p plugins/runcast/skills/runcast-setup/kit --noEmit`;
-  set up a scratch project with
+  `node plugins/runcast/skills/runcast-setup/kit/node_modules/typescript/bin/tsc -p plugins/runcast/skills/runcast-setup/kit --noEmit`,
+  then `node .github/scripts/check-plugin.mjs` (manifests, marketplaces,
+  skills; CI runs both); set up a scratch project with
   `node plugins/runcast/skills/runcast-setup/kit/cli.ts setup` and run
   its login scenario. The Linux self-test (`kit/test/linux/`, kit README >
   "Self-test on Linux") is optional: run it only for Linux-specific changes
   (Xvfb, x11grab, Linux setup), and only where Docker or a Linux machine is
   available.
+- Pull requests follow [CONTRIBUTING.md](CONTRIBUTING.md): Conventional
+  Commits titles, one topic each, no version bump (releases only), squash
+  merge. GitHub rules live in `.github/rulesets/`.

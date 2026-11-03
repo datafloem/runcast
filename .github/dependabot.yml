@@ -1,0 +1,19 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # The kit's runtime. A merged update ships to users with the next release.
+  - package-ecosystem: npm
+    directory: /plugins/runcast/skills/runcast-setup/kit
+    schedule:
+      interval: monthly
+    groups:
+      kit:
+        patterns: ["*"]
+    open-pull-requests-limit: 3

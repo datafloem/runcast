@@ -1,0 +1,42 @@
+name: Linux self-test
+
+# Optional: records a real video on Xvfb in Docker. It runs only by hand or
+# when Linux-specific code changes, and is not a required check.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - plugins/runcast/skills/runcast-setup/kit/core/xvfb.ts
+      - plugins/runcast/skills/runcast-setup/kit/core/video-capture.ts
+      - plugins/runcast/skills/runcast-setup/kit/test/linux/**
+      - .github/workflows/linux-selftest.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-selftest-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  selftest:
+    name: linux-selftest
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the image
+        run: docker build -f plugins/runcast/skills/runcast-setup/kit/test/linux/Dockerfile -t runcast-linux plugins/runcast
+
+      - name: Run the self-test
+        run: docker run --rm -v "$PWD/kit-linux-out:/out" runcast-linux
+
+      - name: Upload video and frames
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kit-linux-out
+          path: kit-linux-out/
+          if-no-files-found: ignore
+          retention-days: 7

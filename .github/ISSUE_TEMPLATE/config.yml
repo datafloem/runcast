@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security problem
+    url: https://github.com/datafloem/runcast/security/advisories/new
+    about: Please report vulnerabilities privately, not in a public issue.
+  - name: Read the docs
+    url: https://github.com/datafloem/runcast#readme
+    about: Install steps, your first video, commands and troubleshooting.
