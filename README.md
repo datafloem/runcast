@@ -89,7 +89,7 @@ Under the hood:
 | --------------------- | -------------------------------------------- | --------------------------------------------------------------------------------------------------- |
 | **Node.js 22.18+**    | Runs the kit (TypeScript runs directly)      | `node --version`; install from [nodejs.org](https://nodejs.org)                                     |
 | **Google Chrome**     | The browser that is driven and recorded      | Install from [google.com/chrome](https://www.google.com/chrome/). On ARM Linux, see Troubleshooting |
-| **ffmpeg**            | Screen capture, rendering and voice-over     | macOS: `brew install ffmpeg` · Debian/Ubuntu: `sudo apt install ffmpeg`                             |
+| **ffmpeg**            | Screen capture, rendering and voice-over     | macOS: `brew install ffmpeg` · Debian/Ubuntu: `sudo apt install ffmpeg` · Windows: `winget install Gyan.FFmpeg` |
 | **Xvfb** (Linux only) | A virtual screen on machines with no display | `sudo apt install xvfb`                                                                             |
 | **Your app running**  | The kit opens it in the browser              | Start your dev server as usual (for example `npm run dev`)                                          |
 | **A test account**    | For the sign-in step                         | A user name and password for your app. They go in a local file, never in the chat                   |
@@ -101,8 +101,10 @@ Platforms:
   System Settings > Privacy & Security > Screen Recording.
 - **Linux:** everything works. Without a screen (servers, CI, containers) the
   kit starts a virtual display by itself.
-- **Windows:** tests and rehearsals work; video recording is not supported
-  yet.
+- **Windows 10/11:** everything works. Video records the screen of your
+  signed-in desktop, so keep it unlocked and Chrome on the main screen while
+  it records. Windows video support is new: if the picture is shifted or
+  black, see Troubleshooting and tell us in an issue.
 
 After setup you can always run `node tests/recording/.kit/cli.ts doctor`. It
 lists what is installed and what is missing.
@@ -193,6 +195,12 @@ Copy the example settings file and fill in the account:
 
 ```bash
 cp tests/recording/.env.example tests/recording/.env.local
+```
+
+On Windows (PowerShell):
+
+```powershell
+Copy-Item tests/recording/.env.example tests/recording/.env.local
 ```
 
 Open `tests/recording/.env.local` and set `APP_USERNAME` and `APP_PASSWORD`.
@@ -354,6 +362,7 @@ the plugin in your AI tool. In Claude Code that is
 | ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `.kit` is missing, or "is not set up: run setup first" | Run setup again (ask the assistant to set up recordings). This is normal after a fresh clone or a kit update                                                         |
 | The video is black or shows the wrong screen           | macOS: allow Screen Recording for the app that runs the command, then restart that app. With several screens, set `REC_SCREEN` in `.env.local`                       |
+| Windows: the video is black, or the picture is shifted | Keep the desktop unlocked and Chrome on the main screen. Try `REC_WIN_GRABBER=gdigrab` in `.env.local`. If the page is cut off by a few pixels, set `REC_CAPTURE_OFFSET=x,y` (screen pixels) |
 | "Google Chrome not found"                              | Install Chrome. On ARM Linux (no Chrome build): set `REC_CHANNEL=chromium` and run `node tests/recording/.kit/node_modules/@playwright/test/cli.js install chromium` |
 | A test fails to find a button or field                 | Tell the assistant; it reads `.results/<test>/error-context.md` and the screenshot, then fixes the helper                                                            |
 | The first page load times out                          | Your dev server may still be compiling. Open the app once in a browser, or ask the assistant to raise that timeout in the helper                                     |

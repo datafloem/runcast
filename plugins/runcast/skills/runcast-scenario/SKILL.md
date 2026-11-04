@@ -113,7 +113,7 @@ shows each step separately in the Playwright report.
 
 | Mode      | Command                                             | Notes                                                                                                                     |
 | --------- | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| video     | `node tests/recording/.kit/cli.ts video <name>`     | Visible Chrome, ffmpeg screen capture, then the MP4. macOS (Screen Recording permission) or Linux (Xvfb without a screen) |
+| video     | `node tests/recording/.kit/cli.ts video <name>`     | Visible Chrome, ffmpeg screen capture, then the MP4. macOS (Screen Recording permission), Linux (Xvfb without a screen) or Windows (unlocked desktop) |
 | rehearsal | `node tests/recording/.kit/cli.ts rehearsal <name>` | The video's pace and timing, headless and not recorded. For measuring step lengths                                        |
 | test      | `node tests/recording/.kit/cli.ts test <name>`      | Headless end-to-end, no pauses (the default mode)                                                                         |
 

@@ -99,8 +99,10 @@ export class VideoCapture {
     viewport: { width: number; height: number };
     startedAt: number;
   }> {
-    if (process.platform !== "darwin" && process.platform !== "linux") {
-      throw new Error("Video mode records the screen on macOS and Linux only.");
+    if (!["darwin", "linux", "win32"].includes(process.platform)) {
+      throw new Error(
+        "Video mode records the screen on macOS, Linux and Windows only.",
+      );
     }
     mkdirSync(this.dir, { recursive: true });
     const area = await this.placeWindow();
@@ -108,13 +110,38 @@ export class VideoCapture {
     this.data.video.width = area.width;
     this.data.video.height = area.height;
 
+    // Windows: ddagrab (Desktop Duplication) first, gdigrab when it can't start.
+    let stderr = "";
+    for (const grabber of grabbers()) {
+      stderr = await this.launch(screenInput(area, grabber));
+      if (Number.isFinite(this.videoStartWall)) break;
+      if (grabbers().length > 1) {
+        console.warn(`ffmpeg ${grabber} could not record; trying the next one.`);
+      }
+    }
+    if (!Number.isFinite(this.videoStartWall)) {
+      const hint =
+        process.platform === "darwin"
+          ? "Give the terminal Screen Recording permission (System Settings > Privacy & Security > Screen Recording) and make sure ffmpeg is installed."
+          : process.platform === "win32"
+            ? "Make sure ffmpeg is installed (winget install Gyan.FFmpeg), the desktop is unlocked, and Chrome is on the main screen. REC_WIN_GRABBER=gdigrab or ddagrab picks one capture method."
+            : `Make sure ffmpeg is installed and DISPLAY (${process.env.DISPLAY ?? "not set"}) is reachable.`;
+      throw new Error(`ffmpeg could not record the screen. ${hint}\n${stderr}`);
+    }
+    this.page.on("framenavigated", this.onNavigation);
+    this.startedAt = Date.now();
+    return { viewport: this.data.viewport, startedAt: this.startedAt };
+  }
+
+  /** Starts ffmpeg with one screen input and waits for its first frame; returns its error output. */
+  private async launch(input: Array<string>): Promise<string> {
     const ffmpeg = spawn(
       "ffmpeg",
       [
         "-hide_banner",
         "-loglevel",
         "error",
-        ...screenInput(area),
+        ...input,
         "-c:v",
         "libx264",
         "-preset",
@@ -160,19 +187,13 @@ export class VideoCapture {
     }
     if (!Number.isFinite(this.videoStartWall)) {
       ffmpeg.kill("SIGKILL");
-      const hint =
-        process.platform === "darwin"
-          ? "Give the terminal Screen Recording permission (System Settings > Privacy & Security > Screen Recording) and make sure ffmpeg is installed."
-          : `Make sure ffmpeg is installed and DISPLAY (${process.env.DISPLAY ?? "not set"}) is reachable.`;
-      throw new Error(`ffmpeg could not record the screen. ${hint}\n${stderr}`);
+      this.ffmpeg = null;
     }
-    this.page.on("framenavigated", this.onNavigation);
-    this.startedAt = Date.now();
-    return { viewport: this.data.viewport, startedAt: this.startedAt };
+    return stderr;
   }
 
   /**
-   * Fills the screen's usable area (menu bar and Dock excluded) with the
+   * Fills the screen's usable area (menu bar, Dock or taskbar excluded) with the
    * window; the page gets whatever size that leaves. Returns the page area on
    * screen, in screen pixels.
    */
@@ -218,17 +239,31 @@ export class VideoCapture {
         now.width === page.width && now.height === page.height ? same + 1 : 0;
       page = now;
     }
-    const geometry = await this.page.evaluate(() => ({
-      x: window.screenX + (window.outerWidth - window.innerWidth) / 2,
-      y: window.screenY + (window.outerHeight - window.innerHeight),
-      scale: window.devicePixelRatio,
-    }));
+    const geometry = await this.page.evaluate((windows) => {
+      // The window's frame beside the page. On Windows the same width also
+      // runs along the bottom (the invisible resize border), so the toolbar
+      // height is the extra height minus that border.
+      const side = (window.outerWidth - window.innerWidth) / 2;
+      return {
+        x: window.screenX + side,
+        y:
+          window.screenY +
+          (window.outerHeight - window.innerHeight) -
+          (windows ? side : 0),
+        scale: window.devicePixelRatio,
+      };
+    }, process.platform === "win32");
+    // REC_CAPTURE_OFFSET=x,y moves the recorded area, in screen pixels, when
+    // a window frame puts the page somewhere the browser doesn't report.
+    const [nudgeX = 0, nudgeY = 0] = (process.env.REC_CAPTURE_OFFSET ?? "")
+      .split(",")
+      .map((n) => Number(n.trim()) || 0);
     // ffmpeg wants even numbers. Round the start inward and the size down, so
     // the area never takes in the browser's own border (at 1x the page often
     // starts on an odd pixel), and describe the page by what is recorded.
     const scale = geometry.scale;
-    const left = geometry.x * scale;
-    const top = geometry.y * scale;
+    const left = geometry.x * scale + nudgeX;
+    const top = geometry.y * scale + nudgeY;
     const x = Math.ceil(left / 2) * 2;
     const y = Math.ceil(top / 2) * 2;
     const width = Math.floor((left + page.width * scale - x) / 2) * 2;
@@ -294,10 +329,59 @@ export class VideoCapture {
   }
 }
 
-/** ffmpeg's input options for the page area of the screen, per platform. */
-function screenInput(area: Box): Array<string> {
+type Grabber = "avfoundation" | "x11grab" | "ddagrab" | "gdigrab";
+
+/** The screen grabbers to try, in order, on this platform. */
+function grabbers(): Array<Grabber> {
+  if (process.platform === "darwin") return ["avfoundation"];
+  if (process.platform === "linux") return ["x11grab"];
+  const pick = process.env.REC_WIN_GRABBER;
+  if (pick === "ddagrab" || pick === "gdigrab") return [pick];
+  return ["ddagrab", "gdigrab"];
+}
+
+/** ffmpeg's input options for the page area of the screen, per grabber. */
+function screenInput(area: Box, grabber: Grabber): Array<string> {
   const common = ["-framerate", "30"];
-  if (process.platform === "linux") {
+  if (grabber === "ddagrab") {
+    // Desktop Duplication: physical pixels of one screen, so display scaling
+    // doesn't shift the area. Frames come out on the GPU; download them.
+    const source = [
+      `output_idx=${process.env.REC_SCREEN ?? "0"}`,
+      "framerate=30",
+      "draw_mouse=0",
+      `offset_x=${area.x}`,
+      `offset_y=${area.y}`,
+      `video_size=${area.width}x${area.height}`,
+    ].join(":");
+    return [
+      "-f",
+      "lavfi",
+      "-i",
+      `ddagrab=${source}`,
+      "-vf",
+      "hwdownload,format=bgra",
+    ];
+  }
+  if (grabber === "gdigrab") {
+    // GDI: grabs just the area of the desktop; the pointer is left out.
+    return [
+      "-f",
+      "gdigrab",
+      "-draw_mouse",
+      "0",
+      ...common,
+      "-offset_x",
+      `${area.x}`,
+      "-offset_y",
+      `${area.y}`,
+      "-video_size",
+      `${area.width}x${area.height}`,
+      "-i",
+      "desktop",
+    ];
+  }
+  if (grabber === "x11grab") {
     // x11grab grabs just the area; the pointer is left out.
     const display = process.env.DISPLAY ?? ":0";
     const screen = display.includes(".") ? display : `${display}.0`;

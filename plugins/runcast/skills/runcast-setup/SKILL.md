@@ -43,7 +43,8 @@ in English.
      skills.
 3. **Doctor:** setup ends with `doctor` (also
    `node <recording folder>/.kit/cli.ts doctor`): Node 22.18+, ffmpeg (video,
-   narration), Xvfb on Linux without a screen, Google Chrome (or
+   narration; Windows: `winget install Gyan.FFmpeg`), Xvfb on Linux without a
+   screen, Google Chrome (or
    `REC_CHANNEL=chromium`), `.env.local`. Ask before installing anything
    system-wide.
 
@@ -113,7 +114,9 @@ find, it becomes `PROJECT.md`:
 4. Offer a short video check: `node <recording folder>/.kit/cli.ts video login` (macOS: the
    terminal needs Screen Recording permission and a Chrome window opens;
    Linux: needs ffmpeg and xvfb, and runs on a virtual display without a
-   screen). Look at
+   screen; Windows: needs ffmpeg, an unlocked desktop and Chrome on the main
+   screen). On Windows, use PowerShell equivalents for shell commands (for
+   example `Copy-Item` instead of `cp`). Look at
    a frame of `videos/login.mp4` (e.g. with ffmpeg) to check theme and brand.
 
 ## 5. Hand over
