@@ -135,6 +135,11 @@ node <path to your clone>/plugins/runcast/skills/runcast-setup/kit/cli.ts setup 
 printf 'APP_USERNAME=demo\nAPP_PASSWORD=demo-password\n' > tests/recording/.env.local
 ```
 
+On Windows, run these in Git Bash, or create `tests/recording/.env.local`
+with those two lines in an editor. The **Windows** workflow in CI runs the
+same setup, test and rehearsal on every pull request that changes the plugin,
+plus a video smoke test whose output you can download from the run.
+
 ```bash
 node tests/recording/.kit/cli.ts test
 ```

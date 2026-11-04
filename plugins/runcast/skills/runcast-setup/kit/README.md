@@ -43,7 +43,11 @@ It is app-agnostic. An app adds a **recording folder** (default
     records `DISPLAY` (X11; under Wayland run it with `xvfb-run`). On ARM
     Linux there is no Google Chrome: `REC_CHANNEL=chromium` and
     `node <recording folder>/.kit/node_modules/@playwright/test/cli.js install chromium`.
-  - **Windows:** not supported for video yet.
+  - **Windows 10/11:** `winget install Gyan.FFmpeg` (ffmpeg 6 or newer).
+    Video records the page area of the main screen with ffmpeg's `ddagrab`
+    (Desktop Duplication, physical pixels, so display scaling is fine) and
+    falls back to `gdigrab` when that can't start; `REC_WIN_GRABBER` picks
+    one. Keep the desktop signed in and unlocked while it records.
 - Test and rehearsal modes run anywhere, CI included.
 
 ## Adding it to a project
@@ -128,7 +132,7 @@ The CLI takes the recording folder from `--dir`, else `REC_PROJECT`, else
 
 | Mode      | Command                                      | What                                                                                    |
 | --------- | -------------------------------------------- | --------------------------------------------------------------------------------------- |
-| Video     | `node tests/recording/.kit/cli.ts video`     | Records Chrome with ffmpeg, then renders `videos/<scenario>.mp4`. macOS, Linux          |
+| Video     | `node tests/recording/.kit/cli.ts video`     | Records Chrome with ffmpeg, then renders `videos/<scenario>.mp4`. macOS, Linux, Windows |
 | Rehearsal | `node tests/recording/.kit/cli.ts rehearsal` | The video's pace and narration timing, headless and not recorded. Measures step lengths |
 | Test      | `node tests/recording/.kit/cli.ts test`      | Headless, Playwright's own clicks, no pauses. Any OS and CI; HTML report in `.report/`  |
 
@@ -303,7 +307,9 @@ The full rules are in the `runcast-scenario` skill (`skills/runcast-scenario/SKI
 | `REC_END_HOLD_MS`                           | `2000`             | How long the last frame stays (video, rehearsal)               |
 | `REC_AIM_MS`                                | `400`              | Cursor rest on a target before clicking (video, rehearsal)     |
 | `REC_PAGE_WIDTH`                            | `1440`             | Rehearsal and test page width (16:9); video fills the screen   |
-| `REC_VIDEO_FPS`, `REC_SCREEN`               | `30`, auto         | Output frame rate; ffmpeg's screen index (macOS)               |
+| `REC_VIDEO_FPS`, `REC_SCREEN`               | `30`, auto         | Output frame rate; ffmpeg's screen index (macOS; Windows `ddagrab`: `0` = main screen) |
+| `REC_WIN_GRABBER`                           | auto               | Windows: `ddagrab` or `gdigrab`; auto tries `ddagrab` first    |
+| `REC_CAPTURE_OFFSET`                        | `0,0`              | Moves the recorded area by `x,y` screen pixels, when a window frame shifts the page |
 | `REC_CHANNEL`                               | `chrome`           | Browser: `chrome` (Google Chrome) or `chromium` (Playwright's) |
 | `REC_XVFB_SIZE`                             | `1920x1080`        | Linux without a screen: the Xvfb page area, in CSS pixels      |
 | `REC_XVFB_SCALE`                            | `1`                | Linux without a screen: `2` draws the page at 2x, like Retina  |
@@ -329,8 +335,10 @@ captures land in `kit-linux-out/`. The same script runs outside a container:
 
 ## Limits
 
-- Video mode runs on macOS (ffmpeg avfoundation) and Linux (ffmpeg x11grab,
-  Xvfb when there is no screen); not on Windows yet. On Linux the
+- Video mode runs on macOS (ffmpeg avfoundation), Linux (ffmpeg x11grab,
+  Xvfb when there is no screen) and Windows 10/11 (ffmpeg ddagrab or
+  gdigrab, main screen only). Windows support is new and checked in CI with
+  test and rehearsal runs; a CI video run is a smoke test only. On Linux the
   Xvfb display records at 1x by default. `REC_XVFB_SCALE=2` gives Retina-sharp
   text (same layout, four times the pixels); on a 4-CPU VM it delivered about
   29 instead of 30 frames per second (the drawn cursor stays smooth, page

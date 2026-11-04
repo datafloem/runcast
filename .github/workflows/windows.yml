@@ -1,0 +1,84 @@
+name: Windows
+
+# Runcast on Windows: setup, test and rehearsal must pass. Video recording on
+# the runner is a smoke test only (no real screen or GPU), so a failed video
+# doesn't fail the job; its frames and logs are uploaded for review.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - plugins/runcast/**
+      - .github/workflows/windows.yml
+  push:
+    branches: [main]
+    paths:
+      - plugins/runcast/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    name: windows
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Paths
+        run: |
+          echo "KIT=$(cygpath -u "$GITHUB_WORKSPACE")/plugins/runcast/skills/runcast-setup/kit" >> "$GITHUB_ENV"
+          echo "APP=$(cygpath -u "$RUNNER_TEMP")/runcast-app" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Set up a project with the kit's CLI
+        run: |
+          mkdir -p "$APP" && cd "$APP"
+          node "$KIT/cli.ts" setup --dir tests/recording --name "Sample App" --base-url http://localhost:4173
+          printf 'APP_USERNAME=demo\nAPP_PASSWORD=demo-password\n' > tests/recording/.env.local
+          node tests/recording/.kit/cli.ts doctor || true
+
+      - name: Test and rehearsal
+        run: |
+          node "$KIT/test/linux/serve.ts" "$KIT/test/linux/site" 4173 &
+          SERVER=$!
+          trap 'kill $SERVER' EXIT
+          sleep 2
+          cd "$APP"
+          node tests/recording/.kit/cli.ts test
+          node tests/recording/.kit/cli.ts rehearsal
+
+      - name: Install ffmpeg
+        run: command -v ffmpeg || choco install ffmpeg --no-progress -y
+
+      - name: Video (smoke test)
+        continue-on-error: true
+        run: |
+          export PATH="$PATH:/c/ProgramData/chocolatey/bin"
+          node "$KIT/test/linux/serve.ts" "$KIT/test/linux/site" 4173 &
+          SERVER=$!
+          trap 'kill $SERVER' EXIT
+          sleep 2
+          cd "$APP"
+          node tests/recording/.kit/cli.ts video login
+
+      - name: Upload video and captures
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-video
+          path: |
+            ${{ runner.temp }}/runcast-app/tests/recording/videos/
+            ${{ runner.temp }}/runcast-app/tests/recording/.results/
+          if-no-files-found: ignore
+          retention-days: 7

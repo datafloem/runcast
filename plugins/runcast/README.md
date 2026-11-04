@@ -28,9 +28,9 @@ an order"*.
 - Node 22.18 or newer, and Google Chrome (or Playwright's Chromium).
 - `ffmpeg` for video and voice-over. On macOS, the app that runs the command
   needs the Screen Recording permission. On Linux, Runcast uses Xvfb when
-  there is no screen.
-- Video recording runs on macOS and Linux. Test and rehearsal runs work
-  anywhere, CI included. Windows can't record video yet.
+  there is no screen. On Windows, it records the signed-in desktop.
+- Video recording runs on macOS, Linux and Windows 10/11. Test and rehearsal
+  runs work anywhere, CI included.
 
 ## What Runcast installs, sends and stores
 
@@ -79,7 +79,8 @@ your computer, only when you or your assistant run the command named.
 
 - In video mode only, with ffmpeg: on macOS the screen, cropped to the
   browser's page area; on Linux the display (Xvfb when there is no screen),
-  limited to the page area. The capture stays on your computer. Fields you
+  limited to the page area; on Windows the page area of the main screen
+  (Desktop Duplication, or GDI as a fallback). The capture stays on your computer. Fields you
   list as private are blurred in the rendered video.
 
 ## Learn more

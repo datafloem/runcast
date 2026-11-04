@@ -302,6 +302,11 @@ function doctor(): void {
       "  macOS video needs Screen Recording permission for the app that runs the command (asked on first recording).",
     );
   }
+  if (process.platform === "win32") {
+    console.log(
+      "  Windows video records the screen of a signed-in desktop session: keep it unlocked and Chrome on the main screen.",
+    );
+  }
 }
 
 // --- running -----------------------------------------------------------------------
@@ -433,12 +438,28 @@ function chromeInstalled(): boolean {
       has("google-chrome", ["--version"]) ||
       has("google-chrome-stable", ["--version"])
     );
-  return true; // Windows: let Playwright report it
+  if (process.platform === "win32") {
+    const roots = [
+      process.env.ProgramFiles,
+      process.env["ProgramFiles(x86)"],
+      process.env.LOCALAPPDATA,
+    ];
+    return roots.some(
+      (root) =>
+        root &&
+        existsSync(
+          path.join(root, "Google", "Chrome", "Application", "chrome.exe"),
+        ),
+    );
+  }
+  return true; // elsewhere: let Playwright report it
 }
 
 function installHint(tool: string): string {
   if (process.platform === "darwin") return `brew install ${tool}`;
   if (process.platform === "linux") return `apt install ${tool}`;
+  if (process.platform === "win32" && tool === "ffmpeg")
+    return "winget install Gyan.FFmpeg (then open a new terminal)";
   return `install ${tool}`;
 }
 
