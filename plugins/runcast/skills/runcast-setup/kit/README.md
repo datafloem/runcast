@@ -6,7 +6,7 @@ is screen-recorded while a virtual cursor works at a person's pace, then the
 kit renders an MP4 with a calm camera, a drawn cursor with click ripples, a
 framed 1920×1080 layout (or 1080×1920 for YouTube Shorts and Instagram
 Reels), and optionally captions, title cards, blurred fields and an
-ElevenLabs voice-over timed to the steps.
+ElevenLabs voice-over fitted to the steps when rendering.
 
 It is app-agnostic. An app adds a **recording folder** (default
 `tests/recording/`) with its own config, helpers, steps, scenarios and
@@ -105,6 +105,7 @@ tests/recording/
   steps/                reusable steps that check their result
   scenarios/            <name>.md (text), <name>.spec.ts (test), <name>.narration.json
   .env.local            settings and secrets (gitignored); .env.example lists them
+  .captures/            latest video recording per scenario (gitignored)
   .results/ videos/ narration/   output (gitignored)
 ```
 
@@ -134,7 +135,7 @@ The CLI takes the recording folder from `--dir`, else `REC_PROJECT`, else
 | Mode      | Command                                      | What                                                                                    |
 | --------- | -------------------------------------------- | --------------------------------------------------------------------------------------- |
 | Video     | `node tests/recording/.kit/cli.ts video`     | Records Chrome with ffmpeg, then renders `videos/<scenario>.mp4`. macOS, Linux, Windows |
-| Rehearsal | `node tests/recording/.kit/cli.ts rehearsal` | The video's pace and narration timing, headless and not recorded. Measures step lengths |
+| Rehearsal | `node tests/recording/.kit/cli.ts rehearsal` | The video's pace, headless and not recorded. Measures step lengths before the first video |
 | Test      | `node tests/recording/.kit/cli.ts test`      | Headless, Playwright's own clicks, no pauses. Any OS and CI; HTML report in `.report/`  |
 
 `REC_MODE` selects the mode (the CLI sets it). Scenarios, steps and
@@ -147,9 +148,13 @@ Add a scenario name to run one: `node tests/recording/.kit/cli.ts test login`.
 1. Chrome fills the screen's usable area (format `"vertical"`: its full
    height, as wide as makes the page 9:16); the page takes its size and the
    renderer fits it into the frame. ffmpeg records that area at screen
-   resolution, 30 fps (`.results/<test>/capture/screen.mkv`); the real cursor
+   resolution, 30 fps (`.captures/<scenario>/capture/screen.mkv`); the real cursor
    is not recorded. A virtual cursor moves inside the page, and every click,
    keystroke, hover and navigation is logged (`capture/events.json`).
+   Recording runs fast: viewer pauses and cursor rests are cut short, cursor
+   moves run three times faster and typing at 40 ms per character, each
+   logged with its natural length, which the renderer plays them at
+   (`REC_RECORD_PACE=natural` records at the viewer's pace).
 2. The renderer produces the MP4:
    - **Camera:** calm. Actions on the same page without a long pause form a
      scene, framed once and held. Clustered actions get a gentle zoom (at most
@@ -192,8 +197,17 @@ Add a scenario name to run one: `node tests/recording/.kit/cli.ts test login`.
      as the next one starts. Meant for steps that only move elsewhere, such as
      opening another area while it loads. The step lasts at least 1.2 s in
      video and rehearsal; tests ignore it.
-   - **Voice-over:** each audio segment is mixed in at the second its step starts.
+   - **Voice-over:** fitted to the steps here, not while recording (see
+     Voice-over).
 3. Re-render without recording again: `node tests/recording/.kit/cli.ts render <scenario>`.
+   - `--check`: no video. Each step's last frame, drawn as the video shows
+     it, goes to `.captures/<scenario>/check/NN-<id>.png` and into one contact
+     sheet, `check/sheet.png`, in seconds; the narration fit table is
+     printed. Look here first.
+   - `--draft`: half size, quick encode, to `videos/<name>.draft.mp4`.
+   - `--steps 3-5` (or `--steps 4`): only those recorded steps, with their
+     voice-over, no cards, to `videos/<name>.steps-3-5.mp4` (or the draft
+     file with `--draft`).
 
 While recording, keep other windows off Chrome and the mouse away from it.
 With several screens the window opens on the main one; set `REC_SCREEN` if
@@ -214,19 +228,31 @@ factory takes it) runs it fast and silently, as before `REC_FROM`, and cuts
 its time out; the video goes on with the next step after a short cross-fade.
 For long waits and repeated work. Tests run it as usual.
 
-Each step's time, message and narration go to `.results/<test>/steps.json`.
+Each step's time and message go to `steps.json`: in video mode next to the
+recording, `.captures/<scenario>/`, which Playwright leaves alone (it empties
+`.results/` on every run), so a recording stays until that scenario is
+recorded again; rehearsals write `.results/<test>/steps.json`.
 
 ## Voice-over
 
 A narration file next to the scenario, `scenarios/<name>.narration.json`, has
 one text segment per recorded step (example:
-`skills/runcast-plan/narration.example.json` in the runtime). While recording, a
-step does not end before its segment (plus a short gap) does, so every voice
-sits on its step. The AI writes the text to fit each step's word budget.
+`skills/runcast-plan/narration.example.json` in the runtime). It never changes
+the recording: the renderer fits it, so a changed text needs new audio and a
+new render, never a new recording. Each segment starts with its step; a voice
+longer than its step (plus `gapMs`) holds the step's last frame; a step longer
+than its voice loses time from its loading waits (each keeps at least 0.6 s,
+sped up at most 4×, beyond that its middle is cut with a cross-fade), and what
+is left is silence. Pauses, cursor moves and typing are never shortened.
+`scenario({ compressWaits: false })` keeps real waiting time
+(`REC_COMPRESS_WAITS=0/1` overrides it when rendering). The AI writes the text
+to fit each step's word budget.
 
-1. Steps' own lengths (writes to the backend, records nothing):
-   `REC_NARRATION=0 node tests/recording/.kit/cli.ts rehearsal <name>`
+1. Steps' own lengths (writes to the backend): record once,
+   `node tests/recording/.kit/cli.ts video <name>`, or, before any video,
+   `node tests/recording/.kit/cli.ts rehearsal <name>`.
 2. Fit report and word budgets: `node tests/recording/.kit/cli.ts narration plan <name>`
+   (from the newest video, else the newest rehearsal).
 3. Audio, one of:
    - **By command:** `ELEVENLABS_API_KEY` and `ELEVENLABS_VOICE_ID` in
      `.env.local`, then `node tests/recording/.kit/cli.ts narration generate <name>` (only changed
@@ -240,8 +266,12 @@ sits on its step. The AI writes the text to fit each step's word budget.
      `node tests/recording/.kit/cli.ts narration split <name>`.
 4. Each audio command prints the voice's measured speaking rate; put it in
    the file's `wordsPerMinute` if it differs, so later budgets fit.
-5. Check: `node tests/recording/.kit/cli.ts rehearsal <name>`; lengthen segments that warn.
-6. Record: `node tests/recording/.kit/cli.ts video <name>`.
+5. Check: `node tests/recording/.kit/cli.ts render <name> --check`. It
+   prints a fit table per step (natural length, voice, frame held, wait
+   shortened, silence left), also in `.captures/<name>/render-report.json`,
+   and draws each step's last frame into `check/sheet.png`. Lengthen
+   segments with long silence, shorten ones that hold a frame for long, then
+   `render <name>` for the video.
 
 Segments with step `intro` / `outro` are spoken over the title cards.
 
@@ -331,7 +361,9 @@ The full rules are in the `runcast-scenario` skill (`skills/runcast-scenario/SKI
 | `REC_PROJECT`                               | `tests/recording`  | The recording folder, when `--dir` is not given                |
 | `REC_KIT_HOME`                              | `~/.cache/runcast` | Where setup builds the kit's runtime                           |
 | `REC_FROM`, `REC_TO`                        | first, last        | Recording starts / ends at this step (number or id)            |
-| `REC_NARRATION`                             | `1`                | `0` ignores the narration file                                 |
+| `REC_NARRATION`                             | `1`                | `0` ignores the narration file (warnings and render)           |
+| `REC_RECORD_PACE`                           | `fast`             | Video: `fast` records pauses, rests and cursor moves short and the render restores their pace; `natural` records at the viewer's pace |
+| `REC_COMPRESS_WAITS`                        | scenario           | `1` / `0`: shorten loading waits to fit narration when rendering (scenario `compressWaits`, default on) |
 | `REC_CAPTIONS`                              | scenario           | `1` / `0` turns captions on / off when rendering               |
 | `REC_FORMAT`                                | scenario           | Overrides the scenario's video format (recording and rendering) |
 | `REC_END_HOLD_MS`                           | `2000`             | How long the last frame stays (video, rehearsal)               |

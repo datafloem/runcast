@@ -73,8 +73,15 @@ your computer, only when you or your assistant run the command named.
 - `.env.local`: the test account and the optional ElevenLabs key.
 - `.youtube/`: the Google OAuth client file you download and the refresh token
   that `youtube auth` writes.
-- `videos/`, `narration/`, `.results/`, `.report/`: recordings, renders,
-  audio and test reports.
+- `videos/`, `narration/`, `.results/`, `.report/`: renders, audio, test
+  output and test reports.
+- `.captures/<scenario>/`: the latest video recording of each scenario (the
+  screen recording, its event log and step times), kept until that scenario
+  is recorded again. Each render also writes `render-report.json` there (how
+  each step was fitted to its voice-over, and where it starts in the video),
+  and `render --check` one picture per step to `check/`. `render --draft`
+  and `--steps` write `videos/<name>.draft.mp4` and
+  `videos/<name>.steps-<a>-<b>.mp4`.
 
 **Records**
 

@@ -16,6 +16,21 @@ export interface Box {
 }
 
 export type PointerKind = "move" | "down" | "up";
+
+/**
+ * A logged stretch of the recording and how long it lasts in the video
+ * (scripts/video/timemap.ts reads these): a cursor move, the rest on a
+ * target before clicking, a viewer pause, typing, or an off-camera cut.
+ */
+export type SpanKind = "move" | "aim" | "hold" | "type" | "cut";
+export interface CaptureSpan {
+  from: number;
+  to: number;
+  kind: SpanKind;
+  outMs: number;
+  /** "cut" only: screen-recording time left out. */
+  skipMs?: number;
+}
 export type FocusKind =
   | "click"
   | "double-click"
@@ -57,10 +72,12 @@ export interface CaptureFile {
   /** Page changes (route changes included): the camera pulls back on these. */
   navigations: Array<number>;
   /**
-   * Time cut out of the video (off-camera steps): at `at` (ms, on the clock
-   * above, which already leaves them out) the screen recording skips `ms`.
+   * What each stretch of the recording was and how long it lasts in the
+   * video. Time no span covers is app time (loading, waiting), shown 1:1.
+   * Off-camera steps are "cut" spans: at `from` (on the clock above, which
+   * already leaves them out) the screen recording skips `skipMs`.
    */
-  cuts: Array<{ at: number; ms: number }>;
+  spans: Array<CaptureSpan>;
 }
 
 /**
@@ -84,7 +101,7 @@ export class VideoCapture {
 
   constructor(
     private readonly page: Page,
-    /** Output folder, e.g. .results/<test>/capture */
+    /** Output folder: .captures/<scenario>/capture of the recording folder. */
     readonly dir: string,
     private startedAt: number,
     scenario: string,
@@ -100,7 +117,7 @@ export class VideoCapture {
       pointer: [],
       focus: [],
       navigations: [],
-      cuts: [],
+      spans: [],
     };
   }
 
@@ -273,7 +290,18 @@ export class VideoCapture {
     const ms = Date.now() - this.pausedAt;
     this.pausedMs += ms;
     this.pausedAt = 0;
-    this.data.cuts.push({ at, ms });
+    this.data.spans.push({ from: at, to: at, kind: "cut", outMs: 0, skipMs: ms });
+  }
+
+  /** Logs a stretch of the recording (see CaptureFile.spans). */
+  span(kind: SpanKind, from: number, to: number, outMs: number): void {
+    if (this.pausedAt) return;
+    this.data.spans.push({
+      from: Math.round(from),
+      to: Math.round(to),
+      kind,
+      outMs: Math.round(outMs),
+    });
   }
 
   pointer(at: Point, kind: PointerKind): void {

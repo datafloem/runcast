@@ -2,8 +2,13 @@
 // with a camera that zooms to the action, a drawn cursor with click ripples,
 // and the scenario's voice-over clips placed at their steps.
 //
-//   node <recording folder>/.kit/cli.ts render [<scenario or capture folder>]
+//   node <recording folder>/.kit/cli.ts render [<scenario or capture folder>] [--check | --draft] [--steps <a>-<b>]
 //
+// --check draws each step's last frame into .captures/<scenario>/check/ (one
+// contact sheet: sheet.png) and prints the narration fit, without a video.
+// --draft renders half size and quickly to videos/<name>.draft.mp4.
+// --steps renders only steps a to b (1-based, recorded steps), to
+// videos/<name>.steps-a-b.mp4 unless --draft.
 // Without an argument it renders the newest capture. Runs with plain Node.
 import {
   createCanvas,
@@ -17,9 +22,9 @@ import { spawn } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
-  readdirSync,
   readFileSync,
-  statSync,
+  rmSync,
+  writeFileSync,
 } from "node:fs";
 import path from "node:path";
 import {
@@ -38,13 +43,27 @@ import {
   type Size,
 } from "./timeline.ts";
 import { resolveFormat, type VideoFormat } from "../../core/format.ts";
-import { loadNarration, segmentLength } from "../../core/narration.ts";
-import { kitCommand, loadProject } from "../../core/project.ts";
+import {
+  loadNarration,
+  segmentLength,
+  stepVoices,
+} from "../../core/narration.ts";
+import {
+  fitNarration,
+  naturalMap,
+  retimeCapture,
+  type Span,
+  type StepFit,
+} from "./timemap.ts";
+import {
+  findCaptures as findProjectCaptures,
+  kitCommand,
+  loadProject,
+} from "../../core/project.ts";
 
 const project = await loadProject();
 const RECORDING_DIR = project.dir;
 const KIT_CMD = kitCommand(RECORDING_DIR);
-const RESULTS_DIR = path.join(RECORDING_DIR, ".results");
 const VIDEOS_DIR = path.join(RECORDING_DIR, "videos");
 
 const FPS = Number(process.env.REC_VIDEO_FPS ?? 30);
@@ -52,6 +71,8 @@ const FONT = '"Helvetica Neue", Helvetica, Arial, sans-serif';
 const BRAND = hexToRgb(project.brand?.color ?? "#f97316");
 const FADE_IN_MS = 400;
 const CROSSFADE_MS = 500;
+/** Further ahead than this, the frame stream restarts at its target. */
+const RESEEK_FRAMES = 2 * FPS;
 /** Cross-fade where an off-camera step was cut out. */
 const CUT_FADE_MS = 300;
 /** The app's logo on the title cards (recording.config.ts > brand.logo). */
@@ -68,7 +89,9 @@ interface CaptureFile {
   pointer: Array<PointerSample>;
   focus: Array<Focus>;
   navigations?: Array<number>;
-  /** Off-camera time cut out of the screen recording (core/video-capture.ts). */
+  /** What each stretch of the recording was (core/video-capture.ts); older captures have none. */
+  spans?: Array<Span>;
+  /** Older captures: off-camera time cut out of the screen recording. */
   cuts?: Array<{ at: number; ms: number }>;
 }
 
@@ -81,30 +104,72 @@ interface Card {
 interface StepsFile {
   scenario: string;
   captions?: boolean;
+  /** Whether app waits may be shortened to fit narration (default true). */
+  compressWaits?: boolean;
   /** The scenario's video format (core/format.ts). */
   format?: string;
   intro?: Card;
   outro?: Card;
   steps: Array<{
+    id?: string;
     seconds: number;
     title: string;
     note?: string;
-    narration?: { audio: string | null };
     /** "cube": a cube turn over this step, from the frame before to the one after. */
     transition?: string;
   }>;
 }
 
 export function findCaptures(): Array<string> {
-  if (!existsSync(RESULTS_DIR)) return [];
-  return readdirSync(RESULTS_DIR)
-    .map((dir) => path.join(RESULTS_DIR, dir, "capture"))
-    .filter((dir) => existsSync(path.join(dir, "events.json")))
-    .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs);
+  return findProjectCaptures(RECORDING_DIR);
 }
 
-/** Renders one capture folder; returns the MP4 path. */
-export async function render(captureDir: string): Promise<string> {
+/** Where `drawAt` gets the recording's frames from (fills the source canvas). */
+interface FrameSource {
+  /** Puts the screen recording at file time `fileMs` into the source canvas. */
+  at(fileMs: number): Promise<void>;
+  close(): Promise<void>;
+}
+
+/** Everything a capture renders from, and how to draw any frame of it. */
+interface Prepared {
+  scenario: string;
+  /** The final video's path. */
+  out: string;
+  layout: Layout;
+  introMs: number;
+  sceneMs: number;
+  totalMs: number;
+  /** Recorded steps on the video clock (intro included). */
+  steps: Array<{ id?: string; title: string; startMs: number }>;
+  report: Array<StepFit>;
+  clips: Array<{ file: string; at: number }>;
+  canvas: Canvas;
+  ctx: SKRSContext2D;
+  /** Decodes the recording in order from file time `fromFileMs` (rendering). */
+  streamFrames(fromFileMs?: number): FrameSource;
+  /** Decodes single frames on demand (check). */
+  seekFrames(): FrameSource;
+  /**
+   * Draws the video at time t (ms, intro included) into `canvas`.
+   * `fadeCuts`: cross-fade after cuts (needs every frame drawn in order).
+   */
+  drawAt(
+    t: number,
+    frames: FrameSource,
+    options?: { fadeCuts?: boolean },
+  ): Promise<void>;
+  /**
+   * What the frame at t shows, as a key: two frames with the same key look
+   * the same. Null while something animates (fades, transitions, ripples).
+   */
+  frameKey(t: number): string | null;
+  /** Screen-file time shown at video time t (ms, intro included). */
+  toRec(t: number): number;
+}
+
+/** Reads a capture folder and builds its time map, camera and drawing. */
+async function prepare(captureDir: string): Promise<Prepared> {
   const capture = JSON.parse(
     readFileSync(path.join(captureDir, "events.json"), "utf-8"),
   ) as CaptureFile;
@@ -115,7 +180,8 @@ export async function render(captureDir: string): Promise<string> {
   const stepsData = existsSync(stepsFile)
     ? (JSON.parse(readFileSync(stepsFile, "utf-8")) as StepsFile)
     : null;
-  const steps = stepsData?.steps ?? [];
+  /** Steps on the capture clock (steps.json). */
+  const recSteps = stepsData?.steps ?? [];
   // The scenario decides (captions: true); REC_CAPTIONS=1/0 overrides it here.
   const showCaptions =
     process.env.REC_CAPTIONS !== undefined
@@ -148,18 +214,48 @@ export async function render(captureDir: string): Promise<string> {
         (cardAudio.outro?.ms ?? 0) + 800,
       )
     : 0;
-  const sceneMs = capture.durationMs;
 
-  const clips = steps.flatMap((step) =>
-    step.narration?.audio
-      ? [
-          {
-            file: path.join(RECORDING_DIR, step.narration.audio),
-            at: introMs + step.seconds * 1000,
-          },
-        ]
-      : [],
+  // The video's clock: the recording at a person's pace (spans), each step
+  // then fitted to its narration, read now so new audio needs no new
+  // recording. Everything logged moves onto this clock.
+  const script =
+    process.env.REC_NARRATION === "0"
+      ? null
+      : loadNarration(specFor(capture.scenario));
+  const voices = script ? stepVoices(script) : new Map<string, never>();
+  const compressWaits =
+    process.env.REC_COMPRESS_WAITS !== undefined
+      ? process.env.REC_COMPRESS_WAITS !== "0"
+      : (stepsData?.compressWaits ?? true);
+  const { map, report } = fitNarration(
+    naturalMap(capture.spans ?? [], capture.durationMs, capture.cuts),
+    recSteps.map((step) => ({ id: step.id, startMs: step.seconds * 1000 })),
+    new Map([...voices].map(([id, voice]) => [id, voice.ms])),
+    { compressWaits },
   );
+  const events = retimeCapture(map, {
+    pointer: capture.pointer,
+    focus: capture.focus,
+    navigations: capture.navigations ?? [],
+  });
+  const steps = recSteps.map((step) => ({
+    ...step,
+    seconds: map.toOut(step.seconds * 1000) / 1000,
+  }));
+  const sceneMs = map.outMs;
+  writeReport(
+    captureDir,
+    recSteps,
+    report,
+    steps.map((step) => introMs + step.seconds * 1000),
+  );
+
+  const clips = steps.flatMap((step) => {
+    const audio = step.id ? voices.get(step.id)?.audio : null;
+    return audio
+      ? [{ file: path.join(RECORDING_DIR, audio), at: introMs + step.seconds * 1000 }]
+      : [];
+  });
   if (stepsData?.intro && cardAudio.intro)
     clips.push({ file: cardAudio.intro.file, at: 300 });
   if (stepsData?.outro && cardAudio.outro) {
@@ -177,44 +273,84 @@ export async function render(captureDir: string): Promise<string> {
   const background = drawBackground(layout);
   const logo = await loadLogo();
   const track = buildCameraTrack(
-    capture.focus,
+    events.focus,
     viewport,
     undefined,
-    capture.navigations ?? [],
+    events.navigations,
     view,
-    (capture.cuts ?? []).map((cut) => cut.at),
+    map.cutsOut,
   );
 
-  // The recording, decoded by ffmpeg into raw frames at the output rate,
-  // aligned so frame i shows the page at i / FPS seconds after the start.
-  const { width: videoW, height: videoH } = capture.video;
-  const cuts = capture.cuts ?? [];
-  const frames = readFrames(
-    videoFile,
-    capture.video.startMs,
-    videoW,
-    videoH,
-    cuts,
-  );
   // The frame shown just before a cut, faded out over the first frames after it.
   const beforeCut = createCanvas(OUT_WIDTH, OUT_HEIGHT);
   let cutFadeFrom = -Infinity;
+  const { width: videoW, height: videoH } = capture.video;
   const source = createCanvas(videoW, videoH);
   const sourceCtx = source.getContext("2d");
   let hasFrame = false;
-  /** The first frame was read early, for the intro's cross-fade. */
-  let firstFrameReady = false;
-  const nextFrame = async () => {
-    const next = await frames.next();
-    if (next.done) return;
+  const putFrame = (frame: Buffer) => {
     const pixels = new Uint8ClampedArray(
-      next.value.buffer,
-      next.value.byteOffset,
-      next.value.byteLength,
+      frame.buffer,
+      frame.byteOffset,
+      frame.byteLength,
     );
     sourceCtx.putImageData(new ImageData(pixels, videoW, videoH), 0, 0);
     hasFrame = true;
   };
+
+  // The recording, decoded by ffmpeg into raw frames at the output rate,
+  // aligned so frame i shows the screen file at i / FPS seconds after the
+  // recording's start (off-camera time included: the time map skips it).
+  const streamFrames = (fromFileMs = 0): FrameSource => {
+    const open = (index: number) =>
+      readFrames(
+        videoFile,
+        capture.video.startMs,
+        videoW,
+        videoH,
+        (index * 1000) / FPS,
+      );
+    const first = Math.max(0, Math.floor((fromFileMs * FPS) / 1000));
+    let frames = open(first);
+    /** Index of the decoded frame in `source` (first - 1: none yet). */
+    let frameIndex = first - 1;
+    return {
+      // Forward only: a held or stretched frame is reused, skipped frames are
+      // read past, and a long jump (an off-camera step, a cut wait) starts
+      // the decoder again at the target instead of decoding what it skips.
+      async at(fileMs) {
+        const target = Math.max(0, Math.floor((fileMs * FPS) / 1000 + 1e-6));
+        if (target - frameIndex > RESEEK_FRAMES) {
+          await frames.return(undefined);
+          frames = open(target);
+          frameIndex = target - 1;
+        }
+        let latest: Buffer | undefined;
+        while (frameIndex < target) {
+          const next = await frames.next();
+          if (next.done) break;
+          latest = next.value;
+          frameIndex++;
+        }
+        if (latest) putFrame(latest);
+      },
+      async close() {
+        await frames.return(undefined); // stops the decoder
+      },
+    };
+  };
+  const seekFrames = (): FrameSource => ({
+    async at(fileMs) {
+      const frame = await readFrameAt(
+        videoFile,
+        Math.max(0, fileMs - capture.video.startMs),
+        videoW,
+        videoH,
+      );
+      if (frame) putFrame(frame);
+    },
+    async close() {},
+  });
 
   /** The recording at time t (ms since it started), drawn over the background. */
   /** The recording at time t through `camera`, drawn over the background. */
@@ -258,12 +394,12 @@ export async function render(captureDir: string): Promise<string> {
     }
     // Cursor size follows the zoom a little, so it stays readable.
     const cursorScale = 1.5 * (1 + (camera.zoom - 1) * 0.45);
-    for (const click of clicksAtTime(capture.pointer, t)) {
+    for (const click of clicksAtTime(events.pointer, t)) {
       drawRipple(ctx, toOut(click), click.age, cursorScale);
     }
-    const cursor = cursorAtTime(capture.pointer, t);
+    const cursor = cursorAtTime(events.pointer, t);
     if (cursor) {
-      const pressed = capture.pointer.some(
+      const pressed = events.pointer.some(
         (s) => s.kind === "down" && t >= s.t && t - s.t < 140,
       );
       drawCursor(ctx, toOut(cursor), cursorScale * (pressed ? 0.85 : 1));
@@ -357,120 +493,229 @@ export async function render(captureDir: string): Promise<string> {
   };
 
   const totalMs = introMs + sceneMs + outroMs;
-  const totalFrames = Math.ceil((totalMs / 1000) * FPS);
-  const ffmpeg = startEncoder(out, clips, layout);
-  const emit = async (i: number, t: number) => {
-    const pixels = ctx.getImageData(0, 0, OUT_WIDTH, OUT_HEIGHT).data;
-    await write(
-      ffmpeg.stdin,
-      Buffer.from(pixels.buffer, pixels.byteOffset, pixels.byteLength),
-    );
-    if (i % FPS === 0) {
-      process.stdout.write(
-        `\r${capture.scenario}: ${(t / 1000).toFixed(0)} / ${(totalMs / 1000).toFixed(0)} s`,
-      );
+  const frameMs = 1000 / FPS;
+  const box = { x: contentX, y: contentY, w: contentW, h: contentH };
+  // A cube step's two faces, made once when the turn starts.
+  const cubeA = createCanvas(contentW, contentH);
+  const cubeB = createCanvas(contentW, contentH);
+  let cubeFor: { from: number; to: number } | null = null;
+  const drawAt = async (
+    t: number,
+    frames: FrameSource,
+    { fadeCuts = true }: { fadeCuts?: boolean } = {},
+  ) => {
+    const sceneT = t - introMs;
+
+    // Steps marked "cube": a turn from the page as the step starts to the
+    // page as the next one starts, instead of what the page did meanwhile.
+    const turn =
+      t >= introMs
+        ? transitions.find((tr) => sceneT >= tr.from && sceneT < tr.to)
+        : undefined;
+    if (turn) {
+      if (cubeFor !== turn) {
+        await frames.at(map.toRec(turn.from));
+        drawScene(turn.from);
+        grabContent(cubeA);
+        await frames.at(map.toRec(turn.to));
+        drawScene(turn.to);
+        grabContent(cubeB);
+        cubeFor = turn;
+      }
+      ctx.drawImage(background, 0, 0);
+      const p = (sceneT - turn.from) / Math.max(1, turn.to - turn.from);
+      drawCubeTurn(ctx, cubeA, cubeB, p, box);
+      return;
+    }
+
+    if (t < introMs && stepsData?.intro) {
+      // Intro: the card fades in; in its last half second the recording's
+      // first frame shows through it.
+      const crossFrom = introMs - CROSSFADE_MS;
+      if (t >= crossFrom) {
+        await frames.at(map.toRec(0));
+        drawScene(0);
+        drawCard(
+          ctx,
+          background,
+          logo,
+          stepsData.intro,
+          1 - (t - crossFrom) / CROSSFADE_MS,
+          layout,
+        );
+      } else {
+        ctx.drawImage(background, 0, 0);
+        drawCard(
+          ctx,
+          background,
+          logo,
+          stepsData.intro,
+          Math.min(1, t / FADE_IN_MS),
+          layout,
+        );
+      }
+    } else if (t < introMs + sceneMs) {
+      const prevT = sceneT - frameMs;
+      if (!fadeCuts) cutFadeFrom = -Infinity;
+      else if (map.cutsOut.some((at) => at > prevT && at <= sceneT)) {
+        // The canvas still holds the last frame before the cut.
+        beforeCut.getContext("2d").drawImage(canvas, 0, 0);
+        cutFadeFrom = sceneT;
+      }
+      await frames.at(map.toRec(sceneT));
+      drawScene(sceneT);
+      const fade = (sceneT - cutFadeFrom) / CUT_FADE_MS;
+      if (fade >= 0 && fade < 1) {
+        ctx.save();
+        ctx.globalAlpha = 1 - fade;
+        ctx.drawImage(beforeCut, 0, 0);
+        ctx.restore();
+      }
+    } else {
+      // Outro: the card comes in over the last frame of the recording.
+      await frames.at(map.toRec(sceneMs));
+      drawScene(sceneMs);
+      if (stepsData?.outro) {
+        const shown = t - introMs - sceneMs;
+        drawCard(
+          ctx,
+          background,
+          logo,
+          stepsData.outro,
+          Math.min(1, shown / CROSSFADE_MS),
+          layout,
+        );
+      }
     }
   };
-  try {
-    for (let i = 0; i < totalFrames; i++) {
-      const t = (i * 1000) / FPS;
 
-      const turn = transitions.find(
-        (tr) => t - introMs >= tr.from && t - introMs < tr.to,
+  // Exact enough that a moving camera or cursor always changes the key;
+  // held frames repeat the very same values.
+  const exact = (n: number) => n.toFixed(3);
+  const frameKey = (t: number): string | null => {
+    const sceneT = t - introMs;
+    if (t < introMs) {
+      // The intro card holds still between its fade-in and the cross-fade.
+      return stepsData?.intro &&
+        t >= FADE_IN_MS &&
+        t < introMs - CROSSFADE_MS
+        ? "intro"
+        : null;
+    }
+    if (sceneT >= sceneMs) {
+      if (!stepsData?.outro) return `end`;
+      return sceneT - sceneMs >= CROSSFADE_MS ? "outro" : null;
+    }
+    if (transitions.some((tr) => sceneT >= tr.from && sceneT < tr.to))
+      return null;
+    if (transitionAtTime(track, sceneT)) return null;
+    if (map.cutsOut.some((at) => sceneT >= at && sceneT < at + CUT_FADE_MS + frameMs))
+      return null;
+    if (clicksAtTime(events.pointer, sceneT).length > 0) return null;
+    const source = Math.floor((map.toRec(sceneT) * FPS) / 1000 + 1e-6);
+    const camera = cameraAtTime(track, sceneT, viewport, view);
+    const cursor = cursorAtTime(events.pointer, sceneT);
+    const pressed = events.pointer.some(
+      (p) => p.kind === "down" && sceneT >= p.t && sceneT - p.t < 140,
+    );
+    const caption = showCaptions ? captionAtTime(steps, sceneT, sceneMs) : null;
+    return [
+      source,
+      exact(camera.zoom),
+      exact(camera.cx),
+      exact(camera.cy),
+      cursor ? `${exact(cursor.x)},${exact(cursor.y)}` : "-",
+      pressed,
+      caption ? `${caption.text}@${exact(caption.alpha)}` : "-",
+    ].join("|");
+  };
+
+  return {
+    scenario: capture.scenario,
+    out,
+    layout,
+    introMs,
+    sceneMs,
+    totalMs,
+    steps: steps.map((step) => ({
+      id: step.id,
+      title: step.title,
+      startMs: introMs + step.seconds * 1000,
+    })),
+    report,
+    clips,
+    canvas,
+    ctx,
+    streamFrames,
+    seekFrames,
+    drawAt,
+    frameKey,
+    toRec: (t: number) => map.toRec(t - introMs),
+  };
+}
+
+/**
+ * Renders one capture folder; returns the MP4 path. `draft`: half size,
+ * quick encode, to videos/<name>.draft.mp4. `steps` [a, b] (1-based, recorded
+ * steps): only from step a's start to step b's end, no cards, to
+ * videos/<name>.steps-a-b.mp4 (or the draft file).
+ */
+export async function render(
+  captureDir: string,
+  options: { draft?: boolean; steps?: [number, number] } = {},
+): Promise<string> {
+  const job = await prepare(captureDir);
+  const { width, height } = job.layout;
+  let fromMs = 0;
+  let toMs = job.totalMs;
+  let out = job.out;
+  if (options.steps) {
+    const [a, b] = options.steps;
+    if (!(a >= 1 && b >= a && b <= job.steps.length)) {
+      throw new Error(
+        `--steps ${a}-${b}: the recording has steps 1-${job.steps.length}.`,
       );
-      if (turn && t >= introMs) {
-        // Face A: the page as the step starts; face B: as the next one starts,
-        // read ahead through the frames the turn replaces.
-        if (firstFrameReady) firstFrameReady = false;
-        else await nextFrame();
-        drawScene(t - introMs);
-        grabContent(faceA);
-        const end = Math.min(
-          totalFrames,
-          Math.ceil(((introMs + turn.to) / 1000) * FPS),
+    }
+    fromMs = job.steps[a - 1]!.startMs;
+    toMs = job.steps[b]?.startMs ?? job.introMs + job.sceneMs;
+    out = out.replace(/\.mp4$/, `.steps-${a}-${b}.mp4`);
+  }
+  if (options.draft) out = out.replace(/(\.steps-\d+-\d+)?\.mp4$/, ".draft.mp4");
+  const firstFrame = Math.ceil((fromMs / 1000) * FPS);
+  const endFrame = Math.ceil((toMs / 1000) * FPS);
+  const startMs = (firstFrame * 1000) / FPS;
+  const clips = job.clips
+    .map((clip) => ({ ...clip, at: clip.at - startMs }))
+    .filter((clip) => clip.at < toMs - startMs);
+  const frames = job.streamFrames(job.toRec(startMs));
+  const ffmpeg = startEncoder(out, clips, job.layout, {
+    draft: options.draft,
+    durationMs: options.steps ? toMs - startMs : undefined,
+  });
+  try {
+    // A frame that looks like the previous one (held, stretched, a still
+    // screen) is sent again without drawing it.
+    let lastKey: string | null = null;
+    let lastFrame: Buffer | null = null;
+    for (let i = firstFrame; i < endFrame; i++) {
+      const t = (i * 1000) / FPS;
+      const key = job.frameKey(t);
+      if (key === null || key !== lastKey || !lastFrame) {
+        await job.drawAt(t, frames);
+        const pixels = job.ctx.getImageData(0, 0, width, height).data;
+        lastFrame = Buffer.from(
+          pixels.buffer,
+          pixels.byteOffset,
+          pixels.byteLength,
         );
-        for (let j = i + 1; j < end; j++) await nextFrame();
-        drawScene(turn.to);
-        grabContent(faceB);
-        for (let j = i; j < end; j++) {
-          ctx.drawImage(background, 0, 0);
-          drawCubeTurn(ctx, faceA, faceB, (j - i) / Math.max(1, end - i), {
-            x: contentX,
-            y: contentY,
-            w: contentW,
-            h: contentH,
-          });
-          await emit(j, (j * 1000) / FPS);
-        }
-        turn.to = -1; // done
-        i = end - 1;
-        continue;
       }
-
-      if (t < introMs && stepsData?.intro) {
-        // Intro: the card fades in; in its last half second the recording's
-        // first frame shows through it.
-        const crossFrom = introMs - CROSSFADE_MS;
-        if (t >= crossFrom) {
-          if (!firstFrameReady) {
-            await nextFrame();
-            firstFrameReady = true;
-          }
-          drawScene(0);
-          drawCard(
-            ctx,
-            background,
-            logo,
-            stepsData.intro,
-            1 - (t - crossFrom) / CROSSFADE_MS,
-            layout,
-          );
-        } else {
-          ctx.drawImage(background, 0, 0);
-          drawCard(
-            ctx,
-            background,
-            logo,
-            stepsData.intro,
-            Math.min(1, t / FADE_IN_MS),
-            layout,
-          );
-        }
-      } else if (t < introMs + sceneMs) {
-        const sceneT = t - introMs;
-        const prevT = sceneT - 1000 / FPS;
-        if (cuts.some((cut) => cut.at > prevT && cut.at <= sceneT && i > 0)) {
-          // The canvas still holds the last frame before the cut.
-          beforeCut.getContext("2d").drawImage(canvas, 0, 0);
-          cutFadeFrom = sceneT;
-        }
-        if (firstFrameReady) firstFrameReady = false;
-        else await nextFrame();
-        drawScene(sceneT);
-        const fade = (sceneT - cutFadeFrom) / CUT_FADE_MS;
-        if (fade >= 0 && fade < 1) {
-          ctx.save();
-          ctx.globalAlpha = 1 - fade;
-          ctx.drawImage(beforeCut, 0, 0);
-          ctx.restore();
-        }
-      } else {
-        // Outro: the card comes in over the last frame of the recording.
-        drawScene(sceneMs);
-        if (stepsData?.outro) {
-          const shown = t - introMs - sceneMs;
-          drawCard(
-            ctx,
-            background,
-            logo,
-            stepsData.outro,
-            Math.min(1, shown / CROSSFADE_MS),
-            layout,
-          );
-        }
+      lastKey = key;
+      await write(ffmpeg.stdin, lastFrame);
+      if (i % FPS === 0) {
+        process.stdout.write(
+          `\r${job.scenario}: ${(t / 1000).toFixed(0)} / ${(job.totalMs / 1000).toFixed(0)} s`,
+        );
       }
-
-      await emit(i, t);
     }
   } catch (error) {
     // Close the encoder's input: it ends the video at the frames so far and
@@ -479,7 +724,7 @@ export async function render(captureDir: string): Promise<string> {
     ffmpeg.stdin.end();
     throw error;
   } finally {
-    await frames.return(undefined); // stops the decoder
+    await frames.close();
   }
   ffmpeg.stdin.end();
   await new Promise<void>((resolve, reject) => {
@@ -491,14 +736,111 @@ export async function render(captureDir: string): Promise<string> {
   return out;
 }
 
+/** Width of each step's check frame. */
+const CHECK_WIDTH = 960;
+/** Contact sheet: columns and tile width. */
+const SHEET_COLUMNS = 3;
+const SHEET_TILE = 640;
+
+/**
+ * A quick look without a video: each recorded step's last frame (just
+ * before the next step starts), drawn exactly as the video shows it, saved
+ * to .captures/<scenario>/check/NN-<id>.png and joined into check/sheet.png.
+ * Prints the narration fit. Returns the sheet's path.
+ */
+export async function check(captureDir: string): Promise<string> {
+  const job = await prepare(captureDir);
+  const dir = path.join(captureDir, "..", "check");
+  rmSync(dir, { recursive: true, force: true });
+  mkdirSync(dir, { recursive: true });
+  const { width, height } = job.layout;
+  const frames = job.seekFrames();
+  const tiles: Array<{ label: string; image: Canvas }> = [];
+  const lastFrame = (ms: number) =>
+    Math.max(0, (Math.ceil((ms / 1000) * FPS) - 1) * (1000 / FPS));
+  for (const [i, step] of job.steps.entries()) {
+    const end = job.steps[i + 1]?.startMs ?? job.introMs + job.sceneMs;
+    await job.drawAt(lastFrame(end), frames, { fadeCuts: false });
+    const scaled = createCanvas(CHECK_WIDTH, Math.round((height * CHECK_WIDTH) / width));
+    scaled.getContext("2d").drawImage(job.canvas, 0, 0, scaled.width, scaled.height);
+    const label = `${String(i + 1).padStart(2, "0")} ${step.id ?? step.title}`;
+    const name = `${label.replace(/[^\w-]+/g, "-")}.png`;
+    writeFileSync(path.join(dir, name), await scaled.encode("png"));
+    tiles.push({ label, image: scaled });
+  }
+  await frames.close();
+
+  const tileH = Math.round((height * SHEET_TILE) / width);
+  const columns = Math.min(SHEET_COLUMNS, Math.max(1, tiles.length));
+  const rows = Math.max(1, Math.ceil(tiles.length / columns));
+  const sheet = createCanvas(columns * SHEET_TILE, rows * tileH);
+  const sheetCtx = sheet.getContext("2d");
+  sheetCtx.fillStyle = "#000000";
+  sheetCtx.fillRect(0, 0, sheet.width, sheet.height);
+  tiles.forEach(({ label, image }, i) => {
+    const x = (i % columns) * SHEET_TILE;
+    const y = Math.floor(i / columns) * tileH;
+    sheetCtx.drawImage(image, x, y, SHEET_TILE, tileH);
+    sheetCtx.fillStyle = "rgba(0, 0, 0, 0.7)";
+    sheetCtx.fillRect(x, y, SHEET_TILE, 30);
+    sheetCtx.fillStyle = "#ffffff";
+    sheetCtx.font = `bold 18px ${FONT}`;
+    sheetCtx.textBaseline = "middle";
+    sheetCtx.fillText(label, x + 10, y + 15);
+  });
+  const file = path.join(dir, "sheet.png");
+  writeFileSync(file, await sheet.encode("png"));
+  return file;
+}
+
+/** scenarios/<name>.spec.ts of a capture's scenario (its narration file sits next to it). */
+function specFor(scenario: string): string {
+  return path.join(RECORDING_DIR, "scenarios", `${scenario}.spec.ts`);
+}
+
+/**
+ * How each step was fitted to its narration, and where it starts in the
+ * video (chapters): printed when the scenario has narration, and written to
+ * render-report.json next to steps.json.
+ */
+function writeReport(
+  captureDir: string,
+  steps: Array<{ id?: string; title: string }>,
+  report: Array<StepFit>,
+  /** Where each step starts in the video (ms, opening card included). */
+  videoStartMs: Array<number>,
+): void {
+  const rows = report.map((fit) => ({
+    step: steps[fit.index]?.title ?? String(fit.index + 1),
+    videoStartMs: Math.round(videoStartMs[fit.index] ?? 0),
+    ...fit,
+  }));
+  writeFileSync(
+    path.join(captureDir, "..", "render-report.json"),
+    `${JSON.stringify(rows, null, 2)}\n`,
+  );
+  if (!report.some((fit) => fit.voiceMs !== null)) return;
+  const s = (ms: number | null) =>
+    ms === null ? "—" : ms === 0 ? "" : `${(ms / 1000).toFixed(1)} s`;
+  console.log("Narration fit (render-report.json):");
+  console.table(
+    rows.map((row) => ({
+      Step: row.step,
+      Natural: s(row.naturalMs),
+      Voice: s(row.voiceMs),
+      Freeze: s(row.freezeMs),
+      Shortened: s(row.shortenedMs),
+      Silence: s(row.silenceMs),
+    })),
+  );
+}
+
 /** Audio for the title cards: narration segments "intro" / "outro" with audio. */
 function narrationForCards(scenario: string): {
   intro?: { file: string; ms: number };
   outro?: { file: string; ms: number };
 } {
-  const script = loadNarration(
-    path.join(RECORDING_DIR, "scenarios", `${scenario}.spec.ts`),
-  );
+  const script = loadNarration(specFor(scenario));
   if (!script) return {};
   const find = (id: string) => {
     const segment = script.segments.find((s) => s.step === id);
@@ -689,47 +1031,31 @@ function fitBox(
 }
 
 /**
- * Raw RGBA frames of the recording at FPS, starting at recording time 0. The
+ * Raw RGBA frames of the recording at FPS, starting at recording time
+ * `fromMs` (default 0). The
  * screen recording usually starts a little before that (startMs < 0): skip
  * ahead. If it started later, repeat its first frame until then. Off-camera
- * time (`cuts`) is dropped, so the frames follow the recording's clock.
+ * time stays in: the time map (timemap.ts) decides which frame shows when.
  */
 async function* readFrames(
   file: string,
   startMs: number,
   width: number,
   height: number,
-  cuts: Array<{ at: number; ms: number }> = [],
+  /** Recording time of the first frame wanted (a --steps range). */
+  fromMs = 0,
 ): AsyncGenerator<Buffer> {
+  // Recording time r is at r - startMs in the file.
+  const offset = fromMs - startMs;
   const args = ["-v", "error"];
-  if (startMs < 0) args.push("-ss", (-startMs / 1000).toFixed(3));
+  if (offset > 0) args.push("-ss", (offset / 1000).toFixed(3));
   args.push("-i", file);
-  const filters: Array<string> = [];
-  if (cuts.length > 0) {
-    // In the decoder's time (0 at recording time 0 after the seek above, or
-    // at the video's own start when it began late), each cut sits after the
-    // ones before it.
-    const offset = startMs < 0 ? 0 : -startMs / 1000;
-    let before = 0;
-    const spans = cuts.map((cut) => {
-      const from = (cut.at + before) / 1000 + offset;
-      before += cut.ms;
-      return { from, to: from + cut.ms / 1000, ms: cut.ms };
-    });
-    const inCut = spans
-      .map((c) => `between(t,${c.from.toFixed(3)},${c.to.toFixed(3)})`)
-      .join("+");
-    const shift = spans
-      .map((c) => `gte(T,${c.to.toFixed(3)})*${(c.ms / 1000).toFixed(3)}`)
-      .join("+");
-    filters.push(`select='not(${inCut})'`, `setpts='PTS-(${shift})/TB'`);
-  }
-  if (startMs > 0) {
-    filters.push(
-      `tpad=start_duration=${(startMs / 1000).toFixed(3)}:start_mode=clone`,
+  if (offset < 0) {
+    args.push(
+      "-vf",
+      `tpad=start_duration=${(-offset / 1000).toFixed(3)}:start_mode=clone`,
     );
   }
-  if (filters.length > 0) args.push("-vf", filters.join(","));
   args.push("-r", String(FPS), "-f", "rawvideo", "-pix_fmt", "rgba", "pipe:1");
   const decoder = spawn("ffmpeg", args, {
     stdio: ["ignore", "pipe", "ignore"],
@@ -760,11 +1086,32 @@ async function* readFrames(
   }
 }
 
+/** One raw RGBA frame of the screen recording at `ms` from its start (null past the end). */
+function readFrameAt(
+  file: string,
+  ms: number,
+  width: number,
+  height: number,
+): Promise<Buffer | null> {
+  const args = ["-v", "error", "-ss", (ms / 1000).toFixed(3), "-i", file];
+  args.push("-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgba", "pipe:1");
+  const decoder = spawn("ffmpeg", args, { stdio: ["ignore", "pipe", "ignore"] });
+  const pieces: Array<Buffer> = [];
+  decoder.stdout.on("data", (chunk: Buffer) => pieces.push(chunk));
+  return new Promise((resolve) => {
+    decoder.on("close", () => {
+      const frame = Buffer.concat(pieces);
+      resolve(frame.length >= width * height * 4 ? frame : null);
+    });
+  });
+}
+
 /** ffmpeg reading raw RGBA frames from stdin, mixing in the voice-over clips. */
 function startEncoder(
   out: string,
   clips: Array<{ file: string; at: number }>,
   size: { width: number; height: number },
+  options: { draft?: boolean; durationMs?: number } = {},
 ) {
   const args = [
     "-y",
@@ -783,12 +1130,13 @@ function startEncoder(
   ];
   const existing = clips.filter((clip) => existsSync(clip.file));
   for (const clip of existing) args.push("-i", clip.file);
+  // A clip that started before the video (a --steps range) is trimmed instead.
+  const place = (clip: { at: number }, i: number) =>
+    clip.at >= 0
+      ? `[${i + 1}:a]adelay=${Math.round(clip.at)}:all=1[a${i}]`
+      : `[${i + 1}:a]atrim=start=${(-clip.at / 1000).toFixed(3)},asetpts=PTS-STARTPTS[a${i}]`;
   if (existing.length > 0) {
-    const delays = existing
-      .map(
-        (clip, i) => `[${i + 1}:a]adelay=${Math.round(clip.at)}:all=1[a${i}]`,
-      )
-      .join(";");
+    const delays = existing.map(place).join(";");
     const mix =
       existing.length === 1
         ? "[a0]anull[aout]"
@@ -807,15 +1155,19 @@ function startEncoder(
     "-c:v",
     "libx264",
     "-preset",
-    "medium",
+    options.draft ? "ultrafast" : "medium",
     "-crf",
-    "18",
+    options.draft ? "30" : "18",
     "-pix_fmt",
     "yuv420p",
     "-movflags",
     "+faststart",
-    out,
   );
+  // Draft: half the size (drawing stays full size), quick to encode.
+  if (options.draft) args.push("-vf", "scale=iw/2:-2");
+  if (options.durationMs !== undefined)
+    args.push("-t", (options.durationMs / 1000).toFixed(3));
+  args.push(out);
   return spawn("ffmpeg", args, { stdio: ["pipe", "inherit", "inherit"] });
 }
 
@@ -1069,11 +1421,27 @@ function hexToRgb(hex: string): { r: number; g: number; b: number } {
 // --- CLI ---------------------------------------------------------------------
 
 if (import.meta.main) {
-  const [command, target] = process.argv.slice(2);
-  if (command !== "render") {
-    console.error(`Usage: ${KIT_CMD} render [<scenario or capture folder>]`);
+  const [command, ...rest] = process.argv.slice(2);
+  const flags = new Set<string>();
+  let target: string | undefined;
+  let stepsArg: string | undefined;
+  for (let i = 0; i < rest.length; i++) {
+    const arg = rest[i]!;
+    if (arg === "--steps") stepsArg = rest[++i];
+    else if (arg.startsWith("--steps=")) stepsArg = arg.slice("--steps=".length);
+    else if (arg.startsWith("--")) flags.add(arg);
+    else target ??= arg;
+  }
+  const range = stepsArg?.match(/^(\d+)(?:-(\d+))?$/);
+  if (command !== "render" || (stepsArg !== undefined && !range)) {
+    console.error(
+      `Usage: ${KIT_CMD} render [<scenario or capture folder>] [--check | --draft] [--steps <a>-<b>]`,
+    );
     process.exit(1);
   }
+  const steps: [number, number] | undefined = range
+    ? [Number(range[1]), Number(range[2] ?? range[1])]
+    : undefined;
   const captures = findCaptures();
   const dir = !target
     ? captures[0]
@@ -1095,8 +1463,13 @@ if (import.meta.main) {
   }
   // Errors set the exit code instead of escaping: see the end of run.ts.
   try {
-    const out = await render(dir);
-    console.log(`Video: ${path.relative(process.cwd(), out)}`);
+    if (flags.has("--check")) {
+      const sheet = await check(dir);
+      console.log(`Check: ${path.relative(process.cwd(), sheet)}`);
+    } else {
+      const out = await render(dir, { draft: flags.has("--draft"), steps });
+      console.log(`Video: ${path.relative(process.cwd(), out)}`);
+    }
   } catch (error) {
     console.error(error);
     process.exitCode = 1;

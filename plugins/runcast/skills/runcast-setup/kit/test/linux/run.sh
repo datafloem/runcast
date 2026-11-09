@@ -48,8 +48,12 @@ step "Check the video"
 VIDEO=tests/recording/videos/selftest.mp4
 ffprobe -v error -show_entries stream=codec_type,width,height,duration -of compact "$VIDEO"
 ffprobe -v error -select_streams a -show_entries stream=codec_type -of csv=p=0 "$VIDEO" | grep -q audio
+# The recording logged its spans and the render reported the narration fit.
+node -e 'const e=require(process.argv[1]); if(!e.spans?.length) throw new Error("no spans in events.json")' "$PWD/tests/recording/.captures/selftest/capture/events.json"
+test -s tests/recording/.captures/selftest/render-report.json
 for t in 1 4 8; do ffmpeg -v error -y -ss "$t" -i "$VIDEO" -frames:v 1 "$OUT/frame-$t.png"; done
 
 cp -r tests/recording/videos "$OUT/"
 cp -r tests/recording/.results "$OUT/results"
+cp -r tests/recording/.captures "$OUT/captures"
 echo; echo "Linux self-test passed. Output in $OUT"

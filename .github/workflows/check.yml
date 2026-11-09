@@ -47,6 +47,9 @@ jobs:
       - name: Typecheck the kit
         run: node "$KIT/node_modules/typescript/bin/tsc" -p "$KIT" --noEmit
 
+      - name: Unit tests of the kit
+        run: node --test "$KIT/test/*.test.ts"
+
       - name: Check manifests, marketplaces and skills
         run: node .github/scripts/check-plugin.mjs
 

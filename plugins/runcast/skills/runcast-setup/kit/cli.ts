@@ -230,12 +230,20 @@ function link(runtime: string): void {
   const lines = existsSync(ignore)
     ? readFileSync(ignore, "utf-8").split("\n")
     : [];
-  if (
-    !lines.some((line) => line.trim() === ".kit" || line.trim() === ".kit/")
-  ) {
+  // Projects set up before a line existed get it here (the template's
+  // .gitignore is never overwritten): the runtime link, and the video
+  // recordings, which are large.
+  const missing = [
+    { names: [".kit", ".kit/"], add: "# Runcast runtime link\n.kit\n" },
+    {
+      names: [".captures", ".captures/"],
+      add: "# Runcast video recordings (render reads them)\n.captures/\n",
+    },
+  ].filter(({ names }) => !lines.some((line) => names.includes(line.trim())));
+  if (missing.length > 0) {
     appendFileSync(
       ignore,
-      `${lines.length && lines.at(-1) !== "" ? "\n" : ""}# Runcast runtime link\n.kit\n`,
+      `${lines.length && lines.at(-1) !== "" ? "\n" : ""}${missing.map((m) => m.add).join("")}`,
     );
   }
 }

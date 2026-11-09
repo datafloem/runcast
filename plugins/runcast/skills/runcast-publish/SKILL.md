@@ -116,9 +116,11 @@ for approval:
 
 - **title:** ≤ 100 characters, the video's language; often the opening
   card's title. **description:** ≤ 5000 characters, a few plain sentences;
-  chapters from the steps' start times in `.results/<test>/steps.json`
-  (shifted by the opening card's length) if the video is long enough; no
-  `<` or `>`.
+  chapters from the steps' `videoStartMs` in
+  `<recording folder>/.captures/<name>/render-report.json` (written by the
+  last render; it already includes the opening card) if the video is long
+  enough; not from `steps.json`, whose times are the recording's, not the
+  video's; no `<` or `>`.
 - **tags:** a handful of real search terms, ≤ 500 characters in total.
 - **categoryId:** `28` Science & Technology (default), `27` Education.
 - **privacyStatus:** ask; recommend `unlisted` (link only) or `private`.

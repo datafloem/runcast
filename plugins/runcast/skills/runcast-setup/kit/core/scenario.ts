@@ -8,12 +8,7 @@ import {
   type NarrationScript,
 } from "./narration.ts";
 import { sleep } from "./cursor.ts";
-import {
-  test,
-  type Recorder,
-  type StepNarration,
-  type Ui,
-} from "./recorder.ts";
+import { test, type Recorder, type Ui } from "./recorder.ts";
 
 /** What a step gets: the page, the recorder, and state shared along the scenario. */
 export interface StepContext extends Ui {
@@ -84,6 +79,14 @@ export type StepShow = string | { target: string; transition?: ShowTransition };
 /** How long the page settles after an off-camera step before the video goes on. */
 const OFF_CAMERA_SETTLE_MS = 300;
 
+/**
+ * How long the page settles at the end of each recorded step (video mode):
+ * the renderer may hold a step's last frame for its narration, and right
+ * after a navigation or a click that frame can still be half drawn. App
+ * time, so the renderer can shorten it again.
+ */
+const STEP_SETTLE_MS = 300;
+
 /** The shortest a step with a transition lasts in the video, so the turn can be followed. */
 export const TRANSITION_MIN_MS = 1200;
 
@@ -132,6 +135,14 @@ export interface ScenarioDefinition {
    * follows scrolling and the camera.
    */
   blur?: Array<string>;
+  /**
+   * When a step runs longer than its narration, the renderer shortens the
+   * step's app waits (loading, spinners) so the voice and the screen stay
+   * together. Default true; false keeps real time and leaves silence (e.g.
+   * when the video must show how long the app takes).
+   * REC_COMPRESS_WAITS=0/1 overrides it when rendering.
+   */
+  compressWaits?: boolean;
   /** Opening card before the recording (video mode). Off when not given. */
   intro?: VideoCard;
   /** Closing card after the recording (video mode). Off when not given. */
@@ -162,9 +173,10 @@ export interface VideoCard {
  * recording starts (they create what the later steps need); steps after
  * REC_TO do not run. Without them the whole scenario is recorded.
  *
- * Voice-over: when scenarios/<name>.narration.json exists (record mode,
- * REC_NARRATION not 0), each recorded step lasts at least as long as its
- * segment plus the gap, so the audio placed at the step's start fits.
+ * Voice-over: scenarios/<name>.narration.json does not change the
+ * recording. The renderer fits each segment to its step (holds the step's
+ * last frame for a longer voice, shortens app waits for a shorter one), so a
+ * changed text needs new audio and a new render, never a new recording.
  */
 export function scenario(
   definition: ScenarioDefinition,
@@ -201,6 +213,7 @@ export function scenario(
     if (narration) checkNarration(narration, steps);
 
     rec.captions = definition.captions ?? false;
+    rec.compressWaits = definition.compressWaits ?? true;
     rec.cards = { intro: definition.intro, outro: definition.outro };
     rec.showTransition = definition.showTransition ?? "pan";
     // Before the first page load, so the app starts in the layout it is recorded in.
@@ -225,17 +238,16 @@ export function scenario(
         continue;
       }
 
-      const voice = rec.isLive ? narrationFor(narration, step.id) : undefined;
       const startedMs = rec.elapsedMs();
       await rec.step(title, step.note, {
         id: step.id,
-        narration: voice,
         transition: step.transition,
       });
       await test.step(title, async () => {
         await step.run(ctx);
         if (step.show) await showStep(ctx, step.show);
       });
+      if (isVideoMode) await sleep(STEP_SETTLE_MS);
 
       if (step.transition) {
         // A turn faster than this cannot be followed (rec.pause: video and rehearsal only).
@@ -243,34 +255,8 @@ export function scenario(
         if (spentMs < TRANSITION_MIN_MS)
           await rec.pause(TRANSITION_MIN_MS - spentMs);
       }
-
-      if (voice && narration) {
-        // The step lasts at least its voice-over plus the gap before the next.
-        const spentMs = rec.elapsedMs() - startedMs;
-        const targetMs = voice.durationMs + narration.gapMs;
-        if (spentMs < targetMs) await sleep(targetMs - spentMs);
-        else if (spentMs > targetMs + 250) {
-          rec.markOverrun(spentMs - targetMs);
-          console.warn(
-            `${title}: the step ran ${((spentMs - targetMs) / 1000).toFixed(1)} s longer than its narration; ` +
-              "lengthen the narration or shorten the step's pauses.",
-          );
-        }
-      }
     }
   };
-}
-
-function narrationFor(
-  script: NarrationScript | null,
-  stepId: string,
-): StepNarration | undefined {
-  const segment = script?.segments.find((s) => s.step === stepId);
-  if (!script || !segment) return undefined;
-  const { ms, measured } = segmentLength(segment, script);
-  // Audio made from an older text does not fit any more: do not offer it.
-  const audio = measured ? (segment.audio ?? null) : null;
-  return { text: segment.text, audio, durationMs: ms, measured };
 }
 
 /** Warns about segments for steps that do not exist and audio that is out of date. */

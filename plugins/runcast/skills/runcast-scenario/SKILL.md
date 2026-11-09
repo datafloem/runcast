@@ -182,23 +182,51 @@ In video mode the camera follows what `rec` logs:
 
 ## Narration and timing
 
-If `scenarios/<name>.narration.json` exists (plan skill, phase 7), in video and
-rehearsal mode `scenario()` makes each recorded step last **at least** its
-segment + `gapMs`: a step that ends early waits; one that runs late warns and
-is marked in `steps.json` (`overrunMs`). The renderer mixes each segment's audio
-in at the second its step starts. A segment's length is the measured audio
-(`durationMs`) when present, else an estimate from the word count. Test mode
-and `REC_NARRATION=0` ignore narration.
+Recording and narration are independent. Video mode records **fast** (viewer
+pauses and cursor rests cut short, cursor moves three times faster, typing at
+40 ms per character) and logs each of them with its natural length; the
+renderer plays them back at a person's pace. `REC_RECORD_PACE=natural`
+records at the viewer's pace, for apps that react differently to a fast
+cursor (hover menus that open after a delay, debounced inputs).
+
+If `scenarios/<name>.narration.json` exists (plan skill, phase 7), the
+renderer fits it: each segment starts with its step; a voice longer than its
+step + `gapMs` holds the step's last frame; a step longer than its voice loses
+time from its loading waits, never from pauses, cursor moves or typing. The
+render prints a fit table (`.captures/<name>/render-report.json`). A segment's
+length is the measured audio (`durationMs`) when it is up to date, else an
+estimate from the word count (then no audio is mixed in). `REC_NARRATION=0`
+leaves the narration out.
+
+`scenario({ compressWaits: false })` keeps the app's real waiting time (for
+a video that must show how long something takes); a short voice then leaves
+silence. `REC_COMPRESS_WAITS=0/1` overrides it when rendering.
 
 When writing scenarios or steps:
 
 - If you rename a step id, rename the `step` in the narration file too, or the
   segment no longer matches (a warning says so at run time).
-- Adding `rec.pause` to a step or slowing it lengthens narrated scenarios;
-  steps are shared, so rerun the rehearsal of scenarios that use it.
-- Timing rehearsal: `node tests/recording/.kit/cli.ts rehearsal <name>`; with
-  `REC_NARRATION=0` it gives each step's own length, which
-  `node tests/recording/.kit/cli.ts narration plan <name>` reads.
+- A changed narration text needs new audio and `render <name>`, not a new
+  recording. Record again only when what the page shows must change.
+- `node tests/recording/.kit/cli.ts narration plan <name>` reads each step's
+  own length from the newest video (else the newest rehearsal).
+
+## Checking a video
+
+Look before you render, and render only what changed:
+
+1. `node tests/recording/.kit/cli.ts render <name> --check`: no video, in
+   seconds. Read `.captures/<name>/check/sheet.png` (each step's last frame,
+   numbered, as the video shows it) and the printed fit table. Open a single
+   `check/NN-<id>.png` only for a step that looks wrong.
+2. Something looks wrong in one step: fix it, then
+   `node tests/recording/.kit/cli.ts render <name> --draft --steps N` (half
+   size, that step only, with its voice).
+3. All good: `node tests/recording/.kit/cli.ts render <name>` for the final MP4.
+
+Narration text changed → `narration generate` (or `measure`) → `--check` →
+`render`. Record again only when the page itself was wrong (a missing
+element, a wrong record, a stray window).
 
 ## Core rules
 
@@ -213,7 +241,8 @@ When writing scenarios or steps:
    cursor would not go there, the camera would not see it and the pace breaks.
    Exception: the keyboard (`page.keyboard.type/press`).
 2. **The on-screen message is the step's `note`.** `scenario()` marks each step
-   and writes time and message to `.results/<test>/steps.json`. Never draw
+   and writes time and message to `steps.json` (video:
+   `.captures/<name>/`, rehearsal: `.results/<test>/`). Never draw
    captions, cards or overlays in the page; everything added to the video is
    the renderer's job. Never call `rec.step` or `rec.start` inside steps.
 3. **A step checks what it did.** End every step with `expect` on the result
@@ -227,7 +256,8 @@ When writing scenarios or steps:
    not in steps or scenarios.
 5. **Pace for the viewer:** short stops on important screens with
    `rec.pause(ms)` and `rec.hover(...)` (1–3 s). Long waits make the video
-   drag (there is no editing step afterwards); hasty clicks cannot be followed.
+   drag (the renderer shortens them only to fit a voice-over); hasty clicks
+   cannot be followed.
 6. **Changing values are settings.** Names, sources, conditions come from
    `.env.local`: `const env = (name, fallback = "") => process.env[name] ?? fallback`.
    Add every new setting to `.env.example` with an example and a comment.

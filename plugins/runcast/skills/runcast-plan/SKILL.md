@@ -295,24 +295,27 @@ The `.md` and the `.spec.ts` stay in sync: when one changes, change the other.
 
 The narration is one audio segment per **recorded** step:
 `scenarios/<name>.narration.json` (example:
-[`narration.example.json`](narration.example.json)). A segment is mixed in when
-its step starts; while recording, the next step does not start before the
-segment and the gap after it (`gapMs`) end. So the voice always sits on its
-step. If a step runs longer than its segment, silence remains and a warning
-says so.
+[`narration.example.json`](narration.example.json)). The narration never
+changes the recording: the renderer fits each segment to its step. A segment
+starts with its step; a voice longer than its step (plus the gap after it,
+`gapMs`) holds the step's last frame until it ends; a step longer than its
+voice loses time from its loading waits (scenario `compressWaits`, default
+on), and what is left is silence. A changed text needs new audio and a new
+`render`, never a new recording.
 
 **a) Learn the steps' real lengths.** Ask the user (it writes to the backend),
-then run a timing rehearsal without narration:
-`REC_NARRATION=0 node tests/recording/.kit/cli.ts rehearsal <name>` (headless and not
-recorded, at the video's pace). If no rehearsal is possible, use the lengths
-in the flow table and say so.
+then record the video once: `node tests/recording/.kit/cli.ts video <name>`
+(it does not need the narration). Without a video yet, a timing rehearsal
+works too: `node tests/recording/.kit/cli.ts rehearsal <name>` (headless and
+not recorded, at the video's pace). If neither is possible, use the lengths in
+the flow table and say so.
 
 **b) Write the text.** Create the file (`language`; `wordsPerMinute` — start
 low: 150 for English, 100 for Turkish and other languages with long words
-(an estimate that is too high makes segments overrun their steps); `gapMs`: 400;
+(an estimate that is too high makes steps run past their voice); `gapMs`: 400;
 `voice.modelId`: `eleven_multilingual_v2`; `voice.voiceId`: the user's voice).
 Then run `node tests/recording/.kit/cli.ts narration plan <name>`: it shows each step's own length
-and the **word budget** that fits. Write each segment to its budget:
+(from the newest video, else the rehearsal) and the **word budget** that fits. Write each segment to its budget:
 
 - **Segment = step.** `step` is the step's id. Write no segments for steps
   before `REC_FROM` (not recorded).
@@ -321,7 +324,8 @@ and the **word budget** that fits. Write each segment to its budget:
   (last). They play over the card, which stretches to the audio; no budget,
   but keep them short (1–2 sentences: what the video shows / a closing line).
 - **Fit the time.** Stay within ±15% of the budget. Under the budget means
-  silence (the viewer waits); over it stretches the step (an idle screen).
+  silence or a shortened wait; over it holds the step's last frame (an idle
+  screen).
   Do not cover a long step with one sentence or give a short step a long
   text. Suggest splitting a step if needed.
 - **Narrate what is on screen, as it happens.** A segment describes that
@@ -375,13 +379,16 @@ the measured value and adjust the remaining texts to the new budgets (`plan`
 shows estimate and real length side by side). Voices differ a lot: the same
 model spoke English at ~175 and Turkish at ~95 words per minute. A segment whose text changed needs new audio.
 
-**d) Check rehearsal.** `node tests/recording/.kit/cli.ts rehearsal <name>` (with narration).
-For each "step ran X s longer than its narration" warning, lengthen the
-segment or suggest speeding up the step. When no warnings remain, record.
-
-**e) Video.** `node tests/recording/.kit/cli.ts video <name>`: the audio is mixed into the MP4
-at the seconds its steps start; nothing is placed by hand. A vertical video
-is written to `videos/<name>-vertical.mp4`.
+**d) Check, then render.** `node tests/recording/.kit/cli.ts render <name> --check`
+(no video, seconds; without a recording yet, `video <name>` first). It prints
+a fit table (also in `.captures/<name>/render-report.json`): per step its
+natural length, the voice, the frame held, the wait shortened and the silence
+left; and draws each step's last frame into
+`.captures/<name>/check/sheet.png`. Lengthen segments with long silence;
+shorten ones that hold a frame for long. After changing a text, make its
+audio again (step c) and check again. Then
+`node tests/recording/.kit/cli.ts render <name>` for the MP4 (a vertical one
+goes to `videos/<name>-vertical.mp4`).
 
 ### 8. Publishing (optional)
 

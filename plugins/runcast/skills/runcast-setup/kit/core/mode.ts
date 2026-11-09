@@ -31,14 +31,23 @@ export const settings = {
   /** Only the video needs a window (ffmpeg records the screen). */
   headless: !isVideoMode,
   /**
-   * Time each step to its voice-over (scenarios/<name>.narration.json) when the
-   * scenario has one. REC_NARRATION=0 ignores it. Never in test mode.
+   * Use the scenario's voice-over (scenarios/<name>.narration.json): warn
+   * about segments that do not fit the steps. The renderer fits the audio
+   * (REC_NARRATION=0 there too leaves it out). Never in test mode.
    */
   narration: paced && env.REC_NARRATION !== "0",
   /** How long the last frame stays before the recording stops. */
   endHoldMs: paced ? Number(env.REC_END_HOLD_MS ?? 2000) : 0,
   /** How long the cursor rests on a target before clicking. */
   aimMs: paced ? Number(env.REC_AIM_MS ?? 400) : 0,
+  /**
+   * Video mode records fast and the renderer restores a person's pace:
+   * viewer pauses and cursor rests are cut short, cursor moves run three
+   * times faster, typing at 40 ms per character (REC_RECORD_PACE, default
+   * "fast"). "natural" records at the viewer's pace, for apps that react
+   * differently to a fast cursor (delayed hover menus, debounced inputs).
+   */
+  fastRecording: isVideoMode && env.REC_RECORD_PACE !== "natural",
   /** `rec.pause()` waits only for the viewer; a test run skips it. */
   pauses: paced,
   /** Delay between typed characters. */

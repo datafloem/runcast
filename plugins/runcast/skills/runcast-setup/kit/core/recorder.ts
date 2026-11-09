@@ -4,7 +4,7 @@ import {
   type Page,
   type TestInfo,
 } from "@playwright/test";
-import { writeFileSync } from "node:fs";
+import { rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { sleep, type Point } from "./cursor.ts";
 import {
@@ -13,6 +13,8 @@ import {
   type VideoFormat,
 } from "./format.ts";
 import { isTestMode, isVideoMode, pageSize, settings } from "./mode.ts";
+import { projectDirOf } from "./narration.ts";
+import { captureRootFor } from "./project.ts";
 import type { ShowTransition, VideoCard } from "./scenario.ts";
 import {
   fitWindow,
@@ -21,6 +23,13 @@ import {
   type FocusKind,
 } from "./video-capture.ts";
 import { VirtualMouse } from "./virtual-mouse.ts";
+
+/** Recording fast (settings.fastRecording): real time spent of a viewer pause... */
+const FAST_HOLD_HEAD_MS = 300;
+/** ...of the cursor's rest on a target (hover states need it)... */
+const FAST_AIM_HEAD_MS = 150;
+/** ...and per typed character (one frame at 30 fps, so typing stretches cleanly). */
+const FAST_TYPE_DELAY_MS = 40;
 
 /** A point inside an element, as fractions of its box (0.5, 0.5 = centre). */
 export interface Spot {
@@ -40,16 +49,6 @@ export function spot(locator: Locator, x: number, y: number): Spot {
   return { in: locator, x, y };
 }
 
-/** Voice-over spoken over a step (lib/narration.ts). */
-export interface StepNarration {
-  text: string;
-  /** Audio file mixed into the video at the step's time, relative to tests/recording/. */
-  audio: string | null;
-  /** Measured length of the audio, or an estimate when there is none yet. */
-  durationMs: number;
-  measured: boolean;
-}
-
 interface StepMark {
   /** The step's id (lib/steps), when the step came from a scenario. */
   id?: string;
@@ -58,13 +57,10 @@ interface StepMark {
   title: string;
   /** The on-screen message for this step (scenario-specific). */
   note?: string;
-  narration?: StepNarration;
   /** A transition the renderer draws over this step ("cube"). */
   transition?: string;
-  /** How long the step ran (filled at the end). */
+  /** How long the step ran in the recording (filled at the end). */
   durationMs?: number;
-  /** How much longer the step ran than its narration plus gap. */
-  overrunMs?: number;
 }
 
 /**
@@ -96,6 +92,8 @@ export class Recorder {
   private readonly steps: Array<StepMark> = [];
   /** Whether the video shows the step notes as captions (see ScenarioDefinition). */
   captions = false;
+  /** Whether the renderer may shorten app waits to fit narration (see ScenarioDefinition). */
+  compressWaits = true;
   /** Title cards before / after the recording (see ScenarioDefinition). */
   cards: { intro?: VideoCard; outro?: VideoCard } = {};
   /** How rec.show reaches an element when it names no transition (see ScenarioDefinition). */
@@ -136,9 +134,10 @@ export class Recorder {
     let capture: VideoCapture | null = null;
     let viewport = this.page.viewportSize() ?? pageSize;
     if (isVideoMode) {
+      rmSync(this.captureRoot(), { recursive: true, force: true });
       capture = new VideoCapture(
         this.page,
-        this.testInfo.outputPath("capture"),
+        path.join(this.captureRoot(), "capture"),
         this.startedAt,
         path.basename(this.testInfo.file, ".spec.ts"),
         recordsVertically(this.format),
@@ -149,20 +148,23 @@ export class Recorder {
       viewport = started.viewport;
       this.capture = capture;
     }
-    this.mouse = new VirtualMouse(this.page, capture, {
-      x: viewport.width / 2,
-      y: viewport.height / 2,
-    });
+    this.mouse = new VirtualMouse(
+      this.page,
+      capture,
+      { x: viewport.width / 2, y: viewport.height / 2 },
+      settings.fastRecording,
+    );
   }
 
   /**
    * Marks a step of the script: logs its time in the recording and writes it,
-   * with its note and voice-over, to steps.json (the renderer reads it).
+   * with its note, to steps.json (the renderer reads it and fits the
+   * step's narration to it).
    */
   step(
     title: string,
     note?: string,
-    extra: { id?: string; narration?: StepNarration; transition?: string } = {},
+    extra: { id?: string; transition?: string } = {},
   ): Promise<void> {
     if (!this.live) {
       console.log(`(preparation) ${title}`);
@@ -178,7 +180,6 @@ export class Recorder {
       seconds: Math.round(seconds * 10) / 10,
       title,
       note,
-      narration: extra.narration,
       transition: extra.transition,
     });
     console.log(`[${at}] ${title}${note ? ` — ${note}` : ""}`);
@@ -207,7 +208,7 @@ export class Recorder {
     }
     const point = await this.pagePoint(target);
     await mouse.moveTo(point);
-    await sleep(settings.aimMs);
+    await this.rest("aim", settings.aimMs);
     await mouse.click(point);
     this.logFocus("click", target, point);
   }
@@ -222,7 +223,7 @@ export class Recorder {
     }
     const point = await this.pagePoint(target);
     await mouse.moveTo(point);
-    await sleep(settings.aimMs);
+    await this.rest("aim", settings.aimMs);
     await mouse.doubleClick(point);
     this.logFocus("double-click", target, point);
   }
@@ -240,7 +241,7 @@ export class Recorder {
     }
     const point = await this.pagePoint(target);
     await mouse.moveTo(point);
-    await sleep(settings.aimMs);
+    await this.rest("aim", settings.aimMs);
     await mouse.rightClick(point);
     this.logFocus("right-click", target, point);
   }
@@ -274,9 +275,15 @@ export class Recorder {
       await field.focus();
     }
     const startedMs = this.capture?.now();
+    const fast = settings.fastRecording && this.capture !== null;
     await this.page.keyboard.type(text, {
-      delay: this.paced ? settings.typeDelay(delayMs) : 0,
+      delay: !this.paced ? 0 : fast ? FAST_TYPE_DELAY_MS : settings.typeDelay(delayMs),
     });
+    if (this.paced && this.capture && startedMs !== undefined) {
+      const endedMs = this.capture.now();
+      const outMs = fast ? text.length * delayMs : endedMs - startedMs;
+      this.capture.span("type", startedMs, endedMs, outMs);
+    }
     if (this.capture && this.lastBox && !this.suspended) {
       const box = this.lastBox;
       const centre = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
@@ -339,21 +346,43 @@ export class Recorder {
     this.capture.focus("show", point, box, startedMs, transition);
   }
 
-  /** Notes that the last marked step ran longer than its narration. */
-  markOverrun(ms: number): void {
-    const last = this.steps.at(-1);
-    if (last) last.overrunMs = Math.round(ms);
-  }
+  /**
+   * @deprecated Does nothing: narration is fitted when rendering, and the
+   * render report shows steps that run longer than their voice.
+   */
+  markOverrun(_ms: number): void {}
 
   /** A pause for the viewer. Skipped in test mode: never use it to wait for the app. */
   pause(ms = 1000): Promise<void> {
-    return settings.pauses && this.paced ? sleep(ms) : Promise.resolve();
+    return settings.pauses && this.paced
+      ? this.rest("hold", ms)
+      : Promise.resolve();
+  }
+
+  /**
+   * A rest for the viewer: a pause ("hold") or the cursor resting on its
+   * target ("aim"). Recording fast, only its head is spent (time for an
+   * animation to finish); the renderer holds the frame for the rest. The
+   * span records the full length either way.
+   */
+  private async rest(kind: "aim" | "hold", ms: number): Promise<void> {
+    if (ms <= 0) return;
+    const capture = this.paced ? this.capture : null;
+    const head =
+      capture && settings.fastRecording
+        ? Math.min(ms, kind === "aim" ? FAST_AIM_HEAD_MS : FAST_HOLD_HEAD_MS)
+        : ms;
+    const startedMs = capture?.now();
+    await sleep(head);
+    if (capture && startedMs !== undefined) {
+      capture.span(kind, startedMs, capture.now(), ms);
+    }
   }
 
   /** Holds the last frame, then stops the recording. */
   async finish(): Promise<void> {
     this.resume();
-    if (this.live) await sleep(settings.endHoldMs);
+    if (this.live) await this.rest("hold", settings.endHoldMs);
     if (this.capture) {
       const file = await this.capture.stop();
       console.log(`Video capture: ${path.dirname(file)}`);
@@ -364,7 +393,11 @@ export class Recorder {
         const next = this.steps[i + 1]?.seconds ?? endSeconds;
         mark.durationMs = Math.round((next - mark.seconds) * 1000);
       });
-      const file = this.testInfo.outputPath("steps.json");
+      // With the video it belongs to (out of .results, which Playwright
+      // empties on every run); a rehearsal's stays in .results.
+      const file = this.capture
+        ? path.join(this.captureRoot(), "steps.json")
+        : this.testInfo.outputPath("steps.json");
       const scenario = path.basename(this.testInfo.file, ".spec.ts");
       writeFileSync(
         file,
@@ -372,6 +405,7 @@ export class Recorder {
           {
             scenario,
             captions: this.captions,
+            compressWaits: this.compressWaits,
             format: this.format,
             ...this.cards,
             steps: this.steps,
@@ -382,6 +416,17 @@ export class Recorder {
       );
       console.log(`Step times: ${file}`);
     }
+  }
+
+  /**
+   * Video mode: .captures/<scenario>/ of the recording folder. Recording a
+   * scenario again replaces its previous recording.
+   */
+  private captureRoot(): string {
+    return captureRootFor(
+      projectDirOf(this.testInfo.file),
+      path.basename(this.testInfo.file, ".spec.ts"),
+    );
   }
 
   /** The virtual cursor once recording runs; null = fast Playwright actions. */

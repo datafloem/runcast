@@ -81,7 +81,7 @@ Under the hood:
 2. **The same scenario runs in three modes:**
    - **test:** headless and as fast as possible, to check that the app works;
    - **rehearsal:** headless at video pace, to measure how long each step
-     takes;
+     takes before the first video;
    - **video:** a visible Chrome window that is screen-recorded with ffmpeg
      and then rendered into the final MP4.
 3. **The kit is installed once per computer**, not into each project. The
@@ -299,8 +299,10 @@ in one of three ways:
 - **as a single take** in the ElevenLabs website, which the kit then cuts
   into steps.
 
-Record the video again (step 6) and the voice is mixed in at the right
-moments.
+Render again (`node tests/recording/.kit/cli.ts render <name>`); there is no
+need to record again. The kit fits each sentence to its step: a longer
+sentence holds the step's last frame, a shorter one shortens loading waits.
+Change a sentence later and you only make its audio and render again.
 
 ### 8. Publish to YouTube (optional)
 
@@ -324,9 +326,11 @@ Run these from your project's root folder. If your recording folder is not
 | `node tests/recording/.kit/cli.ts doctor`                | Shows what is installed and what is missing                    |
 | `node tests/recording/.kit/cli.ts test`                  | Runs every scenario as a fast headless test                    |
 | `node tests/recording/.kit/cli.ts test <name>`           | Runs one scenario as a test                                    |
-| `node tests/recording/.kit/cli.ts rehearsal <name>`      | Runs at video pace without recording, to check timing          |
+| `node tests/recording/.kit/cli.ts rehearsal <name>`      | Runs at video pace without recording, to measure step lengths  |
 | `node tests/recording/.kit/cli.ts video <name>`          | Records and renders `videos/<name>.mp4`                        |
 | `node tests/recording/.kit/cli.ts render <name>`         | Renders the last recording again (new captions, cards, camera) |
+| `node tests/recording/.kit/cli.ts render <name> --check` | One picture per step and the voice-over fit, in seconds        |
+| `node tests/recording/.kit/cli.ts render <name> --draft --steps 3-5` | A quick half-size video of steps 3 to 5 only       |
 | `node tests/recording/.kit/cli.ts narration plan <name>` | Shows how many words of voice-over fit each step               |
 | `node tests/recording/.kit/cli.ts youtube check`         | Shows what is missing for YouTube uploads                      |
 
@@ -357,6 +361,7 @@ tests/recording/
   .env.example          every setting, with comments (commit this)
   .env.local            your account and keys (git-ignored)
   .kit                  link to the shared runtime (git-ignored, made by setup)
+  .captures/            the latest video recording of each scenario (git-ignored)
   videos/ narration/ .results/   output (git-ignored)
 ```
 
@@ -388,7 +393,7 @@ the plugin in your AI tool. In Claude Code that is
 | "Google Chrome not found"                              | Install Chrome. On ARM Linux (no Chrome build): set `REC_CHANNEL=chromium` and run `node tests/recording/.kit/node_modules/@playwright/test/cli.js install chromium` |
 | A test fails to find a button or field                 | Tell the assistant; it reads `.results/<test>/error-context.md` and the screenshot, then fixes the helper                                                            |
 | The first page load times out                          | Your dev server may still be compiling. Open the app once in a browser, or ask the assistant to raise that timeout in the helper                                     |
-| The voice-over and the screen drift apart              | Run `rehearsal <name>`: it warns for each step that runs longer than its sentence. The assistant shortens the text or the step                                       |
+| The voice-over leaves silences or holds a frame long   | Run `render <name>` and read its fit table (`render-report.json`): the assistant lengthens sentences with long silence and shortens ones that hold a frame. No new recording |
 | A scenario created data you don't want                 | Scenarios write to your real app. Each scenario's plan lists what it creates and what to delete before recording again                                               |
 
 ## Glossary

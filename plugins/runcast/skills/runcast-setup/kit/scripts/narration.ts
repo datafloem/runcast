@@ -31,7 +31,8 @@ import {
   wordCount,
   type NarrationScript,
 } from "../core/narration.ts";
-import { kitCommand, loadProject } from "../core/project.ts";
+import { findCaptures, kitCommand, loadProject } from "../core/project.ts";
+import { naturalMap, type Span } from "./video/timemap.ts";
 
 // Also loads the project's .env.local (ElevenLabs key and voice).
 const PROJECT_DIR = (await loadProject()).dir;
@@ -337,16 +338,16 @@ function wavFile(samples: Int16Array, rate: number): Buffer {
 
 /**
  * Compares each segment with how long its step takes on its own (from the
- * last rehearsal or recording made with REC_NARRATION=0) and with its word
- * budget at the speaking rate.
+ * newest video capture, else the newest rehearsal) and with its word budget
+ * at the speaking rate.
  */
 function plan(script: NarrationScript): void {
   const lastRun = lastStepTimes(path.basename(specFile, ".spec.ts"));
   console.log(
     lastRun
       ? `Step times: ${path.relative(process.cwd(), lastRun.file)}`
-      : "No step times yet: first run a rehearsal without narration " +
-          `(REC_NARRATION=0 ${KIT_CMD} rehearsal ${name}).`,
+      : "No step times yet: record a video " +
+          `(${KIT_CMD} video ${name}) or run a rehearsal (${KIT_CMD} rehearsal ${name}).`,
   );
   console.log("");
   const rows = script.segments.map((segment, i) => {
@@ -387,36 +388,79 @@ function plan(script: NarrationScript): void {
   );
 }
 
-/** Step id -> duration (ms) from the newest steps.json of this scenario run without narration. */
+/**
+ * Step id -> the step's own length (ms). From the newest video capture of
+ * this scenario (.captures/<scenario>/), at the pace the video plays it (its
+ * time map without narration); else from the newest rehearsal's steps.json.
+ */
 function lastStepTimes(
   scenario: string,
 ): { file: string; byId: Map<string, number> } | null {
+  const runsIn = (dirs: Array<string>) =>
+    dirs
+      .filter((dir) => existsSync(path.join(dir, "steps.json")))
+      .map((dir) => ({
+        dir,
+        steps: JSON.parse(
+          readFileSync(path.join(dir, "steps.json"), "utf-8"),
+        ) as StepsFile,
+        mtime: statSync(path.join(dir, "steps.json")).mtimeMs,
+      }))
+      .filter(({ steps }) => steps.scenario === scenario)
+      .sort((a, b) => b.mtime - a.mtime);
+
+  const video = runsIn(
+    findCaptures(RECORDING_DIR).map((capture) => path.dirname(capture)),
+  ).at(0);
+  if (video) {
+    const file = path.join(video.dir, "capture", "events.json");
+    const capture = JSON.parse(readFileSync(file, "utf-8")) as CaptureTimes;
+    const map = naturalMap(
+      capture.spans ?? [],
+      capture.durationMs,
+      capture.cuts,
+    );
+    const marks = video.steps.steps;
+    const byId = new Map<string, number>();
+    marks.forEach((mark, i) => {
+      // Older captures timed steps to their narration: not their own length.
+      if (!mark.id || mark.narration) return;
+      const next = marks[i + 1];
+      const end = next ? map.toOut(next.seconds * 1000) : map.outMs;
+      byId.set(mark.id, Math.round(end - map.toOut(mark.seconds * 1000)));
+    });
+    return { file, byId };
+  }
+
   const results = path.join(RECORDING_DIR, ".results");
-  if (!existsSync(results)) return null;
-  const candidates = readdirSync(results)
-    .map((dir) => path.join(results, dir, "steps.json"))
-    .filter((file) => existsSync(file))
-    .map((file) => ({
-      file,
-      data: JSON.parse(readFileSync(file, "utf-8")) as StepsFile,
-    }))
-    .filter(({ data }) => data.scenario === scenario)
-    .sort((a, b) => statSync(b.file).mtimeMs - statSync(a.file).mtimeMs);
-  const newest = candidates.at(0);
+  const newest = existsSync(results)
+    ? runsIn(readdirSync(results).map((dir) => path.join(results, dir))).at(0)
+    : undefined;
   if (!newest) return null;
   const byId = new Map<string, number>();
-  for (const mark of newest.data.steps) {
+  for (const mark of newest.steps.steps) {
     // A step timed to a narration ran padded: not its own length.
     if (mark.id && mark.durationMs !== undefined && !mark.narration) {
       byId.set(mark.id, mark.durationMs);
     }
   }
-  return { file: newest.file, byId };
+  return { file: path.join(newest.dir, "steps.json"), byId };
 }
 
 interface StepsFile {
   scenario: string;
-  steps: Array<{ id?: string; durationMs?: number; narration?: unknown }>;
+  steps: Array<{
+    id?: string;
+    seconds: number;
+    durationMs?: number;
+    narration?: unknown;
+  }>;
+}
+
+interface CaptureTimes {
+  durationMs: number;
+  spans?: Array<Span>;
+  cuts?: Array<{ at: number; ms: number }>;
 }
 
 // --- measure ----------------------------------------------------------------
