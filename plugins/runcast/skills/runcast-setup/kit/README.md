@@ -200,6 +200,8 @@ Add a scenario name to run one: `node tests/recording/.kit/cli.ts test login`.
    - **Voice-over:** fitted to the steps here, not while recording (see
      Voice-over).
 3. Re-render without recording again: `node tests/recording/.kit/cli.ts render <scenario>`.
+   Actions the camera does not show (a vertical crop too narrow for a
+   scene) are printed as "Out of frame" and listed in `render-report.json`.
    - `--check`: no video. Each step's last frame, drawn as the video shows
      it, goes to `.captures/<scenario>/check/NN-<id>.png` and into one contact
      sheet, `check/sheet.png`, in seconds; the narration fit table is
@@ -351,6 +353,15 @@ Steps and helpers move through `rec`, never `page.click`:
 - `rec.show(locator, { ms, transition })`: points the camera at an element
   without touching it, until the next action (checks it is visible in tests).
 
+Before every one of these, in every mode, `rec` scrolls the target into view
+and checks that it can be shown: inside the visible page, not covered by
+another element (a toast, a dialog, a sticky header), not animating in and
+not moving. It waits up to 5 s for that, then fails the step naming the
+problem ("covered by div.toast"), so a test run catches what would spoil the
+video. Tests and rehearsals run at the page size of the newest landscape
+video recording (printed at the start), so the app lays out as it will on
+camera.
+
 The full rules are in the `runcast-scenario` skill (`skills/runcast-scenario/SKILL.md` in the runtime).
 
 ## Settings (`.env.local`)
@@ -368,7 +379,7 @@ The full rules are in the `runcast-scenario` skill (`skills/runcast-scenario/SKI
 | `REC_FORMAT`                                | scenario           | Overrides the scenario's video format (recording and rendering) |
 | `REC_END_HOLD_MS`                           | `2000`             | How long the last frame stays (video, rehearsal)               |
 | `REC_AIM_MS`                                | `400`              | Cursor rest on a target before clicking (video, rehearsal)     |
-| `REC_PAGE_WIDTH`                            | `1440`             | Rehearsal and test page width (16:9); video fills the screen   |
+| `REC_PAGE_WIDTH`                            | newest video       | Rehearsal and test page width (16:9). Unset: the newest landscape recording's page size, else 1440 (video fills the screen) |
 | `REC_VIDEO_FPS`, `REC_SCREEN`               | `30`, auto         | Output frame rate; ffmpeg's screen index (macOS; Windows `ddagrab`: `0` = main screen) |
 | `REC_WIN_GRABBER`                           | auto               | Windows: `ddagrab` or `gdigrab`; auto tries `ddagrab` first    |
 | `REC_CAPTURE_OFFSET`                        | `0,0`              | Moves the recorded area by `x,y` screen pixels, when a window frame shifts the page |

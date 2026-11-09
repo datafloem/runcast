@@ -14,6 +14,7 @@ import {
 } from "./format.ts";
 import { isTestMode, isVideoMode, pageSize, settings } from "./mode.ts";
 import { projectDirOf } from "./narration.ts";
+import { screenProblem } from "./on-screen.ts";
 import { captureRootFor } from "./project.ts";
 import type { ShowTransition, VideoCard } from "./scenario.ts";
 import {
@@ -30,6 +31,9 @@ const FAST_HOLD_HEAD_MS = 300;
 const FAST_AIM_HEAD_MS = 150;
 /** ...and per typed character (one frame at 30 fps, so typing stretches cleanly). */
 const FAST_TYPE_DELAY_MS = 40;
+
+/** How long rec waits for a target to be shown and usable before failing the step. */
+const ON_SCREEN_WAIT_MS = 5_000;
 
 /** A point inside an element, as fractions of its box (0.5, 0.5 = centre). */
 export interface Spot {
@@ -189,6 +193,7 @@ export class Recorder {
   async hover(target: Target): Promise<void> {
     const mouse = this.liveMouse();
     if (!mouse) {
+      await this.pagePoint(target);
       if (isLocator(target)) await target.hover();
       else await this.page.mouse.move(...xy(await this.pagePoint(target)));
       return;
@@ -201,6 +206,7 @@ export class Recorder {
   async click(target: Target): Promise<void> {
     const mouse = this.liveMouse();
     if (!mouse) {
+      await this.pagePoint(target);
       if (isLocator(target)) await target.click();
       else await this.page.mouse.click(...xy(await this.pagePoint(target)));
       await sleep(this.aimMs);
@@ -216,6 +222,7 @@ export class Recorder {
   async doubleClick(target: Target): Promise<void> {
     const mouse = this.liveMouse();
     if (!mouse) {
+      await this.pagePoint(target);
       if (isLocator(target)) await target.dblclick();
       else await this.page.mouse.dblclick(...xy(await this.pagePoint(target)));
       await sleep(this.aimMs);
@@ -231,6 +238,7 @@ export class Recorder {
   async rightClick(target: Target): Promise<void> {
     const mouse = this.liveMouse();
     if (!mouse) {
+      await this.pagePoint(target);
       if (isLocator(target)) await target.click({ button: "right" });
       else
         await this.page.mouse.click(...xy(await this.pagePoint(target)), {
@@ -456,32 +464,73 @@ export class Recorder {
     this.capture.focus(kind, point, box, from);
   }
 
-  /** The target's point in page (CSS pixel) coordinates. */
+  /**
+   * The target's point in page (CSS pixel) coordinates, once it is scrolled
+   * into view, on screen, not covered by another element, not animating and
+   * not moving. Waits up to ON_SCREEN_WAIT_MS for that (toasts go away,
+   * dialogs finish opening), then fails the step: in every mode, so a test
+   * run catches what would spoil the video.
+   */
   private async pagePoint(target: Target): Promise<Point> {
     const locator = "in" in target ? target.in : target;
     const fx = "in" in target ? target.x : 0.5;
     const fy = "in" in target ? target.y : 0.5;
+    const deadline = Date.now() + ON_SCREEN_WAIT_MS;
 
     // Lists re-render while they load (spinner -> empty state -> rows), so the
     // element found first can be replaced before we measure it. Find it again.
-    for (let attempt = 1; ; attempt++) {
+    for (let stale = 0; ; ) {
       // Not retried: an element that never shows up fails here, once.
       await locator.waitFor({ state: "visible" });
+      let problem = "it has no size";
       try {
         await locator.scrollIntoViewIfNeeded({ timeout: 5_000 });
         const box = await locator.boundingBox({ timeout: 5_000 });
         if (box) {
-          this.lastBox = box;
-          return { x: box.x + box.width * fx, y: box.y + box.height * fy };
+          const point = {
+            x: box.x + box.width * fx,
+            y: box.y + box.height * fy,
+          };
+          problem = (await locator.evaluate(screenProblem, point)) ?? "";
+          if (!problem) {
+            // Two frames later it must still be where it was.
+            await this.page.evaluate(
+              () =>
+                new Promise((done) =>
+                  requestAnimationFrame(() => requestAnimationFrame(done)),
+                ),
+            );
+            const again = await locator.boundingBox({ timeout: 5_000 });
+            if (again && sameBox(box, again)) {
+              this.lastBox = box;
+              return point;
+            }
+            problem = "it is still moving";
+          }
         }
       } catch (error) {
-        if (attempt >= 5 || !isStaleElementError(error)) throw error;
+        if (++stale >= 5 || !isStaleElementError(error)) throw error;
+        problem = "it was replaced while being measured";
       }
-      if (attempt >= 5)
-        throw new Error(`Element is not visible: ${locator.toString()}`);
-      await sleep(300);
+      if (Date.now() > deadline) {
+        throw new Error(
+          `${locator.toString()} cannot be shown: ${problem}. ` +
+            "Wait for it in the helper before acting on it (an expect on what " +
+            "covers it or on the finished screen).",
+        );
+      }
+      await sleep(200);
     }
   }
+}
+
+function sameBox(a: Box, b: Box): boolean {
+  return (
+    Math.abs(a.x - b.x) < 1 &&
+    Math.abs(a.y - b.y) < 1 &&
+    Math.abs(a.width - b.width) < 1 &&
+    Math.abs(a.height - b.height) < 1
+  );
 }
 
 function isStaleElementError(error: unknown): boolean {

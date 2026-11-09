@@ -224,6 +224,11 @@ Look before you render, and render only what changed:
    size, that step only, with its voice).
 3. All good: `node tests/recording/.kit/cli.ts render <name>` for the final MP4.
 
+"Out of frame" warnings name actions the camera cannot show (a vertical crop
+too narrow for the scene): split the scene, `show` the area first, or pick
+another format; this needs a render, not a new recording, unless the steps
+change.
+
 Narration text changed → `narration generate` (or `measure`) → `--check` →
 `render`. Record again only when the page itself was wrong (a missing
 element, a wrong record, a stray window).
@@ -254,6 +259,12 @@ element, a wrong record, a stray window).
    for the app. Wait with `expect(...).toBeVisible()` / `toHaveCount()` /
    `toHaveURL()`. Mode-dependent code (`if (isTestMode)`) belongs in the kit,
    not in steps or scenarios.
+   Every `rec` action first checks its target can be shown: on screen, not
+   covered, not animating, not moving (waiting up to 5 s). A step that fails
+   with "cannot be shown: it is covered by …" or "still animating" needs a
+   wait in the helper (an `expect` that the toast or dialog is gone, or that
+   the screen finished opening), never a `rec.pause`. Tests run at the newest
+   video's page size, so fix such failures before recording.
 5. **Pace for the viewer:** short stops on important screens with
    `rec.pause(ms)` and `rec.hover(...)` (1–3 s). Long waits make the video
    drag (the renderer shortens them only to fit a voice-over); hasty clicks

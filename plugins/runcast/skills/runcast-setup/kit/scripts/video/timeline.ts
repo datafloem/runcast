@@ -449,6 +449,29 @@ export function cameraAtTime(
   return clampCamera(camera, viewport, view);
 }
 
+/**
+ * Actions the camera does not show when they happen: the point of each
+ * focus lies outside the camera's view at its end (when the click lands or
+ * the typing stops). Happens when a vertical crop cannot fit a scene, or a
+ * shown element leaves the actions behind.
+ */
+export function actionsOutOfFrame(
+  focus: Array<Focus>,
+  track: Array<Keyframe>,
+  viewport: Size,
+  view: Size = viewport,
+): Array<Focus> {
+  return focus.filter((f) => {
+    const camera = cameraAtTime(track, f.until, viewport, view);
+    const halfW = view.width / camera.zoom / 2;
+    const halfH = view.height / camera.zoom / 2;
+    return (
+      Math.abs(f.x - camera.cx) > halfW + 2 ||
+      Math.abs(f.y - camera.cy) > halfH + 2
+    );
+  });
+}
+
 /** Keeps the visible area inside the page. */
 export function clampCamera(
   c: Camera,

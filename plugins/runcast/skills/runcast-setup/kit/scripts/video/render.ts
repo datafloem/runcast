@@ -28,6 +28,7 @@ import {
 } from "node:fs";
 import path from "node:path";
 import {
+  actionsOutOfFrame,
   baseView,
   buildCameraTrack,
   cameraAtTime,
@@ -243,12 +244,6 @@ async function prepare(captureDir: string): Promise<Prepared> {
     seconds: map.toOut(step.seconds * 1000) / 1000,
   }));
   const sceneMs = map.outMs;
-  writeReport(
-    captureDir,
-    recSteps,
-    report,
-    steps.map((step) => introMs + step.seconds * 1000),
-  );
 
   const clips = steps.flatMap((step) => {
     const audio = step.id ? voices.get(step.id)?.audio : null;
@@ -279,6 +274,16 @@ async function prepare(captureDir: string): Promise<Prepared> {
     events.navigations,
     view,
     map.cutsOut,
+  );
+  writeReport(
+    captureDir,
+    recSteps,
+    report,
+    steps.map((step) => introMs + step.seconds * 1000),
+    actionsOutOfFrame(events.focus, track, viewport, view).map((f) => ({
+      kind: f.kind,
+      atMs: introMs + f.until,
+    })),
   );
 
   // The frame shown just before a cut, faded out over the first frames after it.
@@ -809,16 +814,32 @@ function writeReport(
   report: Array<StepFit>,
   /** Where each step starts in the video (ms, opening card included). */
   videoStartMs: Array<number>,
+  /** Actions the camera does not show (video ms, opening card included). */
+  outOfFrame: Array<{ kind: string; atMs: number }>,
 ): void {
+  const stepAt = (ms: number) =>
+    Math.max(0, videoStartMs.findLastIndex((start) => start <= ms));
   const rows = report.map((fit) => ({
     step: steps[fit.index]?.title ?? String(fit.index + 1),
     videoStartMs: Math.round(videoStartMs[fit.index] ?? 0),
     ...fit,
+    outOfFrame: outOfFrame
+      .filter((action) => stepAt(action.atMs) === fit.index)
+      .map((action) => ({ kind: action.kind, atMs: Math.round(action.atMs) })),
   }));
   writeFileSync(
     path.join(captureDir, "..", "render-report.json"),
     `${JSON.stringify(rows, null, 2)}\n`,
   );
+  for (const row of rows) {
+    for (const action of row.outOfFrame) {
+      console.warn(
+        `Out of frame: ${row.step}, ${action.kind} at ${(action.atMs / 1000).toFixed(1)} s. ` +
+          "The camera cannot show it (e.g. a vertical crop too narrow for the scene): " +
+          "split the scene, show the area first, or use another format.",
+      );
+    }
+  }
   if (!report.some((fit) => fit.voiceMs !== null)) return;
   const s = (ms: number | null) =>
     ms === null ? "—" : ms === 0 ? "" : `${(ms / 1000).toFixed(1)} s`;

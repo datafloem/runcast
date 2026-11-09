@@ -56,8 +56,17 @@ export const settings = {
   pageWidth: Number(env.REC_PAGE_WIDTH ?? 1440),
 };
 
-/** Page size of the headless modes (rehearsal, test): 16:9, like the output video. */
-export const pageSize = {
-  width: settings.pageWidth,
-  height: Math.round((settings.pageWidth * 9) / 16),
-};
+/**
+ * Page size of the headless modes (rehearsal, test). REC_PAGE_WIDTH: that
+ * width at 16:9. Otherwise REC_PAGE_SIZE ("1512x860"), which the Playwright
+ * config sets from the newest video recording so tests lay the app out as
+ * the video does. Otherwise 1440x810.
+ */
+const sizeSetting = /^(\d+)x(\d+)$/.exec(env.REC_PAGE_SIZE ?? "");
+export const pageSize =
+  sizeSetting && env.REC_PAGE_WIDTH === undefined
+    ? { width: Number(sizeSetting[1]), height: Number(sizeSetting[2]) }
+    : {
+        width: settings.pageWidth,
+        height: Math.round((settings.pageWidth * 9) / 16),
+      };
