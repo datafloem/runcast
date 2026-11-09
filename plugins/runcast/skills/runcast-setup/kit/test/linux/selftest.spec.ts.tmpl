@@ -1,6 +1,8 @@
 // The Linux self-test's scenario (run.sh copies it into the sample project):
-// the template's login step with every video option on, and a cube
-// transition back to the login page (an inline step, kit test only: real
+// the template's login step with every video option on, the camera sent to
+// the first card and slid to the second, an off-camera wait cut out of the
+// video, and a cube
+// transition back to the login page (inline steps, kit test only: real
 // scenarios take every step from steps/).
 import { expect, scenario, test } from "../kit.ts";
 import * as steps from "../steps/index.ts";
@@ -15,7 +17,18 @@ test(
     outro: { title: "Done", subtitle: "Xvfb, x11grab, ffmpeg" },
     steps: [
       steps.login({ note: "Sign in" }),
-      steps.hold({ ms: 1500, note: "Home" }),
+      steps.hold({ ms: 1500, note: "Home", show: "main section" }),
+      steps.hold({
+        id: "next-card",
+        ms: 1500,
+        show: { target: "main section:nth-of-type(2)", transition: "slide" },
+      }),
+      {
+        id: "off-camera",
+        title: "Off camera",
+        offCamera: true,
+        run: ({ page }) => page.waitForTimeout(1500),
+      },
       {
         id: "back-to-login",
         title: "Back to login",

@@ -22,7 +22,8 @@ export type FocusKind =
   | "right-click"
   | "hover"
   | "type"
-  | "drag";
+  | "drag"
+  | "show";
 
 /** What scripts/video/ needs to build the video. Times are ms since recording start. */
 export interface CaptureFile {
@@ -50,9 +51,16 @@ export interface CaptureFile {
     x: number;
     y: number;
     box?: Box;
+    /** A "show": how the camera gets there (pan, slide, fade, cube, cut). */
+    transition?: string;
   }>;
   /** Page changes (route changes included): the camera pulls back on these. */
   navigations: Array<number>;
+  /**
+   * Time cut out of the video (off-camera steps): at `at` (ms, on the clock
+   * above, which already leaves them out) the screen recording skips `ms`.
+   */
+  cuts: Array<{ at: number; ms: number }>;
 }
 
 /**
@@ -70,6 +78,9 @@ export class VideoCapture {
   private readonly data: CaptureFile;
   /** Wall-clock time of the video's first frame, from ffmpeg's progress reports. */
   private videoStartWall = Infinity;
+  /** Off camera since this wall-clock time (0: on camera). */
+  private pausedAt = 0;
+  private pausedMs = 0;
 
   constructor(
     private readonly page: Page,
@@ -77,6 +88,8 @@ export class VideoCapture {
     readonly dir: string,
     private startedAt: number,
     scenario: string,
+    /** Record a 9:16 page (format "vertical") instead of the whole screen. */
+    private readonly vertical = false,
   ) {
     this.data = {
       scenario,
@@ -87,6 +100,7 @@ export class VideoCapture {
       pointer: [],
       focus: [],
       navigations: [],
+      cuts: [],
     };
   }
 
@@ -193,9 +207,8 @@ export class VideoCapture {
   }
 
   /**
-   * Fills the screen's usable area (menu bar, Dock or taskbar excluded) with the
-   * window; the page gets whatever size that leaves. Returns the page area on
-   * screen, in screen pixels.
+   * Sizes the window (fitWindow); returns the page area on screen, in screen
+   * pixels.
    */
   private async placeWindow(): Promise<{
     x: number;
@@ -204,41 +217,7 @@ export class VideoCapture {
     height: number;
     scale: number;
   }> {
-    const cdp = await this.page.context().newCDPSession(this.page);
-    const { windowId } = await cdp.send("Browser.getWindowForTarget");
-    const screenArea = await this.page.evaluate(() => {
-      const s = window.screen as Screen & {
-        availLeft?: number;
-        availTop?: number;
-      };
-      return {
-        left: s.availLeft ?? 0,
-        top: s.availTop ?? 0,
-        width: s.availWidth,
-        height: s.availHeight,
-      };
-    });
-    await cdp.send("Browser.setWindowBounds", {
-      windowId,
-      bounds: { windowState: "normal" },
-    });
-    await cdp.send("Browser.setWindowBounds", { windowId, bounds: screenArea });
-    await cdp.detach();
-    await this.page.bringToFront();
-
-    // Wait for the resize to settle: the page size reads the same three times.
-    let page = { width: 0, height: 0 };
-    let same = 0;
-    for (let i = 0; i < 50 && same < 3; i++) {
-      await delay(100);
-      const now = await this.page.evaluate(() => ({
-        width: window.innerWidth,
-        height: window.innerHeight,
-      }));
-      same =
-        now.width === page.width && now.height === page.height ? same + 1 : 0;
-      page = now;
-    }
+    const page = await fitWindow(this.page, this.vertical);
     const geometry = await this.page.evaluate((windows) => {
       // The window's frame beside the page. On Windows the same width also
       // runs along the bottom (the invisible resize border), so the toolbar
@@ -276,8 +255,25 @@ export class VideoCapture {
     if (!frame.parentFrame()) this.data.navigations.push(this.now());
   };
 
+  /** ms since recording start, time off camera left out. */
   now(): number {
-    return Date.now() - this.startedAt;
+    const wall = this.pausedAt || Date.now();
+    return wall - this.startedAt - this.pausedMs;
+  }
+
+  /** Off camera: ffmpeg keeps recording, the renderer cuts this time out. */
+  pause(): void {
+    if (this.pausedAt) return;
+    this.pausedAt = Date.now();
+  }
+
+  resume(): void {
+    if (!this.pausedAt) return;
+    const at = this.now();
+    const ms = Date.now() - this.pausedAt;
+    this.pausedMs += ms;
+    this.pausedAt = 0;
+    this.data.cuts.push({ at, ms });
   }
 
   pointer(at: Point, kind: PointerKind): void {
@@ -289,9 +285,16 @@ export class VideoCapture {
     });
   }
 
-  focus(kind: FocusKind, at: Point, box?: Box, from?: number): void {
+  focus(
+    kind: FocusKind,
+    at: Point,
+    box?: Box,
+    from?: number,
+    transition?: string,
+  ): void {
     const t = from ?? this.now();
     this.data.focus.push({
+      ...(transition ? { transition } : {}),
       t,
       until: this.now(),
       kind,
@@ -308,6 +311,7 @@ export class VideoCapture {
 
   /** Stops ffmpeg (it finishes the file) and writes events.json. */
   async stop(): Promise<string> {
+    this.resume();
     this.data.durationMs = this.now();
     this.page.off("framenavigated", this.onNavigation);
     const ffmpeg = this.ffmpeg;
@@ -327,6 +331,64 @@ export class VideoCapture {
     writeFileSync(file, JSON.stringify(this.data));
     return file;
   }
+}
+
+/**
+ * Fills the screen's usable area (menu bar, Dock or taskbar excluded) with the
+ * window, or, `vertical`, its full height with a window as wide as makes the
+ * page 9:16. The page gets whatever size that leaves; returns it (CSS pixels)
+ * once the resize has settled. Placing a window that is already there changes
+ * nothing, so the page is not laid out again.
+ */
+export async function fitWindow(
+  page: Page,
+  vertical: boolean,
+): Promise<{ width: number; height: number }> {
+  const cdp = await page.context().newCDPSession(page);
+  const { windowId } = await cdp.send("Browser.getWindowForTarget");
+  const area = await page.evaluate(() => {
+    const s = window.screen as Screen & {
+      availLeft?: number;
+      availTop?: number;
+    };
+    return {
+      left: s.availLeft ?? 0,
+      top: s.availTop ?? 0,
+      width: s.availWidth,
+      height: s.availHeight,
+      // The window's frame and toolbar around the page.
+      frameWidth: window.outerWidth - window.innerWidth,
+      frameHeight: window.outerHeight - window.innerHeight,
+    };
+  });
+  const width = vertical
+    ? Math.round(((area.height - area.frameHeight) * 9) / 16) + area.frameWidth
+    : area.width;
+  await cdp.send("Browser.setWindowBounds", {
+    windowId,
+    bounds: { windowState: "normal" },
+  });
+  await cdp.send("Browser.setWindowBounds", {
+    windowId,
+    bounds: { left: area.left, top: area.top, width, height: area.height },
+  });
+  await cdp.detach();
+  await page.bringToFront();
+
+  // Wait for the resize to settle: the page size reads the same three times.
+  let size = { width: 0, height: 0 };
+  let same = 0;
+  for (let i = 0; i < 50 && same < 3; i++) {
+    await delay(100);
+    const now = await page.evaluate(() => ({
+      width: window.innerWidth,
+      height: window.innerHeight,
+    }));
+    same =
+      now.width === size.width && now.height === size.height ? same + 1 : 0;
+    size = now;
+  }
+  return size;
 }
 
 type Grabber = "avfoundation" | "x11grab" | "ddagrab" | "gdigrab";

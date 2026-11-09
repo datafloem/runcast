@@ -4,8 +4,9 @@ Turns Playwright flows through a web app into **finished demo videos** and,
 from the same code, **end-to-end tests**. No video editing: a visible Chrome
 is screen-recorded while a virtual cursor works at a person's pace, then the
 kit renders an MP4 with a calm camera, a drawn cursor with click ripples, a
-framed 1920×1080 layout, and optionally captions, title cards, blurred fields
-and an ElevenLabs voice-over timed to the steps.
+framed 1920×1080 layout (or 1080×1920 for YouTube Shorts and Instagram
+Reels), and optionally captions, title cards, blurred fields and an
+ElevenLabs voice-over timed to the steps.
 
 It is app-agnostic. An app adds a **recording folder** (default
 `tests/recording/`) with its own config, helpers, steps, scenarios and
@@ -143,7 +144,8 @@ Add a scenario name to run one: `node tests/recording/.kit/cli.ts test login`.
 
 ## Video
 
-1. Chrome fills the screen's usable area; the page takes its size and the
+1. Chrome fills the screen's usable area (format `"vertical"`: its full
+   height, as wide as makes the page 9:16); the page takes its size and the
    renderer fits it into the frame. ffmpeg records that area at screen
    resolution, 30 fps (`.results/<test>/capture/screen.mkv`); the real cursor
    is not recorded. A virtual cursor moves inside the page, and every click,
@@ -151,11 +153,30 @@ Add a scenario name to run one: `node tests/recording/.kit/cli.ts test login`.
 2. The renderer produces the MP4:
    - **Camera:** calm. Actions on the same page without a long pause form a
      scene, framed once and held. Clustered actions get a gentle zoom (at most
-     1.5×); spread-out or short scenes stay full view. Tuning:
+     1.5×); spread-out or short scenes stay full view. `rec.show(locator)`, or
+     a step's `show: "<selector>"`, frames an element without touching it
+     (what the step wants the viewer to see) tightly, filling the frame (at
+     most 3×), until the next action. The camera gets there by a `pan`
+     (default), `slide`, `fade`, `cube` or `cut`: `scenario({ showTransition })`,
+     or `show: { target, transition }` on one step. Tuning:
      `defaultCameraOptions` in `scripts/video/timeline.ts`.
    - **Cursor:** a drawn arrow, a ripple in the brand colour on clicks.
    - **Look:** 1920×1080, dark background with a brand glow, rounded framed
      page with a shadow.
+   - **Format (optional):** `scenario({ format })` picks the video's shape:
+     - `"landscape"` (default): 1920×1080, for YouTube, websites, slides.
+     - `"vertical"`: 1080×1920. The page itself is 9:16 in every mode (a
+       narrow window in video, 480×854 in test and rehearsal), so the app
+       shows its mobile layout. For apps that have one.
+     - `"vertical-crop"`: 1080×1920 from a desktop recording. The camera
+       shows a 9:16 slice of the page and follows the action.
+     - `"vertical-fit"`: 1080×1920 with the whole desktop recording across
+       the middle; captions and cards in the space around it.
+
+     Vertical videos go to `videos/<scenario>-vertical.mp4`, so a landscape
+     render is kept. Captions sit above the bottom fifth, which Shorts and
+     Reels cover with their own title and buttons. One landscape recording
+     gives both: `REC_FORMAT=vertical-crop node tests/recording/.kit/cli.ts render <scenario>`.
    - **Captions (optional):** `scenario({ captions: true })` shows each step's
      message while it lasts.
    - **Title cards (optional):** `scenario({ intro: { title, subtitle }, outro: { ... } })`
@@ -187,6 +208,11 @@ a scenario; earlier steps run quickly and silently before the recording:
 REC_FROM=7 node tests/recording/.kit/cli.ts video demo
 REC_FROM=8 REC_TO=8 node tests/recording/.kit/cli.ts test demo   # try one step
 ```
+
+A step in the middle can stay out of the video: `offCamera: true` (every step
+factory takes it) runs it fast and silently, as before `REC_FROM`, and cuts
+its time out; the video goes on with the next step after a short cross-fade.
+For long waits and repeated work. Tests run it as usual.
 
 Each step's time, message and narration go to `.results/<test>/steps.json`.
 
@@ -246,8 +272,9 @@ guides the one-time Google Cloud setup and drafts the metadata. By hand:
    }
    ```
 
-4. `node tests/recording/.kit/cli.ts youtube upload <name>` uploads `videos/<name>.mp4` (or `video`
-   in the file), prints the link and stores it in the file as `result`. A
+4. `node tests/recording/.kit/cli.ts youtube upload <name>` uploads `videos/<name>.mp4` (else
+   `videos/<name>-vertical.mp4`, or `video` in the file; a vertical video of
+   at most 3 minutes becomes a Short), prints the link and stores it in the file as `result`. A
    second upload of the same scenario needs `--force`.
 
 `node tests/recording/.kit/cli.ts youtube check` shows what is missing. YouTube allows about 100
@@ -291,6 +318,8 @@ Steps and helpers move through `rec`, never `page.click`:
 - `spot(locator, x, y)`: a point inside an element (0–1), e.g. on a canvas.
 - `rec.type`: clicks the field and types; `rec.typeSecret` for passwords.
 - `rec.pause(ms)`: time for the viewer to read (skipped in tests).
+- `rec.show(locator, { ms, transition })`: points the camera at an element
+  without touching it, until the next action (checks it is visible in tests).
 
 The full rules are in the `runcast-scenario` skill (`skills/runcast-scenario/SKILL.md` in the runtime).
 
@@ -304,6 +333,7 @@ The full rules are in the `runcast-scenario` skill (`skills/runcast-scenario/SKI
 | `REC_FROM`, `REC_TO`                        | first, last        | Recording starts / ends at this step (number or id)            |
 | `REC_NARRATION`                             | `1`                | `0` ignores the narration file                                 |
 | `REC_CAPTIONS`                              | scenario           | `1` / `0` turns captions on / off when rendering               |
+| `REC_FORMAT`                                | scenario           | Overrides the scenario's video format (recording and rendering) |
 | `REC_END_HOLD_MS`                           | `2000`             | How long the last frame stays (video, rehearsal)               |
 | `REC_AIM_MS`                                | `400`              | Cursor rest on a target before clicking (video, rehearsal)     |
 | `REC_PAGE_WIDTH`                            | `1440`             | Rehearsal and test page width (16:9); video fills the screen   |
@@ -321,7 +351,8 @@ The project adds its own (account, base URL, scenario values).
 
 `test/linux/` checks the kit on Linux in a container: a sample app, a fresh
 install from the templates, a narration split with ffmpeg, test mode, then
-video mode on Xvfb with captions, blur, title cards and a cube transition. From the
+video mode on Xvfb with captions, blur, title cards, a `show`, an off-camera step
+and a cube transition. From the
 Runcast repository root:
 
 ```bash
@@ -344,3 +375,7 @@ captures land in `kit-linux-out/`. The same script runs outside a container:
   29 instead of 30 frames per second (the drawn cursor stays smooth, page
   content can stutter briefly), and rendering takes longer.
 - Chrome opens on the main screen at 100% zoom.
+- Format `"vertical"` records a window as tall as the screen: about 560×990
+  CSS pixels on a laptop. A Retina or 4K screen gives a sharp 1080×1920
+  video; a 1x screen is upscaled about two times. On Linux without a screen use
+  `REC_XVFB_SCALE=2`.

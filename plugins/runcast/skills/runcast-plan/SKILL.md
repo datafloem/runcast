@@ -1,6 +1,6 @@
 ---
 name: runcast-plan
-description: Plans a new demo or recorded-test video of a web app by interviewing the user step by step — goal, audience, duration, which product areas it touches, whether to use existing records or create new ones and their form fields, the flow screen by screen, on-screen messages, captions, title cards, blurred fields and voice-over — and writes the agreed scenario to <recording folder>/scenarios/<name>.md. Then hands off to the runcast-scenario skill to write the Playwright test. Use when someone wants to create, plan or design a new recording scenario or demo video.
+description: Plans a new demo or recorded-test video of a web app by interviewing the user step by step — goal, audience, duration, landscape or vertical (YouTube Shorts, Instagram Reels) format, which product areas it touches, whether to use existing records or create new ones and their form fields, the flow screen by screen, on-screen messages, captions, title cards, blurred fields and voice-over — and writes the agreed scenario to <recording folder>/scenarios/<name>.md. Then hands off to the runcast-scenario skill to write the Playwright test. Use when someone wants to create, plan or design a new recording scenario or demo video.
 ---
 
 # Planning a recording scenario by interview
@@ -50,6 +50,47 @@ Ask (over two or three messages; at most three questions each):
 4. Video only, or also an end-to-end test (headless, CI)? (suggest both —
    every scenario runs in all modes; for a test you will also ask what each
    step must verify.)
+
+   Only if the answer includes a video (video only, or both), ask about its
+   shape; a test-only scenario stays landscape and skips both:
+
+   - **4a. "Landscape or vertical?"** Describe each option by where it is
+     watched; the user's goal (question 1) decides which comes first and
+     carries "(Recommended)":
+     - **Landscape (16:9):** a YouTube video, a website, a presentation or
+       documentation.
+     - **Vertical (9:16):** YouTube Shorts, Instagram Reels, TikTok.
+
+     If vertical and the target length is over 3 minutes, say so: YouTube
+     makes vertical videos of at most 3 minutes Shorts; suggest a shorter
+     flow (Shorts and Reels work best under a minute).
+   - **4b. Only if vertical: "Which layout?"** Always show all three. First
+     decide which to recommend: read "Mobile layout" in `PROJECT.md`; if it
+     is missing or looks stale, check the code yourself (viewport meta,
+     breakpoints or responsive classes on the screens this scenario uses, a
+     mobile menu). Put the recommended option first, marked "(Recommended)",
+     with one line of evidence (e.g. "the layout has `md:` breakpoints and a
+     `MobileNav` component"). The user picks; never choose for them.
+     - **Mobile layout** (`vertical`): the page is 9:16, so the app shows its
+       own narrow layout; it fills the frame and reads well on a phone.
+       Recommend it when the app has a mobile layout for these screens.
+     - **Crop and follow** (`vertical-crop`): the desktop page is recorded;
+       the video shows a 9:16 slice of it that follows the action. Readable
+       on a phone, but the rest of the page is out of view. Recommend it for
+       desktop-only apps when the flow happens in one area of the screen
+       (forms, one panel).
+     - **Whole page in the middle** (`vertical-fit`): the desktop recording
+       across the middle of the frame, captions and cards around it. Nothing
+       is cut off, but the content is small (the camera's zoom helps).
+       Recommend it for desktop-only apps when the viewer must see the whole
+       page (dashboards, layouts spread across the screen).
+
+     When the code does not settle it, say so in the evidence and recommend
+     one of the desktop layouts. If the use is "both" and the layout is
+     `vertical`, say that the test also runs in the mobile layout (480×854).
+     Write the decision ("Format"); the test passes
+     `scenario({ format: "vertical" })` (or `"vertical-crop"` /
+     `"vertical-fit"`).
 5. **"Do you want a voice-over for the video?"** If yes: language, tone
    (formal / friendly), who makes the audio (by hand in the ElevenLabs web app,
    or `node tests/recording/.kit/cli.ts narration generate` with their own API key) and the ElevenLabs
@@ -155,6 +196,15 @@ Then ask: **"From which step should the video start?"** Earlier steps run fast
 and silently before recording (`REC_FROM`); e.g. sign-in and setup can happen
 off camera. Do not ask message, length or focus for steps that are not seen.
 
+Then look for steps **in the middle** the viewer need not watch: long waits
+(an import, a report being built, a slow page), repeated work (the third of
+three similar records), setup between two parts of the story. Propose to run
+them **off camera**: the recording pauses during the step and goes on with
+the next one (a short cross-fade joins them); the step still runs and is still
+tested. Ask: "Shall these run off camera?" and mark them "Off camera" in the
+flow. A pause can only start and end at a step boundary: if only part of a
+step is boring, propose splitting it.
+
 While drafting:
 
 - Take screens and transitions from `PROJECT.md`; every step should be doable
@@ -173,9 +223,37 @@ Settle the steps in groups of 2–3. For each step:
 | What happens  | Clicks, typing, choices in order; the values entered                                                   |
 | On-screen msg | The step's short message (≤ 6 words); written to `steps.json` with the step's time                     |
 | Length        | Roughly how many seconds                                                                               |
-| Focus         | Where the viewer should look: where the cursor rests, what is highlighted                              |
+| Focus         | Where the viewer should look once the step is done: the element that carries its message (see below), and its transition if it differs |
 | Check         | What must be on screen when the step ends (a success message, a new row, a total...). The test's value |
 | Transition    | Only if chosen in phase 1: does a cube turn replace this step? Only for steps that just move elsewhere |
+
+**Focus decides the camera.** Work it out yourself from the goal and the
+screen, then confirm: what should the viewer see when this step ends? After
+sign-in it is the dashboard's cards, after saving the new row, after a run its
+result. Name one concrete element (one card, the new row, the total), not
+"the page"; find it in the code so the test can point the camera at it
+(`show`). This matters most for vertical videos: with `vertical-crop` only a
+slice of the page is visible, and a step that clicks nothing (a `hold`, a page
+that opens) shows nothing useful unless its Focus is set. Steps whose own
+clicks carry the message need no Focus ("—").
+
+**Transitions between shown areas.** Once the Focus of every step is settled,
+if the video shows **more than one** area this way, ask: **"How should the
+video move from one shown area to the next?"** Options, recommended first:
+
+- **Slide** (`slide`): the new area pushes the old one out sideways. Recommend
+  it when several areas are shown one after another (cards, panels, tabs).
+- **Pan** (`pan`): the camera glides over the page to the next area; calm,
+  keeps the viewer's sense of where things are. Recommend it when the areas
+  are close together or there are only two.
+- **Fade** (`fade`): a soft cross-fade.
+- **Cube** (`cube`): a 3D cube turn; lively, use sparingly.
+- **Cut** (`cut`): at once, like a jump cut.
+
+The answer is the scenario's default; a step may differ (e.g. a cube only into
+the last area). Write it ("Show transitions: slide; step 5: cube"); the test
+passes `scenario({ showTransition: "slide" })`, and a step's own as
+`show: { target, transition }`.
 
 Do not ask for details the user need not know (selectors, waits); ask only for
 decisions visible on screen. Update the text, then move to the next group.
@@ -193,6 +271,8 @@ Complete the text and summarise for the user:
 - Are the preparation list and the clean-up before another take clear?
 - Anything left in "Open questions"?
 - Are steps needing new helpers listed?
+- Does every step that only shows something (no clicks the viewer follows)
+  have a Focus? For `vertical-crop`, every such step needs one.
 
 Then ask: "The scenario text is ready — shall I write the test?"
 
@@ -300,7 +380,8 @@ For each "step ran X s longer than its narration" warning, lengthen the
 segment or suggest speeding up the step. When no warnings remain, record.
 
 **e) Video.** `node tests/recording/.kit/cli.ts video <name>`: the audio is mixed into the MP4
-at the seconds its steps start; nothing is placed by hand.
+at the seconds its steps start; nothing is placed by hand. A vertical video
+is written to `videos/<name>-vertical.mp4`.
 
 ### 8. Publishing (optional)
 
