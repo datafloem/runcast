@@ -4,6 +4,7 @@ export { sleep, type Point } from "./cursor.ts";
 // Playwright types for helpers, so a project needs no Playwright of its own.
 export type { BrowserContext, Locator, Page } from "@playwright/test";
 export { requireEnv } from "./env.ts";
+export { VIDEO_FORMATS, type VideoFormat } from "./format.ts";
 export {
   isTestMode,
   isVideoMode,
@@ -30,6 +31,8 @@ export {
   hold,
   scenario,
   type ScenarioDefinition,
+  type ShowTransition,
+  type StepShow,
   type Step,
   type StepContext,
   type StepOptions,

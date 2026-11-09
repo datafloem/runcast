@@ -37,7 +37,13 @@ the app yourself.
 
 - **A 1920×1080 MP4** of your app in a framed browser window. A drawn cursor
   moves at a human pace and shows a ripple on each click. The camera zooms in
-  gently where the action is and holds still otherwise.
+  gently where the action is, or on what a step wants you to see (the new
+  row, a dashboard card), and holds still otherwise.
+- **Or a vertical 1080×1920 MP4** for YouTube Shorts, Instagram Reels or
+  TikTok. If your app has a mobile layout, the video shows it. If it doesn't,
+  the camera follows the action across the desktop page, or the whole page
+  sits in the middle of the frame. The assistant looks at your app's code
+  and recommends one.
 - **Optional extras**, each chosen when you plan the video:
   - captions at the bottom, one short message per step;
   - an opening card and a closing card with your logo and brand colour;
@@ -46,7 +52,9 @@ the app yourself.
   - a voice-over from ElevenLabs, timed so that each sentence plays while its
     step is on screen;
   - a 3D cube turn when the video moves to another part of the app, in place
-    of the wait while the page loads.
+    of the wait while the page loads;
+  - steps that run off camera: a long import or repeated work still runs,
+    but the video skips it and goes on from the next step.
 - **An end-to-end test** made from the same script. It runs headless (no
   window) in seconds and works in CI.
 - **YouTube upload** with a title, description, chapters and privacy setting
@@ -229,11 +237,18 @@ question:
 
 - what the video shows, who watches it, and how long it should be;
 - the language of on-screen messages;
+- landscape or vertical (Shorts, Reels), and for vertical, which layout. The
+  assistant recommends one after checking whether your app has a mobile
+  layout;
 - captions, title cards, blurred fields, voice-over, cube transitions;
 - which records to use: existing data, or new records created during the
   video (and their form values);
 - the flow, screen by screen, and from which step the recording starts.
-  Sign-in can happen off camera.
+  Sign-in can happen off camera, and so can slow or repeated steps in the
+  middle;
+- what the viewer should look at after each step. The camera goes there,
+  and you choose how it moves between those areas: a pan, a slide, a fade, a
+  cube turn or a cut.
 
 The plan is saved as `tests/recording/scenarios/<name>.md`, so your team can
 read and approve it.
@@ -257,6 +272,13 @@ the result:
 
 ```text
 tests/recording/videos/<name>.mp4
+```
+
+A vertical video goes to `videos/<name>-vertical.mp4`. To get a vertical
+version of a landscape recording without recording again:
+
+```bash
+REC_FORMAT=vertical-crop node tests/recording/.kit/cli.ts render <name>
 ```
 
 To change captions, title cards or the camera without recording again:
@@ -379,6 +401,7 @@ the plugin in your AI tool. In Claude Code that is
 | **Recording folder** | The folder in your project with the scenarios and settings (default `tests/recording/`)            |
 | **Runtime**          | The kit plus Playwright, built once per computer in `~/.cache/runcast/` and shared by all projects |
 | **Modes**            | `test` (fast, headless), `rehearsal` (video pace, headless), `video` (recorded)                    |
+| **Format**           | The video's shape: `landscape` (16:9) or a vertical 9:16 layout (`vertical`, `vertical-crop`, `vertical-fit`) |
 | **Skill**            | Instructions that tell the AI assistant how to do one job (set up, plan, write, publish)           |
 
 ## This repository

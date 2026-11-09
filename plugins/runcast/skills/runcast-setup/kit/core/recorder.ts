@@ -7,9 +7,19 @@ import {
 import { writeFileSync } from "node:fs";
 import path from "node:path";
 import { sleep, type Point } from "./cursor.ts";
+import {
+  recordsVertically,
+  VERTICAL_PAGE,
+  type VideoFormat,
+} from "./format.ts";
 import { isTestMode, isVideoMode, pageSize, settings } from "./mode.ts";
-import type { VideoCard } from "./scenario.ts";
-import { VideoCapture, type Box, type FocusKind } from "./video-capture.ts";
+import type { ShowTransition, VideoCard } from "./scenario.ts";
+import {
+  fitWindow,
+  VideoCapture,
+  type Box,
+  type FocusKind,
+} from "./video-capture.ts";
 import { VirtualMouse } from "./virtual-mouse.ts";
 
 /** A point inside an element, as fractions of its box (0.5, 0.5 = centre). */
@@ -77,12 +87,21 @@ export class Recorder {
   /** Box of the element the last action aimed at (page coordinates). */
   private lastBox: Box | undefined;
   private live = false;
+  /** Off camera (an `offCamera` step): fast actions, not recorded. */
+  private suspended = false;
+  private suspendedAt = 0;
+  /** Time spent off camera so far: left out of the recording's clock. */
+  private offCameraMs = 0;
   private startedAt = Date.now();
   private readonly steps: Array<StepMark> = [];
   /** Whether the video shows the step notes as captions (see ScenarioDefinition). */
   captions = false;
   /** Title cards before / after the recording (see ScenarioDefinition). */
   cards: { intro?: VideoCard; outro?: VideoCard } = {};
+  /** How rec.show reaches an element when it names no transition (see ScenarioDefinition). */
+  showTransition: ShowTransition = "pan";
+  /** The video's shape (see ScenarioDefinition); set by useFormat(). */
+  private format: VideoFormat = "landscape";
 
   constructor(
     private readonly page: Page,
@@ -95,6 +114,18 @@ export class Recorder {
   }
 
   /**
+   * Sets the video's shape. "vertical" makes the page 9:16 right away (a
+   * narrow window in video mode, a 9:16 viewport otherwise), so the app is
+   * prepared and recorded in its mobile layout.
+   */
+  async useFormat(format: VideoFormat): Promise<void> {
+    this.format = format;
+    if (!recordsVertically(format)) return;
+    if (isVideoMode) await fitWindow(this.page, true);
+    else await this.page.setViewportSize(VERTICAL_PAGE);
+  }
+
+  /**
    * Ends the preparation phase: from here on actions run at a person's pace
    * (video, rehearsal) and, in video mode, the screen is recorded.
    */
@@ -103,13 +134,14 @@ export class Recorder {
     this.startedAt = Date.now();
     if (isTestMode) return;
     let capture: VideoCapture | null = null;
-    let viewport = pageSize;
+    let viewport = this.page.viewportSize() ?? pageSize;
     if (isVideoMode) {
       capture = new VideoCapture(
         this.page,
         this.testInfo.outputPath("capture"),
         this.startedAt,
         path.basename(this.testInfo.file, ".spec.ts"),
+        recordsVertically(this.format),
       );
       // Time zero is when the screen recording runs.
       const started = await capture.start();
@@ -136,7 +168,7 @@ export class Recorder {
       console.log(`(preparation) ${title}`);
       return Promise.resolve();
     }
-    const seconds = (Date.now() - this.startedAt) / 1000;
+    const seconds = this.elapsedMs() / 1000;
     const at = `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(
       Math.floor(seconds % 60),
     ).padStart(2, "0")}`;
@@ -243,9 +275,9 @@ export class Recorder {
     }
     const startedMs = this.capture?.now();
     await this.page.keyboard.type(text, {
-      delay: this.live ? settings.typeDelay(delayMs) : 0,
+      delay: this.paced ? settings.typeDelay(delayMs) : 0,
     });
-    if (this.capture && this.lastBox) {
+    if (this.capture && this.lastBox && !this.suspended) {
       const box = this.lastBox;
       const centre = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
       this.capture.focus("type", centre, box, startedMs);
@@ -258,9 +290,53 @@ export class Recorder {
     await target.fill(text);
   }
 
-  /** Seconds since the recording started (0 before it). */
+  /** Time since the recording started, time off camera left out (0 before it). */
   elapsedMs(): number {
-    return this.live ? Date.now() - this.startedAt : 0;
+    if (!this.live) return 0;
+    const now = this.suspended ? this.suspendedAt : Date.now();
+    return now - this.startedAt - this.offCameraMs;
+  }
+
+  /**
+   * Takes what follows off camera, until `resume()`: actions run fast, as in
+   * preparation, and the time is cut out of the video (the renderer joins
+   * both sides with a short cross-fade). Used for `offCamera` steps.
+   */
+  suspend(): void {
+    if (!this.live || this.suspended) return;
+    this.suspended = true;
+    this.suspendedAt = Date.now();
+    this.capture?.pause();
+  }
+
+  /** Back on camera after `suspend()`. */
+  resume(): void {
+    if (!this.suspended) return;
+    this.offCameraMs += Date.now() - this.suspendedAt;
+    this.suspended = false;
+    this.capture?.resume();
+  }
+
+  /**
+   * Points the camera at an element without touching it: the video frames it
+   * (zooms in, or moves a vertical crop there) and stays until the next
+   * action. For what a step wants the viewer to look at, e.g. the cards a
+   * dashboard opens with. It fills the frame. `transition` is how the camera
+   * gets there (default: the scenario's showTransition, else "pan"). `ms`
+   * also holds it for the viewer (video and rehearsal). In test mode it
+   * checks the element is visible.
+   */
+  async show(
+    target: Target,
+    options: { ms?: number; transition?: ShowTransition } = {},
+  ): Promise<void> {
+    const point = await this.pagePoint(target);
+    const startedMs = this.capture?.now();
+    if (options.ms) await this.pause(options.ms);
+    if (!this.paced || !this.capture) return;
+    const box = isLocator(target) ? this.lastBox : undefined;
+    const transition = options.transition ?? this.showTransition;
+    this.capture.focus("show", point, box, startedMs, transition);
   }
 
   /** Notes that the last marked step ran longer than its narration. */
@@ -271,11 +347,12 @@ export class Recorder {
 
   /** A pause for the viewer. Skipped in test mode: never use it to wait for the app. */
   pause(ms = 1000): Promise<void> {
-    return settings.pauses && this.live ? sleep(ms) : Promise.resolve();
+    return settings.pauses && this.paced ? sleep(ms) : Promise.resolve();
   }
 
   /** Holds the last frame, then stops the recording. */
   async finish(): Promise<void> {
+    this.resume();
     if (this.live) await sleep(settings.endHoldMs);
     if (this.capture) {
       const file = await this.capture.stop();
@@ -295,6 +372,7 @@ export class Recorder {
           {
             scenario,
             captions: this.captions,
+            format: this.format,
             ...this.cards,
             steps: this.steps,
           },
@@ -308,11 +386,16 @@ export class Recorder {
 
   /** The virtual cursor once recording runs; null = fast Playwright actions. */
   private liveMouse(): VirtualMouse | null {
-    return this.live ? this.mouse : null;
+    return this.paced ? this.mouse : null;
   }
 
   private get aimMs(): number {
-    return this.live ? settings.aimMs : 0;
+    return this.paced ? settings.aimMs : 0;
+  }
+
+  /** On camera: actions at a person's pace (video, rehearsal). */
+  private get paced(): boolean {
+    return this.live && !this.suspended;
   }
 
   /** Video mode: where the camera should look for this action. */
@@ -322,7 +405,7 @@ export class Recorder {
     point: Point,
     from?: number,
   ): void {
-    if (!this.capture) return;
+    if (!this.capture || this.suspended) return;
     // A spot inside a big element (e.g. the canvas) is not the element: zoom on the point.
     const box = isLocator(target) ? this.lastBox : undefined;
     this.capture.focus(kind, point, box, from);

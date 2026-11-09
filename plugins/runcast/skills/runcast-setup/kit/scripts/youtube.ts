@@ -44,7 +44,10 @@ const CHUNK = 8 * 1024 * 1024;
 
 /** scenarios/<name>.youtube.json: what the video is called and who may see it. */
 interface Metadata {
-  /** The MP4, relative to the recording folder. Default videos/<scenario>.mp4. */
+  /**
+   * The MP4, relative to the recording folder. Default videos/<scenario>.mp4,
+   * else videos/<scenario>-vertical.mp4 (a vertical render).
+   */
   video?: string;
   title: string;
   description?: string;
@@ -218,9 +221,15 @@ async function upload(scenario: string, force: boolean): Promise<void> {
     );
   }
   validate(meta, metaFile);
+  const landscape = path.join("videos", `${base}.mp4`);
+  const vertical = path.join("videos", `${base}-vertical.mp4`);
   const video = path.resolve(
     PROJECT_DIR,
-    meta.video ?? path.join("videos", `${base}.mp4`),
+    meta.video ??
+      (!existsSync(path.resolve(PROJECT_DIR, landscape)) &&
+      existsSync(path.resolve(PROJECT_DIR, vertical))
+        ? vertical
+        : landscape),
   );
   if (!existsSync(video))
     fail(`No video: ${path.relative(process.cwd(), video)}. Render it first.`);

@@ -12,11 +12,31 @@ export interface Box {
 export interface Focus {
   t: number;
   until: number;
-  kind: "click" | "double-click" | "right-click" | "hover" | "type" | "drag";
+  kind:
+    | "click"
+    | "double-click"
+    | "right-click"
+    | "hover"
+    | "type"
+    | "drag"
+    | "show";
   x: number;
   y: number;
   box?: Box;
+  /** A "show": how the camera gets there (ShowTransition); default "pan". */
+  transition?: string;
 }
+
+/**
+ * How the camera reaches a shown element: "pan" (a camera move), "slide" (the
+ * new view pushes the old one out sideways), "fade", "cube" (a cube turn) or
+ * "cut" (at once).
+ */
+export type ShowTransition = "pan" | "slide" | "fade" | "cube" | "cut";
+
+/** How long each show transition takes (ms); "pan" uses CameraOptions.moveMs. */
+export const SHOW_TRANSITION_MS: Record<Exclude<ShowTransition, "pan">, number> =
+  { slide: 600, fade: 500, cube: 900, cut: 0 };
 
 export interface PointerSample {
   t: number;
@@ -25,7 +45,23 @@ export interface PointerSample {
   kind: "move" | "down" | "up";
 }
 
-/** Camera: zoom factor (1 = whole page) and the page point at the centre. */
+export interface Size {
+  width: number;
+  height: number;
+}
+
+/**
+ * What the camera shows at zoom 1: the largest area of the video frame's
+ * shape (width / height) inside the page. The whole page when the shapes
+ * match; a slice of it when they don't (a 9:16 video of a desktop page).
+ */
+export function baseView(viewport: Size, aspect: number): Size {
+  return viewport.width / viewport.height > aspect
+    ? { width: viewport.height * aspect, height: viewport.height }
+    : { width: viewport.width, height: viewport.width / aspect };
+}
+
+/** Camera: zoom factor (1 = the base view) and the page point at the centre. */
 export interface Camera {
   zoom: number;
   cx: number;
@@ -50,6 +86,9 @@ export interface CameraOptions {
   holdMs: number;
   /** Duration of each camera move. */
   moveMs: number;
+  /** A shown element (rec.show) is framed tightly: this much room around it, at most this close. */
+  showMarginPx: number;
+  showMaxZoom: number;
 }
 
 export const defaultCameraOptions: CameraOptions = {
@@ -62,16 +101,21 @@ export const defaultCameraOptions: CameraOptions = {
   leadMs: 300,
   holdMs: 1200,
   moveMs: 1000,
+  showMarginPx: 24,
+  showMaxZoom: 3,
 };
 
 interface Keyframe extends Camera {
   t: number;
+  /** The camera reaches this keyframe by a show transition instead of moving. */
+  transition?: Exclude<ShowTransition, "pan">;
 }
 
 interface Scene {
   start: number;
   end: number;
   framing: Camera;
+  transition?: ShowTransition;
 }
 
 /**
@@ -80,25 +124,78 @@ interface Scene {
  * once (all its actions in view) and holds still while it plays. Between
  * scenes it moves once — to the next framing, or back to the full page.
  * Short scenes, and scenes spread over most of the page, are not zoomed.
+ *
+ * When the base view is only a slice of the page (`view` smaller than
+ * `viewport`), the camera follows instead: every scene is framed, a scene
+ * never spans more than the slice holds, and the camera goes from scene to
+ * scene without returning to the middle. After a page change with no action
+ * soon after, it looks at the top of the new page.
+ *
+ * A "show" (rec.show) is a scene of its own: the element it names is framed
+ * tightly (it fills the frame, up to showMaxZoom) until the next action or
+ * page change. Its transition decides how the camera gets there: a move
+ * ("pan"), or a switch the renderer draws as a slide, fade, cube or cut.
+ *
+ * At a cut (an off-camera step left out of the video) the camera does not
+ * travel across: it jumps to the next framing there, under the renderer's
+ * cross-fade, when the page changed off camera, and moves on after the cut
+ * otherwise.
  */
 export function buildCameraTrack(
   focus: Array<Focus>,
-  viewport: { width: number; height: number },
+  viewport: Size,
   options: CameraOptions = defaultCameraOptions,
   /** Page changes: a scene never spans one, and ends soon after it. */
   navigations: Array<number> = [],
+  /** What the camera shows at zoom 1 (baseView); default the whole page. */
+  view: Size = viewport,
+  /** Times where off-camera time was cut out. */
+  cuts: Array<number> = [],
 ): Array<Keyframe> {
+  const follow =
+    view.width < viewport.width - 1 || view.height < viewport.height - 1;
   const home: Camera = {
     zoom: 1,
     cx: viewport.width / 2,
     cy: viewport.height / 2,
   };
-  const scenes = buildScenes(focus, viewport, options, navigations, home);
-  const keyframes: Array<Keyframe> = [{ t: 0, ...home }];
+  const frame: Framing = { viewport, view, follow, home };
+  const scenes = buildScenes(
+    holdShows(follow ? withPageTops(focus, frame, navigations) : focus, navigations),
+    frame,
+    options,
+    navigations,
+  );
+  // Following: start where the first action is, not in the middle.
+  const start = follow ? (scenes[0]?.framing ?? home) : home;
+  const keyframes: Array<Keyframe> = [{ t: 0, ...start }];
 
-  const moveTo = (camera: Camera, arriveAt: number) => {
+  const moveTo = (
+    camera: Camera,
+    arriveAt: number,
+    transition: ShowTransition = "pan",
+  ) => {
     const last = keyframes.at(-1) ?? { t: 0, ...home };
     if (sameFraming(last, camera)) return;
+    // A cut on the way: never travel across it. Hold until the cut; if the
+    // page changed off camera, jump to the new framing there, otherwise
+    // travel from the cut on.
+    const cut = cuts.find((c) => c > last.t && c <= arriveAt + options.leadMs);
+    if (cut !== undefined) {
+      keyframes.push({ ...cameraOf(last), t: cut - 1 });
+      const pageChanged = navigations.some((n) => Math.abs(n - cut) <= 1);
+      const arrive = pageChanged
+        ? cut
+        : Math.max(arriveAt, cut + options.moveMs * 0.6);
+      keyframes.push({ ...camera, t: arrive });
+      return;
+    }
+    if (transition !== "pan") {
+      // A switch when the shown element is there; the renderer draws it.
+      const at = Math.max(arriveAt + options.leadMs, last.t + 2);
+      keyframes.push({ ...cameraOf(last), t: at - 1 }, { ...camera, t: at, transition });
+      return;
+    }
     const arrive = Math.max(arriveAt, last.t + options.moveMs * 0.6);
     const leave = Math.max(last.t, arrive - options.moveMs);
     if (leave > last.t) keyframes.push({ ...cameraOf(last), t: leave });
@@ -106,14 +203,19 @@ export function buildCameraTrack(
   };
 
   scenes.forEach((scene, i) => {
-    moveTo(scene.framing, scene.start - options.leadMs);
+    moveTo(scene.framing, scene.start - options.leadMs, scene.transition);
+    // Following: stay on the last action until the next scene.
+    if (follow) return;
     const next = scenes.at(i + 1);
     // A page change right after the scene: let go soon after it.
     const navigation = navigations.find(
       (n) => n >= scene.end && n < scene.end + options.holdMs,
     );
-    const release =
+    const planned =
       navigation !== undefined ? navigation + 250 : scene.end + options.holdMs;
+    // A cut before then: hold until it, then jump (moveTo).
+    const cut = cuts.find((c) => c >= scene.end && c < planned);
+    const release = cut !== undefined ? cut - 1 : planned;
     // The next scene starts soon: go straight there instead of out and in again.
     if (next && next.start - options.leadMs - release < options.moveMs) return;
     const last = keyframes.at(-1) ?? { t: 0, ...home };
@@ -123,13 +225,56 @@ export function buildCameraTrack(
   return keyframes;
 }
 
+/** The page, what the camera shows of it at zoom 1, and how it moves. */
+interface Framing {
+  viewport: Size;
+  view: Size;
+  follow: boolean;
+  home: Camera;
+}
+
+/** A shown element stays in view until the next action or page change. */
+function holdShows(
+  focus: Array<Focus>,
+  navigations: Array<number>,
+): Array<Focus> {
+  const sorted = [...focus].sort((a, b) => a.t - b.t);
+  return sorted.map((f, i) => {
+    if (f.kind !== "show") return f;
+    const next = sorted
+      .slice(i + 1)
+      .find((other) => other.t > f.until)?.t;
+    const page = navigations.find((n) => n > f.until);
+    const end = Math.min(next ?? Infinity, page ?? Infinity, f.until + 60_000);
+    return { ...f, until: Math.max(f.until, end - 1) };
+  });
+}
+
+/** Following: after a page change with no action soon after, look at the top of the page. */
+function withPageTops(
+  focus: Array<Focus>,
+  frame: Framing,
+  navigations: Array<number>,
+): Array<Focus> {
+  const quietMs = 1500;
+  const tops: Array<Focus> = navigations
+    .filter((n) => !focus.some((f) => f.t >= n && f.t < n + quietMs))
+    .map((n) => ({
+      t: n + 300,
+      until: n + 300,
+      kind: "show" as const,
+      x: frame.viewport.width / 2,
+      y: frame.view.height / 2,
+    }));
+  return [...focus, ...tops];
+}
+
 /** Splits actions into scenes and frames each one. */
 function buildScenes(
   focus: Array<Focus>,
-  viewport: { width: number; height: number },
+  frame: Framing,
   options: CameraOptions,
   navigations: Array<number>,
-  home: Camera,
 ): Array<Scene> {
   const sorted = [...focus].sort((a, b) => a.t - b.t);
   const groups: Array<Array<Focus>> = [];
@@ -139,7 +284,20 @@ function buildScenes(
       ? Math.max(...current.map((c) => c.until))
       : -Infinity;
     const pageChanged = navigations.some((n) => n > lastEnd && n <= f.t);
-    if (current && !pageChanged && f.t - lastEnd < options.sceneGapMs)
+    // Following: a scene holds only what fits in the slice at zoom 1.
+    const fits =
+      !frame.follow ||
+      !current ||
+      fitsInView([...current, f], frame.view, options.minMarginPx);
+    // A shown element is a scene of its own.
+    const shown = f.kind === "show" || current?.some((c) => c.kind === "show");
+    if (
+      current &&
+      !pageChanged &&
+      !shown &&
+      fits &&
+      f.t - lastEnd < options.sceneGapMs
+    )
       current.push(f);
     else groups.push([f]);
   }
@@ -147,30 +305,26 @@ function buildScenes(
   return groups.map((group) => {
     const start = Math.min(...group.map((f) => f.t));
     const end = Math.max(...group.map((f) => f.until));
-    if (end - start < options.minSceneMs) return { start, end, framing: home };
-    return {
-      start,
-      end,
-      framing: frameActions(group, viewport, options, home),
-    };
+    const shown = group.find((f) => f.kind === "show" && f.box);
+    const transition = isShowTransition(shown?.transition)
+      ? shown.transition
+      : undefined;
+    if (shown) return { start, end, framing: frameShown(shown, frame, options), transition };
+    if (!frame.follow && end - start < options.minSceneMs)
+      return { start, end, framing: frame.home };
+    return { start, end, framing: frameActions(group, frame, options) };
   });
 }
 
-/** The framing that keeps every action of a scene in view, with room around. */
-function frameActions(
-  group: Array<Focus>,
-  viewport: { width: number; height: number },
-  options: CameraOptions,
-  home: Camera,
-): Camera {
+/** The area a scene's actions cover: a typed-in field or shown element whole, anything else by its point. */
+function actionArea(group: Array<Focus>): Box {
   let left = Infinity;
   let top = Infinity;
   let right = -Infinity;
   let bottom = -Infinity;
   for (const f of group) {
-    // A typed-in field counts whole; anything else by the point acted on.
     const area =
-      f.kind === "type" && f.box
+      (f.kind === "type" || f.kind === "show") && f.box
         ? f.box
         : { x: f.x, y: f.y, width: 0, height: 0 };
     left = Math.min(left, area.x);
@@ -178,20 +332,85 @@ function frameActions(
     right = Math.max(right, area.x + area.width);
     bottom = Math.max(bottom, area.y + area.height);
   }
-  const width = right - left;
-  const height = bottom - top;
+  return { x: left, y: top, width: right - left, height: bottom - top };
+}
+
+function fitsInView(group: Array<Focus>, view: Size, marginPx: number): boolean {
+  const area = actionArea(group);
+  return (
+    area.width + marginPx * 2 <= view.width &&
+    area.height + marginPx * 2 <= view.height
+  );
+}
+
+function isShowTransition(value: unknown): value is ShowTransition {
+  return ["pan", "slide", "fade", "cube", "cut"].includes(value as string);
+}
+
+/** A shown element, tight: it fills the frame with a little room around. */
+function frameShown(
+  shown: Focus,
+  frame: Framing,
+  options: CameraOptions,
+): Camera {
+  const box = shown.box ?? { x: shown.x, y: shown.y, width: 0, height: 0 };
+  const pad = options.showMarginPx;
+  const zoom = Math.max(
+    1,
+    Math.min(
+      options.showMaxZoom,
+      frame.view.width / (box.width + pad * 2),
+      frame.view.height / (box.height + pad * 2),
+    ),
+  );
+  return clampCamera(
+    { zoom, cx: box.x + box.width / 2, cy: box.y + box.height / 2 },
+    frame.viewport,
+    frame.view,
+  );
+}
+
+/**
+ * The show transition running at time t, if any: its kind, how far along
+ * (0–1) and the camera it started from.
+ */
+export function transitionAtTime(
+  track: Array<Keyframe>,
+  t: number,
+): { kind: Exclude<ShowTransition, "pan" | "cut">; p: number; from: Camera } | null {
+  for (let i = 1; i < track.length; i++) {
+    const k = track[i]!;
+    if (!k.transition || k.transition === "cut") continue;
+    const ms = SHOW_TRANSITION_MS[k.transition];
+    if (t >= k.t && t < k.t + ms) {
+      return { kind: k.transition, p: (t - k.t) / ms, from: cameraOf(track[i - 1]!) };
+    }
+  }
+  return null;
+}
+
+/** The framing that keeps every action of a scene in view, with room around. */
+function frameActions(
+  group: Array<Focus>,
+  frame: Framing,
+  options: CameraOptions,
+): Camera {
+  const { x: left, y: top, width, height } = actionArea(group);
   const padX = Math.max(options.minMarginPx, width * options.margin);
   const padY = Math.max(options.minMarginPx, height * options.margin);
   const zoom = Math.min(
     options.maxZoom,
-    viewport.width / (width + padX * 2),
-    viewport.height / (height + padY * 2),
+    frame.view.width / (width + padX * 2),
+    frame.view.height / (height + padY * 2),
   );
-  if (zoom < options.minZoom) return home;
-  return clampCamera(
-    { zoom, cx: left + width / 2, cy: top + height / 2 },
-    viewport,
-  );
+  const centre = { cx: left + width / 2, cy: top + height / 2 };
+  if (zoom < options.minZoom) {
+    // Following: not worth zooming, but still look at it.
+    return frame.follow
+      ? clampCamera({ zoom: 1, ...centre }, frame.viewport, frame.view)
+      : frame.home;
+  }
+  return clampCamera({ zoom, ...centre }, frame.viewport, frame.view);
 }
 
 function cameraOf(k: Camera): Camera {
@@ -210,7 +429,8 @@ function sameFraming(a: Camera, b: Camera): boolean {
 export function cameraAtTime(
   track: Array<Keyframe>,
   t: number,
-  viewport: { width: number; height: number },
+  viewport: Size,
+  view: Size = viewport,
 ): Camera {
   const next = track.findIndex((k) => k.t > t);
   let camera: Camera;
@@ -226,17 +446,19 @@ export function cameraAtTime(
       cy: lerp(a.cy, b.cy, p),
     };
   }
-  return clampCamera(camera, viewport);
+  return clampCamera(camera, viewport, view);
 }
 
 /** Keeps the visible area inside the page. */
 export function clampCamera(
   c: Camera,
-  viewport: { width: number; height: number },
+  viewport: Size,
+  /** What the camera shows at zoom 1 (baseView). */
+  view: Size = viewport,
 ): Camera {
   const zoom = Math.max(1, c.zoom);
-  const halfW = viewport.width / zoom / 2;
-  const halfH = viewport.height / zoom / 2;
+  const halfW = view.width / zoom / 2;
+  const halfH = view.height / zoom / 2;
   return {
     zoom,
     cx: Math.min(viewport.width - halfW, Math.max(halfW, c.cx)),

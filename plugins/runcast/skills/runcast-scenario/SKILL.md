@@ -83,10 +83,51 @@ shows each step separately in the Playwright report.
   keep them out of the video: use `REC_FROM`. If a scenario is always recorded
   from the same step, make it the default with `scenario({ recordFrom: "<id>" })`;
   `REC_FROM` still wins.
+- **Off camera (optional):** if the scenario text marks a step in the middle
+  "off camera", pass `offCamera: true` to it (`steps.importOrders({ offCamera: true })`).
+  It runs fast and silently, as the steps before `REC_FROM` do, and its time
+  is cut out of the video; the video goes on with the next step after a short
+  cross-fade. For long waits (an import, a report being built) and repeated
+  work the viewer need not watch. It has no note, caption or voice-over.
+  Pausing inside a step is not possible: split the step where the video
+  should stop and start again. Tests run off-camera steps as usual.
+- **Where the viewer looks (`show`):** the scenario text's "Focus" column
+  becomes a step's `show: "<CSS selector>"` when the step's result is
+  something to look at rather than click (`steps.login({ show: '[data-testid="stats"]' })`,
+  `steps.hold({ ms: 3000, show: "main .cards" })`). The camera frames that
+  element once the step is done (on `hold`: during the hold) until the next
+  action, tightly: it fills the frame (with about 24 px around it, at most
+  3×), in landscape and in `vertical-crop`. Pick the element that carries the
+  message (one card, the new row, a total), not a whole page area: a wide
+  element cannot be zoomed. The selector is checked in every mode, so a wrong
+  one fails the test. In a helper, `await rec.show(locator, { ms, transition })`
+  does the same at any point.
+- **Show transitions (optional):** how the camera reaches a shown element.
+  The scenario text's "Show transitions" becomes
+  `scenario({ showTransition: "slide" })` (`pan` default, `slide`, `fade`,
+  `cube`, `cut`); a step that differs passes
+  `show: { target: "<selector>", transition: "cube" }`. Unlike a step's
+  `transition: "cube"`, which hides the step, these only change how the view
+  changes between two shown areas; the page keeps playing.
 - **Captions (optional):** if the scenario text says "Captions: yes", pass
   `captions: true`; the renderer shows each step's `note` at the bottom while
   the step lasts. Try without re-recording:
   `REC_CAPTIONS=1 node tests/recording/.kit/cli.ts render <name>` (`0` = off).
+- **Format (optional):** if the scenario text has "Format" other than
+  landscape, pass `format: "vertical" | "vertical-crop" | "vertical-fit"`.
+  The video is then 1080×1920 (`videos/<name>-vertical.mp4`).
+  - `"vertical"` makes the page 9:16 before the first page load, in every mode
+    (480×854 in test and rehearsal), so the app runs in its **mobile layout**:
+    navigation may sit behind a menu button, tables may become cards, some
+    controls may be hidden. Write and check the helpers against that layout
+    (run `test <name>` and look at the failure screenshots); if a helper must
+    work in both layouts, branch on what is visible, not on the format.
+  - `"vertical-crop"` and `"vertical-fit"` record the desktop page as usual;
+    only the render changes. Crop shows a 9:16 slice that follows the
+    action, so keep related actions close together on the page.
+  - Try another vertical layout from a landscape recording without recording
+    again: `REC_FORMAT=vertical-crop node tests/recording/.kit/cli.ts render <name>`.
+    `"vertical"` needs a new `video` run (the page itself changes).
 - **Title cards (optional):** if the text has "Cards", pass
   `intro: { title, subtitle?, durationMs? }` and/or `outro: { ... }`. The intro
   comes before the recording (brand background, logo, title, then a cross-fade
@@ -119,6 +160,12 @@ shows each step separately in the Playwright report.
 
 In video mode the camera follows what `rec` logs:
 
+- `rec.show(locator)` (or a step's `show`) frames an element without an
+  action, as a scene of its own, until the next action or page change.
+- With `vertical-crop` the camera follows: it frames every scene at least at
+  zoom 1, and after a page change with nothing shown or clicked it looks at
+  the top of the new page. Without `show`, a screen that is only looked at
+  keeps the crop where the last click was: give such steps a `show`.
 - The camera frames **scenes**, not single actions: actions on the same page
   without a pause longer than 3.5 s form one scene. It frames the scene once
   (all its actions, at most 1.5×) and holds until the scene ends. A scene that
@@ -162,7 +209,7 @@ When writing scenarios or steps:
    repeats another's work, merge them.
 1. **Every interaction goes through `rec`:** `rec.click`, `rec.doubleClick`,
    `rec.rightClick`, `rec.hover`, `rec.drag(from, to)`, `rec.type`,
-   `rec.typeSecret`. Never `page.click`, `locator.click` or `locator.fill`: the
+   `rec.typeSecret` (and `rec.show` to point the camera without touching). Never `page.click`, `locator.click` or `locator.fill`: the
    cursor would not go there, the camera would not see it and the pace breaks.
    Exception: the keyboard (`page.keyboard.type/press`).
 2. **The on-screen message is the step's `note`.** `scenario()` marks each step
@@ -234,6 +281,8 @@ export function createCustomer(
     title: options.title ?? "New customer",
     note: options.note,
     transition: options.transition,
+    show: options.show,
+    offCamera: options.offCamera,
     run: async (ctx) => {
       await app.createCustomer(ctx, options.name, options.email); // screen work lives in a helper
       await expect(ctx.page.getByText(options.name).first()).toBeVisible(); // check
@@ -244,8 +293,11 @@ export function createCustomer(
 ```
 
 - Scenario-specific values (names, messages) are options, never hard-coded.
-- Pass `id`, `title`, `note` and `transition` on from `StepOptions` as above;
-  a step that drops `transition` silently loses the scenario's transition.
+- Pass `id`, `title`, `note`, `transition`, `show` and `offCamera` on from
+  `StepOptions` as above; a step that drops one silently loses the
+  scenario's setting. For an older step that does not pass them yet, a
+  scenario can add them itself: `{ ...steps.openOrders(), offCamera: true }`;
+  then update the step.
 - Screen details (selectors, waits) go to the helper, not the step.
 - Export it from `steps/index.ts` and add a row to `PROJECT.md` > "Step catalog".
 - Steps share state through `ctx.state` (e.g. `customer`, `order`).

@@ -1,6 +1,7 @@
 import type { Page } from "@playwright/test";
 import { requireEnv } from "./env.ts";
-import { settings } from "./mode.ts";
+import { resolveFormat, type VideoFormat } from "./format.ts";
+import { isVideoMode, settings } from "./mode.ts";
 import {
   loadNarration,
   segmentLength,
@@ -43,6 +44,22 @@ export interface Step {
    */
   transition?: StepTransition;
   /**
+   * What the viewer should look at once the step is done (e.g. the cards a
+   * dashboard opens with): a CSS selector, or `{ target, transition }` to
+   * choose how the camera gets there (see ShowTransition; default the
+   * scenario's showTransition). The camera frames it tightly, or moves a
+   * vertical crop there, until the next action. Scenario-specific: passed
+   * with the step's options. On `hold`, it is framed during the hold.
+   */
+  show?: StepShow;
+  /**
+   * Runs the step off camera: fast and silent, as in preparation, and cut
+   * out of the video, which goes on with the next step (a short cross-fade
+   * joins both sides). For waits and repeated work the viewer need not see.
+   * Has no note, voice-over or caption. Tests run it as usual.
+   */
+  offCamera?: boolean;
+  /**
    * Brings a fresh page to where this step starts, when it is the first step
    * of the scenario (e.g. login opens the login page). Runs before recording.
    */
@@ -54,6 +71,19 @@ export interface Step {
 /** A transition the renderer draws over a step (see Step.transition). */
 export type StepTransition = "cube";
 
+/**
+ * How the camera reaches a shown element (Step.show, rec.show): "pan" (a
+ * camera move, default), "slide" (the new view pushes the old one out
+ * sideways), "fade", "cube" (a cube turn) or "cut" (at once).
+ */
+export type ShowTransition = "pan" | "slide" | "fade" | "cube" | "cut";
+
+/** Step.show: a CSS selector, or one with its transition. */
+export type StepShow = string | { target: string; transition?: ShowTransition };
+
+/** How long the page settles after an off-camera step before the video goes on. */
+const OFF_CAMERA_SETTLE_MS = 300;
+
 /** The shortest a step with a transition lasts in the video, so the turn can be followed. */
 export const TRANSITION_MIN_MS = 1200;
 
@@ -63,6 +93,8 @@ export interface StepOptions {
   title?: string;
   note?: string;
   transition?: StepTransition;
+  show?: StepShow;
+  offCamera?: boolean;
 }
 
 export interface ScenarioDefinition {
@@ -80,6 +112,19 @@ export interface ScenarioDefinition {
    * rendering.
    */
   captions?: boolean;
+  /**
+   * The video's shape (see VideoFormat): "landscape" (default), "vertical"
+   * (the page is 9:16, so the app shows its mobile layout, in every mode),
+   * "vertical-crop" or "vertical-fit" (9:16 video from a desktop recording).
+   * Chosen in the plan skill. REC_FORMAT overrides it.
+   */
+  format?: VideoFormat;
+  /**
+   * How the camera reaches shown elements (steps' `show`, rec.show) when they
+   * name no transition: "pan" (default), "slide", "fade", "cube" or "cut".
+   * Chosen in the plan skill when several areas are shown.
+   */
+  showTransition?: ShowTransition;
   /**
    * CSS selectors of elements to blur once they hold a value, e.g. `['[name="email"]']`,
    * for values the viewer must not read (e-mail addresses, server names...).
@@ -157,6 +202,9 @@ export function scenario(
 
     rec.captions = definition.captions ?? false;
     rec.cards = { intro: definition.intro, outro: definition.outro };
+    rec.showTransition = definition.showTransition ?? "pan";
+    // Before the first page load, so the app starts in the layout it is recorded in.
+    await rec.useFormat(resolveFormat(definition.format));
     if (definition.blur?.length) await blurOnScreen(page, definition.blur);
     const ctx: StepContext = { page, rec, state: {} };
     await steps[0]?.entry?.(ctx);
@@ -165,6 +213,18 @@ export function scenario(
       if (index > to) break;
       if (index === from) await rec.start();
       const title = `${index + 1}. ${step.title}`;
+
+      if (step.offCamera && rec.isLive) {
+        console.log(`(off camera) ${title}`);
+        rec.suspend();
+        await test.step(title, () => step.run(ctx));
+        // Let the page finish drawing while still off camera, so the video
+        // goes on from a settled screen.
+        if (isVideoMode) await sleep(OFF_CAMERA_SETTLE_MS);
+        rec.resume();
+        continue;
+      }
+
       const voice = rec.isLive ? narrationFor(narration, step.id) : undefined;
       const startedMs = rec.elapsedMs();
       await rec.step(title, step.note, {
@@ -172,7 +232,10 @@ export function scenario(
         narration: voice,
         transition: step.transition,
       });
-      await test.step(title, () => step.run(ctx));
+      await test.step(title, async () => {
+        await step.run(ctx);
+        if (step.show) await showStep(ctx, step.show);
+      });
 
       if (step.transition) {
         // A turn faster than this cannot be followed (rec.pause: video and rehearsal only).
@@ -219,6 +282,10 @@ function checkNarration(script: NarrationScript, steps: Array<Step>): void {
     if (!ids.has(segment.step)) {
       console.warn(
         `Narration: "${segment.step}" is not a step of this scenario.`,
+      );
+    } else if (steps.find((step) => step.id === segment.step)?.offCamera) {
+      console.warn(
+        `Narration: "${segment.step}" runs off camera; its segment is not used.`,
       );
     } else if (!segmentLength(segment, script).measured) {
       console.warn(
@@ -311,11 +378,26 @@ async function blurOnScreen(
  * and before recording.
  */
 export function hold(options: StepOptions & { ms?: number } = {}): Step {
+  const ms = options.ms ?? 4000;
   return {
     id: options.id ?? "hold",
     title: options.title ?? "Closing",
     note: options.note,
     transition: options.transition,
-    run: ({ rec }) => rec.pause(options.ms ?? 4000),
+    offCamera: options.offCamera,
+    // Its `show` is framed during the hold, not after it.
+    run: (ctx) =>
+      options.show ? showStep(ctx, options.show, ms) : ctx.rec.pause(ms),
   };
+}
+
+/** Points the camera at a step's `show`. */
+function showStep(
+  { page, rec }: StepContext,
+  show: StepShow,
+  ms?: number,
+): Promise<void> {
+  const { target, transition } =
+    typeof show === "string" ? { target: show, transition: undefined } : show;
+  return rec.show(page.locator(target).first(), { ms, transition });
 }

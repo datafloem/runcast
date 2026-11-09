@@ -23,14 +23,21 @@ import {
 } from "node:fs";
 import path from "node:path";
 import {
+  baseView,
   buildCameraTrack,
   cameraAtTime,
   captionAtTime,
+  clampCamera,
   clicksAtTime,
   cursorAtTime,
+  easeInOutCubic,
+  transitionAtTime,
+  type Camera,
   type Focus,
   type PointerSample,
+  type Size,
 } from "./timeline.ts";
+import { resolveFormat, type VideoFormat } from "../../core/format.ts";
 import { loadNarration, segmentLength } from "../../core/narration.ts";
 import { kitCommand, loadProject } from "../../core/project.ts";
 
@@ -40,16 +47,13 @@ const KIT_CMD = kitCommand(RECORDING_DIR);
 const RESULTS_DIR = path.join(RECORDING_DIR, ".results");
 const VIDEOS_DIR = path.join(RECORDING_DIR, "videos");
 
-const OUT_WIDTH = 1920;
-const OUT_HEIGHT = 1080;
 const FPS = Number(process.env.REC_VIDEO_FPS ?? 30);
-/** Space around the recording inside the output frame. */
-const MARGIN_X = 72;
-const MARGIN_Y = 40;
-const RADIUS = 20;
+const FONT = '"Helvetica Neue", Helvetica, Arial, sans-serif';
 const BRAND = hexToRgb(project.brand?.color ?? "#f97316");
 const FADE_IN_MS = 400;
 const CROSSFADE_MS = 500;
+/** Cross-fade where an off-camera step was cut out. */
+const CUT_FADE_MS = 300;
 /** The app's logo on the title cards (recording.config.ts > brand.logo). */
 const LOGO_FILE = project.brand?.logo
   ? path.resolve(RECORDING_DIR, project.brand.logo)
@@ -64,6 +68,8 @@ interface CaptureFile {
   pointer: Array<PointerSample>;
   focus: Array<Focus>;
   navigations?: Array<number>;
+  /** Off-camera time cut out of the screen recording (core/video-capture.ts). */
+  cuts?: Array<{ at: number; ms: number }>;
 }
 
 interface Card {
@@ -75,6 +81,8 @@ interface Card {
 interface StepsFile {
   scenario: string;
   captions?: boolean;
+  /** The scenario's video format (core/format.ts). */
+  format?: string;
   intro?: Card;
   outro?: Card;
   steps: Array<{
@@ -114,8 +122,16 @@ export async function render(captureDir: string): Promise<string> {
       ? process.env.REC_CAPTIONS === "1"
       : (stepsData?.captions ?? false);
 
+  // The scenario decides (format); REC_FORMAT overrides it here, e.g. a
+  // vertical video from a landscape capture.
+  const format = resolveFormat(stepsData?.format);
+  const { viewport, scale } = capture;
+  const layout = layoutFor(format, viewport);
+  const { width: OUT_WIDTH, height: OUT_HEIGHT } = layout;
+
   mkdirSync(VIDEOS_DIR, { recursive: true });
-  const out = path.join(VIDEOS_DIR, `${capture.scenario}.mp4`);
+  const suffix = format === "landscape" ? "" : "-vertical";
+  const out = path.join(VIDEOS_DIR, `${capture.scenario}${suffix}.mp4`);
 
   // Title cards. A narration segment "intro" / "outro" is spoken over its
   // card, which then lasts at least as long as the audio.
@@ -149,34 +165,40 @@ export async function render(captureDir: string): Promise<string> {
   if (stepsData?.outro && cardAudio.outro) {
     clips.push({ file: cardAudio.outro.file, at: introMs + sceneMs + 300 });
   }
-  const ffmpeg = startEncoder(out, clips);
 
-  const { viewport, scale } = capture;
-  // The page, as large as fits inside the margins, whatever its shape.
-  const fit = Math.min(
-    (OUT_WIDTH - MARGIN_X * 2) / viewport.width,
-    (OUT_HEIGHT - MARGIN_Y * 2) / viewport.height,
-  );
-  const contentW = Math.round(viewport.width * fit);
-  const contentH = Math.round(viewport.height * fit);
-  const contentX = Math.round((OUT_WIDTH - contentW) / 2);
-  const contentY = Math.round((OUT_HEIGHT - contentH) / 2);
+  const { x: contentX, y: contentY, w: contentW, h: contentH } =
+    layout.content;
+  // What the camera shows at zoom 1: the whole page, or a slice of the
+  // frame's shape (a desktop page in a vertical video).
+  const view = layout.view;
 
   const canvas = createCanvas(OUT_WIDTH, OUT_HEIGHT);
   const ctx = canvas.getContext("2d");
-  const background = drawBackground();
+  const background = drawBackground(layout);
   const logo = await loadLogo();
   const track = buildCameraTrack(
     capture.focus,
     viewport,
     undefined,
     capture.navigations ?? [],
+    view,
+    (capture.cuts ?? []).map((cut) => cut.at),
   );
 
   // The recording, decoded by ffmpeg into raw frames at the output rate,
   // aligned so frame i shows the page at i / FPS seconds after the start.
   const { width: videoW, height: videoH } = capture.video;
-  const frames = readFrames(videoFile, capture.video.startMs, videoW, videoH);
+  const cuts = capture.cuts ?? [];
+  const frames = readFrames(
+    videoFile,
+    capture.video.startMs,
+    videoW,
+    videoH,
+    cuts,
+  );
+  // The frame shown just before a cut, faded out over the first frames after it.
+  const beforeCut = createCanvas(OUT_WIDTH, OUT_HEIGHT);
+  let cutFadeFrom = -Infinity;
   const source = createCanvas(videoW, videoH);
   const sourceCtx = source.getContext("2d");
   let hasFrame = false;
@@ -195,10 +217,10 @@ export async function render(captureDir: string): Promise<string> {
   };
 
   /** The recording at time t (ms since it started), drawn over the background. */
-  const drawScene = (t: number) => {
-    const camera = cameraAtTime(track, t, viewport);
-    const visibleW = viewport.width / camera.zoom;
-    const visibleH = viewport.height / camera.zoom;
+  /** The recording at time t through `camera`, drawn over the background. */
+  const drawView = (t: number, camera: Camera, captions: boolean) => {
+    const visibleW = view.width / camera.zoom;
+    const visibleH = view.height / camera.zoom;
     const x0 = camera.cx - visibleW / 2;
     const y0 = camera.cy - visibleH / 2;
     const toOut = (p: { x: number; y: number }) => ({
@@ -213,13 +235,13 @@ export async function render(captureDir: string): Promise<string> {
     ctx.shadowColor = "rgba(0, 0, 0, 0.45)";
     ctx.shadowBlur = 60;
     ctx.shadowOffsetY = 24;
-    roundedRect(ctx, contentX, contentY, contentW, contentH, RADIUS);
+    roundedRect(ctx, contentX, contentY, contentW, contentH, layout.radius);
     ctx.fillStyle = "#ffffff";
     ctx.fill();
     ctx.restore();
 
     ctx.save();
-    roundedRect(ctx, contentX, contentY, contentW, contentH, RADIUS);
+    roundedRect(ctx, contentX, contentY, contentW, contentH, layout.radius);
     ctx.clip();
     if (hasFrame) {
       ctx.drawImage(
@@ -248,17 +270,59 @@ export async function render(captureDir: string): Promise<string> {
     }
     ctx.restore();
 
-    if (showCaptions) {
-      const caption = captionAtTime(steps, t, sceneMs);
-      if (caption) {
-        drawCaption(
-          ctx,
-          caption,
-          contentX + contentW / 2,
-          contentY + contentH - 56,
-        );
-      }
+    if (captions) drawCaptionAt(t);
+  };
+
+  const drawCaptionAt = (t: number) => {
+    if (!showCaptions) return;
+    const caption = captionAtTime(steps, t, sceneMs);
+    if (caption) drawCaption(ctx, caption, layout);
+  };
+
+  /**
+   * The recording at time t, drawn over the background. While a show
+   * transition runs, the view the camera leaves and the one it reaches are
+   * both drawn from the current frame and joined as a slide, fade or cube.
+   */
+  const drawScene = (t: number) => {
+    const turn = transitionAtTime(track, t);
+    if (!turn) {
+      drawView(t, cameraAtTime(track, t, viewport, view), true);
+      return;
     }
+    drawView(t, clampCamera(turn.from, viewport, view), false);
+    grabContent(faceA);
+    drawView(t, cameraAtTime(track, t, viewport, view), false);
+    grabContent(faceB);
+    const p = easeInOutCubic(turn.p);
+    const box = { x: contentX, y: contentY, w: contentW, h: contentH };
+    ctx.drawImage(background, 0, 0);
+    if (turn.kind === "cube") {
+      drawCubeTurn(ctx, faceA, faceB, turn.p, box);
+    } else {
+      ctx.save();
+      ctx.shadowColor = "rgba(0, 0, 0, 0.45)";
+      ctx.shadowBlur = 60;
+      ctx.shadowOffsetY = 24;
+      roundedRect(ctx, contentX, contentY, contentW, contentH, layout.radius);
+      ctx.fillStyle = "#ffffff";
+      ctx.fill();
+      ctx.restore();
+      ctx.save();
+      roundedRect(ctx, contentX, contentY, contentW, contentH, layout.radius);
+      ctx.clip();
+      if (turn.kind === "slide") {
+        const offset = p * contentW;
+        ctx.drawImage(faceA, contentX - offset, contentY);
+        ctx.drawImage(faceB, contentX + contentW - offset, contentY);
+      } else {
+        ctx.drawImage(faceA, contentX, contentY);
+        ctx.globalAlpha = p;
+        ctx.drawImage(faceB, contentX, contentY);
+      }
+      ctx.restore();
+    }
+    drawCaptionAt(t);
   };
 
   // Steps marked with a transition: over their time (recording ms) the video
@@ -294,6 +358,7 @@ export async function render(captureDir: string): Promise<string> {
 
   const totalMs = introMs + sceneMs + outroMs;
   const totalFrames = Math.ceil((totalMs / 1000) * FPS);
+  const ffmpeg = startEncoder(out, clips, layout);
   const emit = async (i: number, t: number) => {
     const pixels = ctx.getImageData(0, 0, OUT_WIDTH, OUT_HEIGHT).data;
     await write(
@@ -306,90 +371,116 @@ export async function render(captureDir: string): Promise<string> {
       );
     }
   };
-  for (let i = 0; i < totalFrames; i++) {
-    const t = (i * 1000) / FPS;
+  try {
+    for (let i = 0; i < totalFrames; i++) {
+      const t = (i * 1000) / FPS;
 
-    const turn = transitions.find(
-      (tr) => t - introMs >= tr.from && t - introMs < tr.to,
-    );
-    if (turn && t >= introMs) {
-      // Face A: the page as the step starts; face B: as the next one starts,
-      // read ahead through the frames the turn replaces.
-      if (firstFrameReady) firstFrameReady = false;
-      else await nextFrame();
-      drawScene(t - introMs);
-      grabContent(faceA);
-      const end = Math.min(
-        totalFrames,
-        Math.ceil(((introMs + turn.to) / 1000) * FPS),
+      const turn = transitions.find(
+        (tr) => t - introMs >= tr.from && t - introMs < tr.to,
       );
-      for (let j = i + 1; j < end; j++) await nextFrame();
-      drawScene(turn.to);
-      grabContent(faceB);
-      for (let j = i; j < end; j++) {
-        ctx.drawImage(background, 0, 0);
-        drawCubeTurn(ctx, faceA, faceB, (j - i) / Math.max(1, end - i), {
-          x: contentX,
-          y: contentY,
-          w: contentW,
-          h: contentH,
-        });
-        await emit(j, (j * 1000) / FPS);
-      }
-      turn.to = -1; // done
-      i = end - 1;
-      continue;
-    }
-
-    if (t < introMs && stepsData?.intro) {
-      // Intro: the card fades in; in its last half second the recording's
-      // first frame shows through it.
-      const crossFrom = introMs - CROSSFADE_MS;
-      if (t >= crossFrom) {
-        if (!firstFrameReady) {
-          await nextFrame();
-          firstFrameReady = true;
+      if (turn && t >= introMs) {
+        // Face A: the page as the step starts; face B: as the next one starts,
+        // read ahead through the frames the turn replaces.
+        if (firstFrameReady) firstFrameReady = false;
+        else await nextFrame();
+        drawScene(t - introMs);
+        grabContent(faceA);
+        const end = Math.min(
+          totalFrames,
+          Math.ceil(((introMs + turn.to) / 1000) * FPS),
+        );
+        for (let j = i + 1; j < end; j++) await nextFrame();
+        drawScene(turn.to);
+        grabContent(faceB);
+        for (let j = i; j < end; j++) {
+          ctx.drawImage(background, 0, 0);
+          drawCubeTurn(ctx, faceA, faceB, (j - i) / Math.max(1, end - i), {
+            x: contentX,
+            y: contentY,
+            w: contentW,
+            h: contentH,
+          });
+          await emit(j, (j * 1000) / FPS);
         }
-        drawScene(0);
-        drawCard(
-          ctx,
-          background,
-          logo,
-          stepsData.intro,
-          1 - (t - crossFrom) / CROSSFADE_MS,
-        );
-      } else {
-        ctx.drawImage(background, 0, 0);
-        drawCard(
-          ctx,
-          background,
-          logo,
-          stepsData.intro,
-          Math.min(1, t / FADE_IN_MS),
-        );
+        turn.to = -1; // done
+        i = end - 1;
+        continue;
       }
-    } else if (t < introMs + sceneMs) {
-      if (firstFrameReady) firstFrameReady = false;
-      else await nextFrame();
-      drawScene(t - introMs);
-    } else {
-      // Outro: the card comes in over the last frame of the recording.
-      drawScene(sceneMs);
-      if (stepsData?.outro) {
-        const shown = t - introMs - sceneMs;
-        drawCard(
-          ctx,
-          background,
-          logo,
-          stepsData.outro,
-          Math.min(1, shown / CROSSFADE_MS),
-        );
-      }
-    }
 
-    await emit(i, t);
+      if (t < introMs && stepsData?.intro) {
+        // Intro: the card fades in; in its last half second the recording's
+        // first frame shows through it.
+        const crossFrom = introMs - CROSSFADE_MS;
+        if (t >= crossFrom) {
+          if (!firstFrameReady) {
+            await nextFrame();
+            firstFrameReady = true;
+          }
+          drawScene(0);
+          drawCard(
+            ctx,
+            background,
+            logo,
+            stepsData.intro,
+            1 - (t - crossFrom) / CROSSFADE_MS,
+            layout,
+          );
+        } else {
+          ctx.drawImage(background, 0, 0);
+          drawCard(
+            ctx,
+            background,
+            logo,
+            stepsData.intro,
+            Math.min(1, t / FADE_IN_MS),
+            layout,
+          );
+        }
+      } else if (t < introMs + sceneMs) {
+        const sceneT = t - introMs;
+        const prevT = sceneT - 1000 / FPS;
+        if (cuts.some((cut) => cut.at > prevT && cut.at <= sceneT && i > 0)) {
+          // The canvas still holds the last frame before the cut.
+          beforeCut.getContext("2d").drawImage(canvas, 0, 0);
+          cutFadeFrom = sceneT;
+        }
+        if (firstFrameReady) firstFrameReady = false;
+        else await nextFrame();
+        drawScene(sceneT);
+        const fade = (sceneT - cutFadeFrom) / CUT_FADE_MS;
+        if (fade >= 0 && fade < 1) {
+          ctx.save();
+          ctx.globalAlpha = 1 - fade;
+          ctx.drawImage(beforeCut, 0, 0);
+          ctx.restore();
+        }
+      } else {
+        // Outro: the card comes in over the last frame of the recording.
+        drawScene(sceneMs);
+        if (stepsData?.outro) {
+          const shown = t - introMs - sceneMs;
+          drawCard(
+            ctx,
+            background,
+            logo,
+            stepsData.outro,
+            Math.min(1, shown / CROSSFADE_MS),
+            layout,
+          );
+        }
+      }
+
+      await emit(i, t);
+    }
+  } catch (error) {
+    // Close the encoder's input: it ends the video at the frames so far and
+    // exits. Left open, it waits for more frames (ignoring SIGTERM) and keeps
+    // this process running.
+    ffmpeg.stdin.end();
+    throw error;
+  } finally {
+    await frames.return(undefined); // stops the decoder
   }
-  await frames.return(undefined);
   ffmpeg.stdin.end();
   await new Promise<void>((resolve, reject) => {
     ffmpeg.on("close", (code) =>
@@ -436,55 +527,209 @@ function drawCard(
   logo: Image | null,
   card: Card,
   alpha: number,
+  layout: Layout,
 ) {
   if (alpha <= 0) return;
+  const { title: titleSize, subtitle: subtitleSize, logo: logoSize } =
+    layout.card;
   ctx.save();
   ctx.globalAlpha = Math.min(1, alpha);
   ctx.drawImage(background, 0, 0);
-  const centreX = OUT_WIDTH / 2;
+  const centreX = layout.width / 2;
+  const maxWidth = layout.card.maxWidth;
+  // Long titles wrap (a vertical frame is narrow).
+  ctx.font = `700 ${titleSize}px ${FONT}`;
+  const titleLines = wrapText(ctx, card.title, maxWidth);
+  ctx.font = `400 ${subtitleSize}px ${FONT}`;
+  const subtitleLines = card.subtitle
+    ? wrapText(ctx, card.subtitle, maxWidth)
+    : [];
+  const titleLine = titleSize * 1.15;
+  const subtitleLine = subtitleSize * 1.3;
   // Logo, title and subtitle as one block, centred on the screen.
-  const logoH = logo ? 96 + 44 : 0;
-  const subtitleH = card.subtitle ? 32 + 36 : 0;
-  let y = (OUT_HEIGHT - (logoH + 68 + subtitleH)) / 2;
+  const logoH = logo ? logoSize + logoSize * 0.45 : 0;
+  const titleH = titleLines.length * titleLine;
+  const subtitleH = subtitleLines.length
+    ? subtitleSize * 0.9 + subtitleLines.length * subtitleLine
+    : 0;
+  let y = (layout.height - (logoH + titleH + subtitleH)) / 2;
   if (logo) {
-    const width = (logo.width / logo.height) * 96;
-    ctx.drawImage(logo, centreX - width / 2, y, width, 96);
+    const width = (logo.width / logo.height) * logoSize;
+    ctx.drawImage(logo, centreX - width / 2, y, width, logoSize);
     y += logoH;
   }
-  y += 34; // middle of the title line
-  ctx.fillStyle = "#ffffff";
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  ctx.font = '700 68px "Helvetica Neue", Helvetica, Arial, sans-serif';
-  ctx.fillText(card.title, centreX, y, OUT_WIDTH - 240);
-  if (card.subtitle) {
+  ctx.fillStyle = "#ffffff";
+  ctx.font = `700 ${titleSize}px ${FONT}`;
+  for (const line of titleLines) {
+    ctx.fillText(line, centreX, y + titleLine / 2, maxWidth);
+    y += titleLine;
+  }
+  if (subtitleLines.length) {
+    y += subtitleSize * 0.9;
     ctx.fillStyle = "rgba(255, 255, 255, 0.72)";
-    ctx.font = '400 36px "Helvetica Neue", Helvetica, Arial, sans-serif';
-    ctx.fillText(card.subtitle, centreX, y + 34 + 32 + 18, OUT_WIDTH - 240);
+    ctx.font = `400 ${subtitleSize}px ${FONT}`;
+    for (const line of subtitleLines) {
+      ctx.fillText(line, centreX, y + subtitleLine / 2, maxWidth);
+      y += subtitleLine;
+    }
   }
   ctx.restore();
+}
+
+/** Splits text into lines no wider than maxWidth (at the context's font). */
+function wrapText(
+  ctx: SKRSContext2D,
+  text: string,
+  maxWidth: number,
+): Array<string> {
+  const lines: Array<string> = [];
+  let line = "";
+  for (const word of text.split(/\s+/).filter(Boolean)) {
+    const next = line ? `${line} ${word}` : word;
+    if (line && ctx.measureText(next).width > maxWidth) {
+      lines.push(line);
+      line = word;
+    } else line = next;
+  }
+  if (line) lines.push(line);
+  return lines;
+}
+
+/** Where everything goes in the output frame, per video format. */
+interface Layout {
+  width: number;
+  height: number;
+  /** Where the recording sits in the frame. */
+  content: { x: number; y: number; w: number; h: number };
+  radius: number;
+  /** What the camera shows of the page at zoom 1 (CSS pixels). */
+  view: Size;
+  /** Caption: centre of its pill, font size, widest line. */
+  caption: { y: number; size: number; maxWidth: number };
+  card: { title: number; subtitle: number; logo: number; maxWidth: number };
+}
+
+function layoutFor(format: VideoFormat, viewport: Size): Layout {
+  if (format === "landscape") {
+    // The page, as large as fits inside the margins, whatever its shape.
+    const content = fitBox(viewport, 1920, 1080, 72, 40);
+    return {
+      width: 1920,
+      height: 1080,
+      content,
+      radius: 20,
+      view: viewport,
+      caption: {
+        y: content.y + content.h - 60,
+        size: 34,
+        maxWidth: content.w - 160,
+      },
+      card: { title: 68, subtitle: 36, logo: 96, maxWidth: 1680 },
+    };
+  }
+  // Vertical (1080x1920). Shorts and Reels draw their own title and buttons
+  // over the bottom fifth: captions sit above it.
+  const width = 1080;
+  const height = 1920;
+  const card = { title: 76, subtitle: 40, logo: 120, maxWidth: 920 };
+  if (format === "vertical-fit") {
+    // The whole page across the middle; the caption just below it.
+    const content = fitBox(viewport, width, height, 36, 64);
+    return {
+      width,
+      height,
+      content,
+      radius: 24,
+      view: viewport,
+      caption: {
+        y: Math.min(content.y + content.h + 110, height * 0.7),
+        size: 44,
+        maxWidth: 900,
+      },
+      card,
+    };
+  }
+  // "vertical" and "vertical-crop": a 9:16 frame filled by the page. A page
+  // of another shape (a desktop page, or a window Chrome would not make
+  // narrow enough) is shown as a slice the camera moves over.
+  const content = { x: 36, y: 64, w: width - 72, h: height - 128 };
+  return {
+    width,
+    height,
+    content,
+    radius: 28,
+    view: baseView(viewport, content.w / content.h),
+    caption: { y: height * 0.7, size: 44, maxWidth: 900 },
+    card,
+  };
+}
+
+/** A page of any shape, as large as fits in the frame inside the margins, centred. */
+function fitBox(
+  page: Size,
+  width: number,
+  height: number,
+  marginX: number,
+  marginY: number,
+): { x: number; y: number; w: number; h: number } {
+  const fit = Math.min(
+    (width - marginX * 2) / page.width,
+    (height - marginY * 2) / page.height,
+  );
+  const w = Math.round(page.width * fit);
+  const h = Math.round(page.height * fit);
+  return {
+    x: Math.round((width - w) / 2),
+    y: Math.round((height - h) / 2),
+    w,
+    h,
+  };
 }
 
 /**
  * Raw RGBA frames of the recording at FPS, starting at recording time 0. The
  * screen recording usually starts a little before that (startMs < 0): skip
- * ahead. If it started later, repeat its first frame until then.
+ * ahead. If it started later, repeat its first frame until then. Off-camera
+ * time (`cuts`) is dropped, so the frames follow the recording's clock.
  */
 async function* readFrames(
   file: string,
   startMs: number,
   width: number,
   height: number,
+  cuts: Array<{ at: number; ms: number }> = [],
 ): AsyncGenerator<Buffer> {
   const args = ["-v", "error"];
   if (startMs < 0) args.push("-ss", (-startMs / 1000).toFixed(3));
   args.push("-i", file);
+  const filters: Array<string> = [];
+  if (cuts.length > 0) {
+    // In the decoder's time (0 at recording time 0 after the seek above, or
+    // at the video's own start when it began late), each cut sits after the
+    // ones before it.
+    const offset = startMs < 0 ? 0 : -startMs / 1000;
+    let before = 0;
+    const spans = cuts.map((cut) => {
+      const from = (cut.at + before) / 1000 + offset;
+      before += cut.ms;
+      return { from, to: from + cut.ms / 1000, ms: cut.ms };
+    });
+    const inCut = spans
+      .map((c) => `between(t,${c.from.toFixed(3)},${c.to.toFixed(3)})`)
+      .join("+");
+    const shift = spans
+      .map((c) => `gte(T,${c.to.toFixed(3)})*${(c.ms / 1000).toFixed(3)}`)
+      .join("+");
+    filters.push(`select='not(${inCut})'`, `setpts='PTS-(${shift})/TB'`);
+  }
   if (startMs > 0) {
-    args.push(
-      "-vf",
+    filters.push(
       `tpad=start_duration=${(startMs / 1000).toFixed(3)}:start_mode=clone`,
     );
   }
+  if (filters.length > 0) args.push("-vf", filters.join(","));
   args.push("-r", String(FPS), "-f", "rawvideo", "-pix_fmt", "rgba", "pipe:1");
   const decoder = spawn("ffmpeg", args, {
     stdio: ["ignore", "pipe", "ignore"],
@@ -516,7 +761,11 @@ async function* readFrames(
 }
 
 /** ffmpeg reading raw RGBA frames from stdin, mixing in the voice-over clips. */
-function startEncoder(out: string, clips: Array<{ file: string; at: number }>) {
+function startEncoder(
+  out: string,
+  clips: Array<{ file: string; at: number }>,
+  size: { width: number; height: number },
+) {
   const args = [
     "-y",
     "-loglevel",
@@ -526,7 +775,7 @@ function startEncoder(out: string, clips: Array<{ file: string; at: number }>) {
     "-pix_fmt",
     "rgba",
     "-s",
-    `${OUT_WIDTH}x${OUT_HEIGHT}`,
+    `${size.width}x${size.height}`,
     "-r",
     String(FPS),
     "-i",
@@ -578,7 +827,7 @@ function write(stream: NodeJS.WritableStream, chunk: Buffer): Promise<void> {
 }
 
 /** Dark gradient with a soft brand glow, drawn once. */
-function drawBackground() {
+function drawBackground({ width: OUT_WIDTH, height: OUT_HEIGHT }: Size) {
   const bg = createCanvas(OUT_WIDTH, OUT_HEIGHT);
   const ctx = bg.getContext("2d");
   const gradient = ctx.createLinearGradient(0, 0, OUT_WIDTH, OUT_HEIGHT);
@@ -592,7 +841,7 @@ function drawBackground() {
     0,
     OUT_WIDTH * 0.85,
     OUT_HEIGHT * 0.1,
-    OUT_WIDTH * 0.6,
+    Math.max(OUT_WIDTH, OUT_HEIGHT) * 0.6,
   );
   glow.addColorStop(0, `rgba(${BRAND.r}, ${BRAND.g}, ${BRAND.b}, 0.22)`);
   glow.addColorStop(1, "rgba(0, 0, 0, 0)");
@@ -752,28 +1001,41 @@ function drawCubeTurn(
 function drawCaption(
   ctx: SKRSContext2D,
   caption: { text: string; alpha: number },
-  centreX: number,
-  baselineY: number,
+  layout: Layout,
 ) {
+  const { y: centreY, size, maxWidth } = layout.caption;
+  const centreX = layout.width / 2;
   ctx.save();
   ctx.globalAlpha = caption.alpha;
-  ctx.font = '600 34px "Helvetica Neue", Helvetica, Arial, sans-serif';
-  const width = ctx.measureText(caption.text).width;
-  const padX = 30;
-  const height = 64;
+  ctx.font = `600 ${size}px ${FONT}`;
+  const lines = wrapText(ctx, caption.text, maxWidth);
+  const width = Math.max(...lines.map((line) => ctx.measureText(line).width));
+  const lineH = size * 1.3;
+  const padX = size * 0.9;
+  const padY = (size * 1.9 - lineH) / 2;
+  const height = lines.length * lineH + padY * 2;
   const x = centreX - width / 2 - padX;
-  const y = baselineY - height / 2 - 4;
+  const y = centreY - height / 2;
   ctx.shadowColor = "rgba(0, 0, 0, 0.35)";
   ctx.shadowBlur = 24;
   ctx.shadowOffsetY = 6;
-  roundedRect(ctx, x, y, width + padX * 2, height, height / 2);
+  roundedRect(
+    ctx,
+    x,
+    y,
+    width + padX * 2,
+    height,
+    Math.min(height / 2, size * 0.95),
+  );
   ctx.fillStyle = "rgba(15, 23, 42, 0.86)";
   ctx.fill();
   ctx.shadowColor = "transparent";
   ctx.fillStyle = "#ffffff";
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  ctx.fillText(caption.text, centreX, y + height / 2 + 1);
+  lines.forEach((line, i) => {
+    ctx.fillText(line, centreX, y + padY + lineH * (i + 0.5) + 1);
+  });
   ctx.restore();
 }
 
@@ -831,6 +1093,12 @@ if (import.meta.main) {
     );
     process.exit(1);
   }
-  const out = await render(dir);
-  console.log(`Video: ${path.relative(process.cwd(), out)}`);
+  // Errors set the exit code instead of escaping: see the end of run.ts.
+  try {
+    const out = await render(dir);
+    console.log(`Video: ${path.relative(process.cwd(), out)}`);
+  } catch (error) {
+    console.error(error);
+    process.exitCode = 1;
+  }
 }

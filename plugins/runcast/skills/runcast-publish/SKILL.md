@@ -5,7 +5,9 @@ description: Publishes a rendered Runcast video to YouTube — checks the video,
 
 # Publishing a video to YouTube
 
-Runcast renders videos to `<recording folder>/videos/<name>.mp4`.
+Runcast renders videos to `<recording folder>/videos/<name>.mp4`, vertical
+ones (format `vertical`, `vertical-crop` or `vertical-fit`) to
+`videos/<name>-vertical.mp4`.
 This skill takes one of them to YouTube with `node tests/recording/.kit/cli.ts youtube`
 (`.kit/scripts/youtube.ts`, YouTube Data API v3, no extra dependencies).
 
@@ -40,7 +42,14 @@ wait until they say it is done; check what you can with
    render it first (`node tests/recording/.kit/cli.ts video <name>`, or `node tests/recording/.kit/cli.ts render
 <name>` for the last capture). Recording writes to the app's backend: ask
    before running it.
-3. Suggest the user watches the video once before publishing.
+3. If both a landscape and a vertical MP4 exist, ask which one to publish
+   (each upload is a separate YouTube video; one metadata file uploads one,
+   so a second one needs its own copy of the metadata with `video` set).
+4. **A vertical video is a Short** when it is at most 3 minutes long: YouTube
+   decides that by itself from the shape and length, the upload is the same.
+   Check the length (`ffprobe`); if it is longer, say that it will be an
+   ordinary vertical video, not a Short.
+5. Suggest the user watches the video once before publishing.
 
 ## 2. One-time setup (skip what `check` reports as done)
 
@@ -121,7 +130,13 @@ for approval:
   (phone verification in YouTube Studio); otherwise the script warns and
   YouTube picks one.
 - **video** (optional): another MP4 than `videos/<name>.mp4`, relative to the
-  recording folder.
+  recording folder. Without it the script takes `videos/<name>.mp4`, and
+  `videos/<name>-vertical.mp4` only when there is no landscape one; set it
+  to publish the vertical video when both exist.
+- **For a Short:** a short title, `#Shorts` at the end of the title or
+  description (optional; it helps viewers find it, YouTube does not need it),
+  no chapters, and leave out `thumbnailAt` (Shorts thumbnails are picked in
+  the YouTube app).
 
 Secrets, server addresses or customer data never go into the metadata.
 

@@ -77,6 +77,15 @@ find, it becomes `PROJECT.md`:
   or the system (theme, language, onboarding flags, banners). Seed what makes
   videos consistent through `localStorage` / `colorScheme` in
   `recording.config.ts`; ask the user which theme the videos should use.
+- **Mobile layout:** whether the app has a narrow-screen layout, for vertical
+  videos (Shorts, Reels). Signs of one: a viewport meta tag, `max-width` /
+  `min-width` media queries or responsive classes (Tailwind `sm:` / `md:`, a
+  UI library's breakpoint props) on the main layout, a mobile menu or
+  drawer component. Signs against: a fixed `min-width` on the page, wide
+  tables and sidebars without breakpoints, a note that only desktop is
+  supported. Write the verdict with its evidence: "yes", "partly" (which
+  screens) or "no". If a scenario exists, a `REC_FORMAT=vertical` test run
+  shows whether the flow still works at 480×854.
 - **Brand:** the accent colour and a logo file for the title cards (look in
   `public/`, assets, the theme or CSS variables). Confirm with the user.
 - **Quirks:** pagination, lazy-loaded lists, redirects after saving, slow first

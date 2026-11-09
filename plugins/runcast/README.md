@@ -6,7 +6,8 @@ and the same walk-through runs as an **automated end-to-end test**.
 Describe the video you want to your AI assistant. It plans the video with you,
 then writes a short Playwright scenario that drives a real Chrome browser
 through your app. Runcast records the screen with a smooth cursor and a calm,
-zooming camera, and renders an MP4. You can add captions, title cards, blurred
+zooming camera, and renders an MP4: landscape, or vertical for YouTube Shorts
+and Instagram Reels. You can add captions, title cards, blurred
 private fields, cube transitions between steps and a voice-over, and upload the
 result to YouTube. You don't edit video, use a screen recorder or click
 through the app yourself.
@@ -16,7 +17,7 @@ through the app yourself.
 | Skill              | What it does                                                                                                |
 | ------------------ | ----------------------------------------------------------------------------------------------------------- |
 | `runcast-setup`    | Adds Runcast to a project: studies the app, writes the login helper, a first scenario and `PROJECT.md`      |
-| `runcast-plan`     | Interviews you about a new video (goal, audience, flow, captions, voice-over) and writes the plan           |
+| `runcast-plan`     | Interviews you about a new video (goal, audience, format, flow, captions, voice-over) and writes the plan   |
 | `runcast-scenario` | Writes or fixes a scenario that runs as a fast test or is recorded as a video                               |
 | `runcast-publish`  | Walks you through the one-time Google setup and uploads a rendered video to YouTube, after you approve it  |
 
