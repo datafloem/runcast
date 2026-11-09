@@ -149,7 +149,6 @@ export async function render(captureDir: string): Promise<string> {
   if (stepsData?.outro && cardAudio.outro) {
     clips.push({ file: cardAudio.outro.file, at: introMs + sceneMs + 300 });
   }
-  const ffmpeg = startEncoder(out, clips);
 
   const { viewport, scale } = capture;
   // The page, as large as fits inside the margins, whatever its shape.
@@ -294,6 +293,7 @@ export async function render(captureDir: string): Promise<string> {
 
   const totalMs = introMs + sceneMs + outroMs;
   const totalFrames = Math.ceil((totalMs / 1000) * FPS);
+  const ffmpeg = startEncoder(out, clips);
   const emit = async (i: number, t: number) => {
     const pixels = ctx.getImageData(0, 0, OUT_WIDTH, OUT_HEIGHT).data;
     await write(
@@ -306,90 +306,99 @@ export async function render(captureDir: string): Promise<string> {
       );
     }
   };
-  for (let i = 0; i < totalFrames; i++) {
-    const t = (i * 1000) / FPS;
+  try {
+    for (let i = 0; i < totalFrames; i++) {
+      const t = (i * 1000) / FPS;
 
-    const turn = transitions.find(
-      (tr) => t - introMs >= tr.from && t - introMs < tr.to,
-    );
-    if (turn && t >= introMs) {
-      // Face A: the page as the step starts; face B: as the next one starts,
-      // read ahead through the frames the turn replaces.
-      if (firstFrameReady) firstFrameReady = false;
-      else await nextFrame();
-      drawScene(t - introMs);
-      grabContent(faceA);
-      const end = Math.min(
-        totalFrames,
-        Math.ceil(((introMs + turn.to) / 1000) * FPS),
+      const turn = transitions.find(
+        (tr) => t - introMs >= tr.from && t - introMs < tr.to,
       );
-      for (let j = i + 1; j < end; j++) await nextFrame();
-      drawScene(turn.to);
-      grabContent(faceB);
-      for (let j = i; j < end; j++) {
-        ctx.drawImage(background, 0, 0);
-        drawCubeTurn(ctx, faceA, faceB, (j - i) / Math.max(1, end - i), {
-          x: contentX,
-          y: contentY,
-          w: contentW,
-          h: contentH,
-        });
-        await emit(j, (j * 1000) / FPS);
-      }
-      turn.to = -1; // done
-      i = end - 1;
-      continue;
-    }
-
-    if (t < introMs && stepsData?.intro) {
-      // Intro: the card fades in; in its last half second the recording's
-      // first frame shows through it.
-      const crossFrom = introMs - CROSSFADE_MS;
-      if (t >= crossFrom) {
-        if (!firstFrameReady) {
-          await nextFrame();
-          firstFrameReady = true;
+      if (turn && t >= introMs) {
+        // Face A: the page as the step starts; face B: as the next one starts,
+        // read ahead through the frames the turn replaces.
+        if (firstFrameReady) firstFrameReady = false;
+        else await nextFrame();
+        drawScene(t - introMs);
+        grabContent(faceA);
+        const end = Math.min(
+          totalFrames,
+          Math.ceil(((introMs + turn.to) / 1000) * FPS),
+        );
+        for (let j = i + 1; j < end; j++) await nextFrame();
+        drawScene(turn.to);
+        grabContent(faceB);
+        for (let j = i; j < end; j++) {
+          ctx.drawImage(background, 0, 0);
+          drawCubeTurn(ctx, faceA, faceB, (j - i) / Math.max(1, end - i), {
+            x: contentX,
+            y: contentY,
+            w: contentW,
+            h: contentH,
+          });
+          await emit(j, (j * 1000) / FPS);
         }
-        drawScene(0);
-        drawCard(
-          ctx,
-          background,
-          logo,
-          stepsData.intro,
-          1 - (t - crossFrom) / CROSSFADE_MS,
-        );
-      } else {
-        ctx.drawImage(background, 0, 0);
-        drawCard(
-          ctx,
-          background,
-          logo,
-          stepsData.intro,
-          Math.min(1, t / FADE_IN_MS),
-        );
+        turn.to = -1; // done
+        i = end - 1;
+        continue;
       }
-    } else if (t < introMs + sceneMs) {
-      if (firstFrameReady) firstFrameReady = false;
-      else await nextFrame();
-      drawScene(t - introMs);
-    } else {
-      // Outro: the card comes in over the last frame of the recording.
-      drawScene(sceneMs);
-      if (stepsData?.outro) {
-        const shown = t - introMs - sceneMs;
-        drawCard(
-          ctx,
-          background,
-          logo,
-          stepsData.outro,
-          Math.min(1, shown / CROSSFADE_MS),
-        );
-      }
-    }
 
-    await emit(i, t);
+      if (t < introMs && stepsData?.intro) {
+        // Intro: the card fades in; in its last half second the recording's
+        // first frame shows through it.
+        const crossFrom = introMs - CROSSFADE_MS;
+        if (t >= crossFrom) {
+          if (!firstFrameReady) {
+            await nextFrame();
+            firstFrameReady = true;
+          }
+          drawScene(0);
+          drawCard(
+            ctx,
+            background,
+            logo,
+            stepsData.intro,
+            1 - (t - crossFrom) / CROSSFADE_MS,
+          );
+        } else {
+          ctx.drawImage(background, 0, 0);
+          drawCard(
+            ctx,
+            background,
+            logo,
+            stepsData.intro,
+            Math.min(1, t / FADE_IN_MS),
+          );
+        }
+      } else if (t < introMs + sceneMs) {
+        if (firstFrameReady) firstFrameReady = false;
+        else await nextFrame();
+        drawScene(t - introMs);
+      } else {
+        // Outro: the card comes in over the last frame of the recording.
+        drawScene(sceneMs);
+        if (stepsData?.outro) {
+          const shown = t - introMs - sceneMs;
+          drawCard(
+            ctx,
+            background,
+            logo,
+            stepsData.outro,
+            Math.min(1, shown / CROSSFADE_MS),
+          );
+        }
+      }
+
+      await emit(i, t);
+    }
+  } catch (error) {
+    // Close the encoder's input: it ends the video at the frames so far and
+    // exits. Left open, it waits for more frames (ignoring SIGTERM) and keeps
+    // this process running.
+    ffmpeg.stdin.end();
+    throw error;
+  } finally {
+    await frames.return(undefined); // stops the decoder
   }
-  await frames.return(undefined);
   ffmpeg.stdin.end();
   await new Promise<void>((resolve, reject) => {
     ffmpeg.on("close", (code) =>
@@ -831,6 +840,12 @@ if (import.meta.main) {
     );
     process.exit(1);
   }
-  const out = await render(dir);
-  console.log(`Video: ${path.relative(process.cwd(), out)}`);
+  // Errors set the exit code instead of escaping: see the end of run.ts.
+  try {
+    const out = await render(dir);
+    console.log(`Video: ${path.relative(process.cwd(), out)}`);
+  } catch (error) {
+    console.error(error);
+    process.exitCode = 1;
+  }
 }

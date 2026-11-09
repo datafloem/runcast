@@ -35,9 +35,19 @@ const result = spawnSync(
 const captures = findCaptures().filter(
   (dir) => statSync(dir).mtimeMs >= startedAt,
 );
+let exitCode = result.status ?? 1;
 for (const dir of captures) {
-  const out = await render(dir);
-  console.log(`Video: ${path.relative(process.cwd(), out)}`);
+  try {
+    const out = await render(dir);
+    console.log(`Video: ${path.relative(process.cwd(), out)}`);
+  } catch (error) {
+    console.error(error);
+    exitCode ||= 1;
+  }
 }
 if (captures.length === 0) console.log("This run produced no video capture.");
-process.exit(result.status ?? 1);
+// No process.exit() here, and no uncaught error: both take Node's fast exit,
+// which can hang for good right after rendering (a V8 background compile job
+// waits for a garbage collection that never comes). The process ends on its
+// own once render() has closed its ffmpeg processes.
+process.exitCode = exitCode;
