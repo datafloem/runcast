@@ -323,10 +323,14 @@ test("stage stream records its own file with the same size", async () => {
       ["app", "fade"],
     ],
   );
-  for (const name of [events.video.file, events.stage.file]) {
+  // Each file is its own page at 1.5 (2880x1620 for 1920x1080).
+  for (const [name, width, height] of [
+    [events.video.file, appWidth, appHeight],
+    [events.stage.file, stageWidth, stageHeight],
+  ] as const) {
     const sizes = frameSizes(path.join(dir, name));
     assert.ok(sizes.length >= 1, `${name}: no frames`);
-    assert.deepEqual([...new Set(sizes)], ["2880,1620"], name);
+    assert.deepEqual([...new Set(sizes)], [`${Math.round(width! * 1.5)},${Math.round(height! * 1.5)}`], name);
   }
   // The stage recorded its animation.
   assert.ok(frameSizes(path.join(dir, events.stage.file)).length >= 15);
