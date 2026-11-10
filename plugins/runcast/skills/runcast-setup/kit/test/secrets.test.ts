@@ -23,11 +23,9 @@ function files(dir: string): Array<string> {
 /** Whether `secret` appears in the file (inside zips: in any entry). */
 function contains(file: string, secret: string): boolean {
   if (file.endsWith(".zip")) {
-    const text = execFileSync("sh", ["-c", `unzip -p "$1" | strings`, "sh", file], {
-      encoding: "utf-8",
-      maxBuffer: 256 * 1024 * 1024,
-    });
-    return text.includes(secret);
+    // Every entry, unpacked, without a shell.
+    const bytes = execFileSync("unzip", ["-p", file], { maxBuffer: 256 * 1024 * 1024 });
+    return bytes.includes(secret);
   }
   return readFileSync(file).includes(secret);
 }
