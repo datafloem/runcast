@@ -6,7 +6,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { after, before, test } from "node:test";
 import { chromium, type Browser, type BrowserContext, type Page } from "@playwright/test";
-import { sizeWindow, TabCapture, TAB_CAPTURE_ARGS } from "../core/tab-capture.ts";
+import {
+  sizeWindow,
+  TabCapture,
+  TAB_CAPTURE_ARGS,
+  TAB_CAPTURE_IGNORED_ARGS,
+} from "../core/tab-capture.ts";
 
 const channel = process.env.REC_CHANNEL === "chromium" ? undefined : "chrome";
 
@@ -18,6 +23,7 @@ before(async () => {
     channel,
     headless: true,
     args: [...TAB_CAPTURE_ARGS, "--force-device-scale-factor=2"],
+    ignoreDefaultArgs: [...TAB_CAPTURE_IGNORED_ARGS],
   });
   context = await browser.newContext({ viewport: null });
   page = await context.newPage();
@@ -67,13 +73,18 @@ function colourAt(file: string, seconds: number): [number, number, number] {
   return [out[0]!, out[1]!, out[2]!];
 }
 
-async function record(html: string, ms: number): Promise<string> {
+async function record(
+  html: string,
+  ms: number,
+  options: { audio?: boolean; onStart?: (capture: TabCapture) => void } = {},
+): Promise<string> {
   const dir = mkdtempSync(path.join(tmpdir(), "runcast-tab-"));
   dirs.push(dir);
   await sizeWindow(page, { width: 1440, height: 810 });
   await page.setContent(html);
-  const capture = new TabCapture(page, dir, "demo", { scale: 2 });
+  const capture = new TabCapture(page, dir, "demo", { scale: 2, audio: options.audio });
   await capture.start();
+  options.onStart?.(capture);
   await wait(ms);
   return capture.stop();
 }
@@ -200,4 +211,30 @@ test("window is sized before the first load", async () => {
   );
   assert.equal(await first.evaluate(() => (window as unknown as { firstSize: string }).firstSize), "1440x810");
   await fresh.close();
+});
+
+test("a beeping page gives a non-silent audio track", async () => {
+  let settings: Record<string, unknown> | null = null;
+  const file = await record(
+    `<style>body{margin:0;background:#103020}</style><script>
+       const ctx = new AudioContext(); const tone = ctx.createOscillator(); const gain = ctx.createGain();
+       tone.frequency.value = 440; gain.gain.value = 0.5; tone.connect(gain).connect(ctx.destination); tone.start();
+     </script>`,
+    2000,
+    { audio: true, onStart: (capture) => (settings = capture.started?.audioSettings ?? null) },
+  );
+  const events = JSON.parse(readFileSync(file, "utf-8")) as {
+    video: { file: string };
+    audio?: { file: string; startMs: number };
+  };
+  assert.ok(events.audio, "no audio in events.json");
+  assert.equal(events.audio.file, events.video.file);
+  const stderr = execFileSync(
+    "sh",
+    ["-c", `ffmpeg -hide_banner -i "$1" -map 0:a -af volumedetect -f null - 2>&1`, "sh", path.join(path.dirname(file), events.audio.file)],
+    { encoding: "utf-8" },
+  );
+  const mean = Number(/mean_volume: (-?[\d.]+) dB/.exec(stderr)?.[1] ?? "-inf");
+  assert.ok(mean > -40, `mean volume ${mean} dB`);
+  assert.equal((settings as Record<string, unknown> | null)?.suppressLocalAudioPlayback, true);
 });

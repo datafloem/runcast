@@ -93,7 +93,9 @@ your computer, only when you or your assistant run the command named.
 **Records**
 
 - In video mode only: by default the app's tab in the headless browser, with
-  Chrome's own tab capture (nothing else on your screen is recorded). With
+  Chrome's own tab capture (nothing else on your screen is recorded),
+  picture and the tab's sound; the sound is kept off your speakers and goes
+  into the video only when the scenario asks for it (`appAudio`). With
   `REC_CAPTURE=screen`, with ffmpeg: on macOS the screen, cropped to the
   browser's page area; on Linux the display (Xvfb when there is no screen),
   limited to the page area; on Windows the page area of the main screen

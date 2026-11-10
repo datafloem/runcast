@@ -12,7 +12,13 @@ import {
   VERTICAL_PAGE,
   type VideoFormat,
 } from "./format.ts";
-import { isTestMode, isVideoMode, pageSize, settings } from "./mode.ts";
+import {
+  isTestMode,
+  isVideoMode,
+  pageSize,
+  settings,
+  type AppAudio,
+} from "./mode.ts";
 import { projectDirOf } from "./narration.ts";
 import { screenProblem } from "./on-screen.ts";
 import { captureRootFor } from "./project.ts";
@@ -22,7 +28,7 @@ import { sizeWindow, TabCapture } from "./tab-capture.ts";
 import { fitWindow, VideoCapture } from "./video-capture.ts";
 import { VirtualMouse } from "./virtual-mouse.ts";
 
-/** Recording fast (settings.fastRecording): real time spent of a viewer pause... */
+/** Recording fast (Recorder.fastRecording): real time spent of a viewer pause... */
 const FAST_HOLD_HEAD_MS = 300;
 /** ...of the cursor's rest on a target (hover states need it)... */
 const FAST_AIM_HEAD_MS = 150;
@@ -99,6 +105,8 @@ export class Recorder {
   cards: { intro?: VideoCard; outro?: VideoCard } = {};
   /** How rec.show reaches an element when it names no transition (see ScenarioDefinition). */
   showTransition: ShowTransition = "pan";
+  /** The app's sound in the video (see ScenarioDefinition.appAudio); null: off. */
+  appAudio: AppAudio | null = null;
   /** The video's shape (see ScenarioDefinition); set by useFormat(). */
   private format: VideoFormat = "landscape";
   /** Tab capture: the window has been sized to the page size. */
@@ -159,8 +167,11 @@ export class Recorder {
       const scenario = path.basename(this.testInfo.file, ".spec.ts");
       if (settings.capture === "tab") {
         if (!this.sized) await this.sizeTab();
+        // The sound is always captured: that is what keeps it off the
+        // speakers. The renderer mixes it only when the scenario asks.
         capture = new TabCapture(this.page, dir, scenario, {
           scale: settings.scale,
+          audio: true,
         });
       } else {
         capture = new VideoCapture(
@@ -180,7 +191,7 @@ export class Recorder {
       this.page,
       capture,
       { x: viewport.width / 2, y: viewport.height / 2 },
-      settings.fastRecording,
+      this.fastRecording,
     );
   }
 
@@ -307,7 +318,7 @@ export class Recorder {
       await field.focus();
     }
     const startedMs = this.capture?.now();
-    const fast = settings.fastRecording && this.capture !== null;
+    const fast = this.fastRecording && this.capture !== null;
     await this.page.keyboard.type(text, {
       delay: !this.paced ? 0 : fast ? FAST_TYPE_DELAY_MS : settings.typeDelay(delayMs),
     });
@@ -401,7 +412,7 @@ export class Recorder {
     if (ms <= 0) return;
     const capture = this.paced ? this.capture : null;
     const head =
-      capture && settings.fastRecording
+      capture && this.fastRecording
         ? Math.min(ms, kind === "aim" ? FAST_AIM_HEAD_MS : FAST_HOLD_HEAD_MS)
         : ms;
     const startedMs = capture?.now();
@@ -439,6 +450,7 @@ export class Recorder {
             captions: this.captions,
             compressWaits: this.compressWaits,
             format: this.format,
+            ...(this.appAudio ? { appAudio: this.appAudio } : {}),
             ...this.cards,
             steps: this.steps,
           },
@@ -464,6 +476,14 @@ export class Recorder {
   /** The virtual cursor once recording runs; null = fast Playwright actions. */
   private liveMouse(): VirtualMouse | null {
     return this.paced ? this.mouse : null;
+  }
+
+  /**
+   * Video mode records fast (settings.fastRecording), except with the app's
+   * sound, which cannot be stretched: then at the viewer's pace.
+   */
+  private get fastRecording(): boolean {
+    return settings.fastRecording && !this.appAudio;
   }
 
   private get aimMs(): number {

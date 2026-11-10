@@ -196,7 +196,11 @@ export function fitNarration(
   steps: Array<{ id?: string; startMs: number }>,
   /** Step id -> what the step must last (audio + gap). */
   voices: Map<string, number>,
-  options: { compressWaits: boolean },
+  options: {
+    compressWaits: boolean;
+    /** false: a shortened wait loses its middle, never plays faster (app audio). Default true. */
+    speedUpWaits?: boolean;
+  },
 ): { map: TimeMap; report: Array<StepFit> } {
   // A step after an off-camera step is marked a moment after the cut, and
   // steps.json rounds it to 0.1 s: it starts at the cut.
@@ -265,7 +269,11 @@ export function fitNarration(
         const length = outLength(wait);
         const cut = Math.min(excess, length - MIN_WAIT_MS);
         if (cut <= 0) continue;
-        const replacement = shorten(wait, length - cut);
+        const replacement = shorten(
+          wait,
+          length - cut,
+          options.speedUpWaits === false ? 1 : MAX_SPEEDUP,
+        );
         group.splice(group.indexOf(wait), 1, ...replacement);
         excess -= cut;
         fit.shortenedMs += cut;
@@ -281,10 +289,10 @@ export function fitNarration(
   };
 }
 
-/** A wait shown in `target` ms: sped up, or its middle cut when that would be too fast. */
-function shorten(wait: Segment, target: number): Array<Segment> {
+/** A wait shown in `target` ms: sped up, or its middle cut when that would be faster than `maxSpeedup`. */
+function shorten(wait: Segment, target: number, maxSpeedup: number): Array<Segment> {
   const recLength = wait.recTo - wait.recFrom;
-  if (recLength / target <= MAX_SPEEDUP) {
+  if (recLength / target <= maxSpeedup) {
     return [{ ...wait, outFrom: 0, outTo: target }];
   }
   const half = target / 2;
@@ -343,6 +351,57 @@ function ownerOf(segment: Segment, starts: Array<number>): number {
     return before >= 0 ? before : lastAtOrBefore(segment.recFrom, false);
   }
   return lastAtOrBefore(segment.recFrom, false);
+}
+
+/** A stretch of the recording's sound placed in the video (app audio). */
+export interface AudioPiece {
+  /** Screen-file time it plays from and to. */
+  fileFrom: number;
+  fileTo: number;
+  /** Where it starts in the video. */
+  outFrom: number;
+  /** Faded in / out (100 ms) because silence or a cut is next to it. */
+  fadeIn: boolean;
+  fadeOut: boolean;
+}
+
+/** Shorter than this, a stretch is left out of the sound. */
+const MIN_AUDIO_MS = 1;
+
+/**
+ * The app's sound along the video: only segments shown at real speed play
+ * (sound cannot be stretched); held frames, stretched spans and sped-up
+ * waits are silent. Pieces that follow on in both the file and the video
+ * join into one; every edge next to silence or a cut fades.
+ */
+export function audioPlan(map: TimeMap): Array<AudioPiece> {
+  const pieces: Array<AudioPiece> = [];
+  for (const segment of map.segments) {
+    const out = outLength(segment);
+    const file = segment.fileTo - segment.fileFrom;
+    if (out < MIN_AUDIO_MS || Math.abs(file - out) > 1) continue;
+    const last = pieces.at(-1);
+    if (
+      last &&
+      Math.abs(last.fileTo - segment.fileFrom) <= 1 &&
+      Math.abs(last.outFrom + (last.fileTo - last.fileFrom) - segment.outFrom) <= 1
+    ) {
+      last.fileTo = segment.fileTo;
+      continue;
+    }
+    pieces.push({
+      fileFrom: segment.fileFrom,
+      fileTo: segment.fileTo,
+      outFrom: segment.outFrom,
+      fadeIn: segment.outFrom > 0,
+      fadeOut: true,
+    });
+  }
+  const last = pieces.at(-1);
+  if (last && last.outFrom + (last.fileTo - last.fileFrom) >= map.outMs - 1) {
+    last.fadeOut = false;
+  }
+  return pieces;
 }
 
 function outLength(segment: Segment): number {

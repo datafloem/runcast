@@ -85,7 +85,7 @@ find, it becomes `PROJECT.md`:
   tables and sidebars without breakpoints, a note that only desktop is
   supported. Write the verdict with its evidence: "yes", "partly" (which
   screens) or "no". If a scenario exists, a `REC_FORMAT=vertical` test run
-  shows whether the flow still works at 480×854.
+  shows whether the flow still works at 540×960.
 - **Brand:** the accent colour and a logo file for the title cards (look in
   `public/`, assets, the theme or CSS variables). Confirm with the user.
 - **Quirks:** pagination, lazy-loaded lists, redirects after saving, slow first

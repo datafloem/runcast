@@ -11,6 +11,7 @@
 - **Captions:** <yes / no> (yes: on-screen messages show at the bottom of the video)
 - **Cards:** <none / opening: "<title>" — "<subtitle>" (3 s) / closing: "<title>" — "<subtitle>" (4 s)>
 - **Blur:** <none / blurred fields, e.g. E-mail, Phone (blurred once filled)>
+- **App sound:** <no / yes: volume 0–1 (default 1), under the voice-over 0–1 of it (default 0.3)>
 - **Transitions:** <none / cube on step N (`<step id>`): the step is replaced by a cube turn to the next screen>
 - **Show transitions:** <pan / slide / fade / cube / cut between shown areas (Focus); per-step exceptions, e.g. step 5: cube>
 - **Recording starts at:** <step 1 / step N (`REC_FROM=N`): earlier steps run silently before recording>

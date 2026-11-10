@@ -7,7 +7,7 @@ import { defineConfig, type ReporterDescription } from "@playwright/test";
 import path from "node:path";
 import { readFileSync } from "node:fs";
 import { findCaptures, type ProjectConfig } from "./project.ts";
-import { TAB_CAPTURE_ARGS } from "./tab-capture.ts";
+import { TAB_CAPTURE_ARGS, TAB_CAPTURE_IGNORED_ARGS } from "./tab-capture.ts";
 import { ensureDisplay } from "./xvfb.ts";
 
 export async function definePlaywrightConfig(project: ProjectConfig) {
@@ -91,6 +91,9 @@ export async function definePlaywrightConfig(project: ProjectConfig) {
               // Video pixels per CSS pixel (REC_SCALE): 2880x1620 for 1440x810.
               `--force-device-scale-factor=${settings.scale}`,
             ],
+            // Not muted, so the app's sound can be recorded; the recorder
+            // keeps it off the speakers.
+            ignoreDefaultArgs: [...TAB_CAPTURE_IGNORED_ARGS],
           }
         : screenCapture
         ? {

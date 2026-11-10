@@ -195,6 +195,15 @@ Add a scenario name to run one: `node tests/recording/.kit/cli.ts test login`.
      gives both: `REC_FORMAT=vertical-crop node tests/recording/.kit/cli.ts render <scenario>`.
    - **Captions (optional):** `scenario({ captions: true })` shows each step's
      message while it lasts.
+   - **App sound (optional):** `scenario({ appAudio: { volume, duckTo } })`
+     mixes the app's own sound (games, media) under the voice-over: `volume`
+     0–1 (default 1), lowered to `duckTo` of it (default 0.3) while a voice
+     clip plays, with 200 ms ramps. Tab capture always records the tab's
+     sound (kept off the speakers); only 1:1 stretches of the video play it,
+     held frames are silent and every join fades over 100 ms. The recording
+     runs at the viewer's pace (sound cannot be stretched) and loading waits
+     fitted to narration are cut, never sped up. `REC_APP_AUDIO=0/1`
+     overrides the scenario.
    - **Title cards (optional):** `scenario({ intro: { title, subtitle }, outro: { ... } })`
      adds an opening card (cross-fades into the recording) and a closing card
      (fades in over the last frame) with the brand logo. Defaults 3 s / 4 s.
@@ -388,6 +397,7 @@ The full rules are in the `runcast-scenario` skill (`skills/runcast-scenario/SKI
 | `REC_RECORD_PACE`                           | `fast`             | Video: `fast` records pauses, rests and cursor moves short and the render restores their pace; `natural` records at the viewer's pace |
 | `REC_COMPRESS_WAITS`                        | scenario           | `1` / `0`: shorten loading waits to fit narration when rendering (scenario `compressWaits`, default on) |
 | `REC_CAPTIONS`                              | scenario           | `1` / `0` turns captions on / off when rendering               |
+| `REC_APP_AUDIO`                             | scenario           | `1` / `0`: the app's own sound in the video on / off (scenario `appAudio`; tab capture) |
 | `REC_FORMAT`                                | scenario           | Overrides the scenario's video format (recording and rendering) |
 | `REC_END_HOLD_MS`                           | `2000`             | How long the last frame stays (video, rehearsal)               |
 | `REC_AIM_MS`                                | `400`              | Cursor rest on a target before clicking (video, rehearsal)     |

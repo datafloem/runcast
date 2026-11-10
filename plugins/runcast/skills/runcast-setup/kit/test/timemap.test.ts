@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { fitNarration, naturalMap, retimeCapture } from "../scripts/video/timemap.ts";
+import { audioPlan, fitNarration, naturalMap, retimeCapture } from "../scripts/video/timemap.ts";
 
 test("no spans is identity", () => {
   const m = naturalMap([], 1000);
@@ -228,4 +228,60 @@ test("freeze before an off-camera cut whose next step was rounded down", () => {
     assert.ok(map.toRec(t) >= last, `toRec went back at ${t}`);
     last = map.toRec(t);
   }
+});
+
+// App audio: only stretches shown at real speed play; the rest is silent.
+
+test("audio plan plays 1:1 segments and skips freezes", () => {
+  const map = naturalMap([{ from: 100, to: 400, kind: "hold", outMs: 1000 }], 500);
+  assert.deepEqual(audioPlan(map), [
+    { fileFrom: 0, fileTo: 400, outFrom: 0, fadeIn: false, fadeOut: true },
+    { fileFrom: 400, fileTo: 500, outFrom: 1100, fadeIn: true, fadeOut: false },
+  ]);
+});
+
+test("audio plan across a freeze and a cut", () => {
+  const map = naturalMap(
+    [
+      { from: 100, to: 200, kind: "hold", outMs: 600 },
+      { from: 300, to: 300, kind: "cut", outMs: 0, skipMs: 2000 },
+    ],
+    500,
+  );
+  const plan = audioPlan(map);
+  assert.deepEqual(plan, [
+    { fileFrom: 0, fileTo: 200, outFrom: 0, fadeIn: false, fadeOut: true },
+    { fileFrom: 200, fileTo: 300, outFrom: 700, fadeIn: true, fadeOut: true },
+    { fileFrom: 2300, fileTo: 2500, outFrom: 800, fadeIn: true, fadeOut: false },
+  ]);
+  for (let i = 1; i < plan.length; i++) {
+    const before = plan[i - 1]!;
+    assert.ok(before.outFrom + (before.fileTo - before.fileFrom) <= plan[i]!.outFrom, "pieces overlap");
+  }
+});
+
+test("stretched spans make no audio", () => {
+  const map = naturalMap([{ from: 100, to: 200, kind: "move", outMs: 300 }], 400);
+  assert.deepEqual(audioPlan(map), [
+    { fileFrom: 0, fileTo: 100, outFrom: 0, fadeIn: false, fadeOut: true },
+    { fileFrom: 200, fileTo: 400, outFrom: 400, fadeIn: true, fadeOut: false },
+  ]);
+});
+
+test("without speeding up, a long wait loses its middle instead", () => {
+  const { map } = fitNarration(naturalMap([], 4000), two, new Map([["a", 1500]]), {
+    compressWaits: true,
+    speedUpWaits: false,
+  });
+  assert.equal(map.toOut(3000), 1500);
+  assert.ok(map.cutsOut.includes(750));
+  // Both halves play at real speed, so they keep their sound (the second
+  // runs on into step b).
+  assert.deepEqual(
+    audioPlan(map).map((p) => [p.fileFrom, p.fileTo, p.outFrom]),
+    [
+      [0, 750, 0],
+      [2250, 4000, 750],
+    ],
+  );
 });

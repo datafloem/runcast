@@ -87,7 +87,7 @@ Ask (over two or three messages; at most three questions each):
 
      When the code does not settle it, say so in the evidence and recommend
      one of the desktop layouts. If the use is "both" and the layout is
-     `vertical`, say that the test also runs in the mobile layout (480×854).
+     `vertical`, say that the test also runs in the mobile layout (540×960).
      Write the decision ("Format"); the test passes
      `scenario({ format: "vertical" })` (or `"vertical-crop"` /
      `"vertical-fit"`).
@@ -122,6 +122,13 @@ Ask (over two or three messages; at most three questions each):
    the page after; the step's own clicks are not shown. Mark those steps in
    phase 4 ("Transition"). Write the decision ("Transitions"); the test passes
    `transition: "cube"` to those steps.
+10. **"Does the app make sound the video should carry?"** (default no; for
+   games, media players, alerts with sound). If yes: how loud against the
+   voice-over (`volume` 0–1, default 1) and how far it drops while the voice
+   speaks (`duckTo` 0–1 of that level, default 0.3). Say that the recording
+   then runs at the viewer's pace (sound cannot be stretched), so it takes
+   longer, and that loading waits are cut, never sped up. Write the decision
+   ("App sound"); the test passes `scenario({ appAudio: { volume, duckTo } })`.
 
 Check `scenarios/*.md` first: if a similar scenario exists, ask whether to make
 a new one or change that one. Suggest a file name (`kebab-case`, e.g.

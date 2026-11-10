@@ -68,6 +68,30 @@ export const settings = {
   pageWidth: Number(env.REC_PAGE_WIDTH ?? 1440),
 };
 
+/** The app's sound in the video, resolved (see ScenarioDefinition.appAudio). */
+export interface AppAudio {
+  /** Level of the app's sound, 0-1. */
+  volume: number;
+  /** Its level while the voice-over speaks, 0-1. */
+  duckTo: number;
+}
+
+/**
+ * Whether the video carries the app's sound and at what levels: the
+ * scenario's `appAudio` (off when not given; volume 1, duckTo 0.3 by
+ * default), REC_APP_AUDIO=0/1 overriding it.
+ */
+export function resolveAppAudio(
+  own: { volume?: number; duckTo?: number } | undefined,
+  setting: string | undefined = env.REC_APP_AUDIO,
+): AppAudio | null {
+  if (setting === "0") return null;
+  if (!own && setting !== "1") return null;
+  const level = (value: number | undefined, fallback: number) =>
+    Math.min(1, Math.max(0, Number.isFinite(value) ? (value as number) : fallback));
+  return { volume: level(own?.volume, 1), duckTo: level(own?.duckTo, 0.3) };
+}
+
 /**
  * Page size of a landscape page (tab capture, rehearsal, test). REC_PAGE_WIDTH:
  * that width at 16:9. Otherwise REC_PAGE_SIZE ("1512x860"; with screen

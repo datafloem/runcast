@@ -23,6 +23,11 @@ const MARKER = "RUNCAST-";
 const START_TIMEOUT_MS = 5_000;
 /** Recording bit rate: high, so the renderer's zoom has detail to show. */
 const BITS_PER_SECOND = 25_000_000;
+/**
+ * How much later the app's sound reaches the recording than the page plays
+ * it (Chrome's audio output and capture), measured: 90-135 ms.
+ */
+const APP_AUDIO_DELAY_MS = 100;
 /** How long the recorder may take to hand over its last chunk. */
 const STOP_TIMEOUT_MS = 15_000;
 
@@ -32,7 +37,15 @@ const STOP_TIMEOUT_MS = 15_000;
  */
 export const TAB_CAPTURE_ARGS: ReadonlyArray<string> = [
   `--auto-select-tab-capture-source-by-title=${MARKER}`,
+  // The app's sound plays without a click first (games, media).
+  "--autoplay-policy=no-user-gesture-required",
 ];
+
+/**
+ * Playwright flags tab capture leaves out: muted, a tab gives no sound to
+ * capture. The capture keeps it off the speakers (suppressLocalAudioPlayback).
+ */
+export const TAB_CAPTURE_IGNORED_ARGS: ReadonlyArray<string> = ["--mute-audio"];
 
 /**
  * Sizes the real browser window so the page inside it is exactly `size`
@@ -273,6 +286,14 @@ export class TabCapture implements Capture {
       this.recorder = null;
     }
     this.data.video.startMs = Math.round(this.startWall - this.log.startedAt);
+    if (this.options.audio && (this.started?.audioTracks ?? 0) > 0) {
+      // The sound is in the same file, on the video's clock, and reaches it
+      // a little after the page plays it.
+      this.data.audio = {
+        file: this.data.video.file,
+        startMs: this.data.video.startMs - APP_AUDIO_DELAY_MS,
+      };
+    }
     return this.log.write(this.dir);
   }
 }

@@ -50,12 +50,15 @@ import {
   stepVoices,
 } from "../../core/narration.ts";
 import {
+  audioPlan,
   fitNarration,
   naturalMap,
   retimeCapture,
+  type AudioPiece,
   type Span,
   type StepFit,
 } from "./timemap.ts";
+import { appAudioFilter, shiftPlan } from "./audio.ts";
 import {
   findCaptures as findProjectCaptures,
   kitCommand,
@@ -94,6 +97,17 @@ interface CaptureFile {
   spans?: Array<Span>;
   /** Older captures: off-camera time cut out of the screen recording. */
   cuts?: Array<{ at: number; ms: number }>;
+  /** Tab capture: the app's sound (a file with an audio track) and when it starts. */
+  audio?: { file: string; startMs: number };
+}
+
+/** The app's sound in the video: the recording's audio, where it plays, its levels. */
+interface AppAudioMix {
+  file: string;
+  /** Pieces on the audio file's clock, placed on the video clock (intro included). */
+  plan: Array<AudioPiece>;
+  volume: number;
+  duckTo: number;
 }
 
 interface Card {
@@ -109,6 +123,8 @@ interface StepsFile {
   compressWaits?: boolean;
   /** The scenario's video format (core/format.ts). */
   format?: string;
+  /** The app's sound in the video, when the scenario asked for it. */
+  appAudio?: { volume: number; duckTo: number };
   intro?: Card;
   outro?: Card;
   steps: Array<{
@@ -144,7 +160,10 @@ interface Prepared {
   /** Recorded steps on the video clock (intro included). */
   steps: Array<{ id?: string; title: string; startMs: number }>;
   report: Array<StepFit>;
-  clips: Array<{ file: string; at: number }>;
+  /** Voice-over clips: file, start and length (ms, intro included). */
+  clips: Array<{ file: string; at: number; ms: number }>;
+  /** The app's sound, or null. */
+  appAudio: AppAudioMix | null;
   canvas: Canvas;
   ctx: SKRSContext2D;
   /** Decodes the recording in order from file time `fromFileMs` (rendering). */
@@ -228,11 +247,23 @@ async function prepare(captureDir: string): Promise<Prepared> {
     process.env.REC_COMPRESS_WAITS !== undefined
       ? process.env.REC_COMPRESS_WAITS !== "0"
       : (stepsData?.compressWaits ?? true);
+  // The app's sound: when the scenario asked for it (REC_APP_AUDIO=0/1
+  // overrides) and the capture has it. Sound cannot be sped up, so long
+  // waits are then cut instead.
+  const appLevels =
+    process.env.REC_APP_AUDIO === "0"
+      ? null
+      : (stepsData?.appAudio ??
+        (process.env.REC_APP_AUDIO === "1" ? { volume: 1, duckTo: 0.3 } : null));
+  const appSound =
+    appLevels && capture.audio && existsSync(path.join(captureDir, capture.audio.file))
+      ? { ...capture.audio, ...appLevels }
+      : null;
   const { map, report } = fitNarration(
     naturalMap(capture.spans ?? [], capture.durationMs, capture.cuts),
     recSteps.map((step) => ({ id: step.id, startMs: step.seconds * 1000 })),
     new Map([...voices].map(([id, voice]) => [id, voice.ms])),
-    { compressWaits },
+    { compressWaits, speedUpWaits: !appSound },
   );
   const events = retimeCapture(map, {
     pointer: capture.pointer,
@@ -245,16 +276,47 @@ async function prepare(captureDir: string): Promise<Prepared> {
   }));
   const sceneMs = map.outMs;
 
+  const gapMs = script?.gapMs ?? 0;
   const clips = steps.flatMap((step) => {
-    const audio = step.id ? voices.get(step.id)?.audio : null;
-    return audio
-      ? [{ file: path.join(RECORDING_DIR, audio), at: introMs + step.seconds * 1000 }]
+    const voice = step.id ? voices.get(step.id) : undefined;
+    return voice?.audio
+      ? [
+          {
+            file: path.join(RECORDING_DIR, voice.audio),
+            at: introMs + step.seconds * 1000,
+            ms: Math.max(0, voice.ms - gapMs),
+          },
+        ]
       : [];
   });
   if (stepsData?.intro && cardAudio.intro)
-    clips.push({ file: cardAudio.intro.file, at: 300 });
+    clips.push({ file: cardAudio.intro.file, at: 300, ms: cardAudio.intro.ms });
   if (stepsData?.outro && cardAudio.outro) {
-    clips.push({ file: cardAudio.outro.file, at: introMs + sceneMs + 300 });
+    clips.push({
+      file: cardAudio.outro.file,
+      at: introMs + sceneMs + 300,
+      ms: cardAudio.outro.ms,
+    });
+  }
+  // The audio file's clock is the screen file's, shifted by the sound's delay.
+  const audioShift = appSound ? capture.video.startMs - appSound.startMs : 0;
+  const appAudio: AppAudioMix | null = appSound
+    ? {
+        file: path.join(captureDir, appSound.file),
+        plan: audioPlan(map).map((piece) => ({
+          ...piece,
+          fileFrom: piece.fileFrom + audioShift,
+          fileTo: piece.fileTo + audioShift,
+          outFrom: piece.outFrom + introMs,
+        })),
+        volume: appSound.volume,
+        duckTo: appSound.duckTo,
+      }
+    : null;
+  if (appAudio) {
+    console.log(
+      `App audio: on (volume ${appAudio.volume}, ${appAudio.duckTo} under the voice-over).`,
+    );
   }
 
   const { x: contentX, y: contentY, w: contentW, h: contentH } =
@@ -279,6 +341,7 @@ async function prepare(captureDir: string): Promise<Prepared> {
     captureDir,
     recSteps,
     report,
+    appAudio !== null,
     steps.map((step) => introMs + step.seconds * 1000),
     actionsOutOfFrame(events.focus, track, viewport, view).map((f) => ({
       kind: f.kind,
@@ -649,6 +712,7 @@ async function prepare(captureDir: string): Promise<Prepared> {
     })),
     report,
     clips,
+    appAudio,
     canvas,
     ctx,
     streamFrames,
@@ -692,10 +756,14 @@ export async function render(
   const clips = job.clips
     .map((clip) => ({ ...clip, at: clip.at - startMs }))
     .filter((clip) => clip.at < toMs - startMs);
+  const appAudio = job.appAudio
+    ? { ...job.appAudio, plan: shiftPlan(job.appAudio.plan, startMs) }
+    : null;
   const frames = job.streamFrames(job.toRec(startMs));
   const ffmpeg = startEncoder(out, clips, job.layout, {
     draft: options.draft,
     durationMs: options.steps ? toMs - startMs : undefined,
+    appAudio,
   });
   try {
     // A frame that looks like the previous one (held, stretched, a still
@@ -812,6 +880,8 @@ function writeReport(
   captureDir: string,
   steps: Array<{ id?: string; title: string }>,
   report: Array<StepFit>,
+  /** Whether the app's own sound is mixed in (noted on every row). */
+  appAudio: boolean,
   /** Where each step starts in the video (ms, opening card included). */
   videoStartMs: Array<number>,
   /** Actions the camera does not show (video ms, opening card included). */
@@ -823,6 +893,7 @@ function writeReport(
     step: steps[fit.index]?.title ?? String(fit.index + 1),
     videoStartMs: Math.round(videoStartMs[fit.index] ?? 0),
     ...fit,
+    appAudio,
     outOfFrame: outOfFrame
       .filter((action) => stepAt(action.atMs) === fit.index)
       .map((action) => ({ kind: action.kind, atMs: Math.round(action.atMs) })),
@@ -1127,12 +1198,19 @@ function readFrameAt(
   });
 }
 
-/** ffmpeg reading raw RGBA frames from stdin, mixing in the voice-over clips. */
+/**
+ * ffmpeg reading raw RGBA frames from stdin, mixing in the app's sound
+ * (ducked under the voice) and the voice-over clips.
+ */
 function startEncoder(
   out: string,
-  clips: Array<{ file: string; at: number }>,
+  clips: Array<{ file: string; at: number; ms: number }>,
   size: { width: number; height: number },
-  options: { draft?: boolean; durationMs?: number } = {},
+  options: {
+    draft?: boolean;
+    durationMs?: number;
+    appAudio?: AppAudioMix | null;
+  } = {},
 ) {
   const args = [
     "-y",
@@ -1149,22 +1227,41 @@ function startEncoder(
     "-i",
     "pipe:0",
   ];
+  // The app's sound is input 1 (before the clips), when mixed.
+  const app = options.appAudio ?? null;
+  if (app) args.push("-i", app.file);
+  const first = app ? 2 : 1;
   const existing = clips.filter((clip) => existsSync(clip.file));
   for (const clip of existing) args.push("-i", clip.file);
   // A clip that started before the video (a --steps range) is trimmed instead.
   const place = (clip: { at: number }, i: number) =>
     clip.at >= 0
-      ? `[${i + 1}:a]adelay=${Math.round(clip.at)}:all=1[a${i}]`
-      : `[${i + 1}:a]atrim=start=${(-clip.at / 1000).toFixed(3)},asetpts=PTS-STARTPTS[a${i}]`;
-  if (existing.length > 0) {
-    const delays = existing.map(place).join(";");
-    const mix =
-      existing.length === 1
-        ? "[a0]anull[aout]"
-        : `${existing.map((_, i) => `[a${i}]`).join("")}amix=inputs=${existing.length}:normalize=0[aout]`;
+      ? `[${i + first}:a]adelay=${Math.round(clip.at)}:all=1[a${i}]`
+      : `[${i + first}:a]atrim=start=${(-clip.at / 1000).toFixed(3)},asetpts=PTS-STARTPTS[a${i}]`;
+  const sources = [
+    ...(app ? ["[app]"] : []),
+    ...existing.map((_, i) => `[a${i}]`),
+  ];
+  if (sources.length > 0) {
+    const graph = [
+      ...(app
+        ? [
+            appAudioFilter(app.plan, existing, {
+              volume: app.volume,
+              duckTo: app.duckTo,
+              inputIndex: 1,
+              outLabel: "app",
+            }),
+          ]
+        : []),
+      ...existing.map(place),
+      sources.length === 1
+        ? `${sources[0]}anull[aout]`
+        : `${sources.join("")}amix=inputs=${sources.length}:normalize=0[aout]`,
+    ];
     args.push(
       "-filter_complex",
-      `${delays};${mix}`,
+      graph.join(";"),
       "-map",
       "0:v",
       "-map",

@@ -56,3 +56,18 @@ test("vertical pages are 540x960", async () => {
   };
   assert.deepEqual(VERTICAL_PAGE, { width: 540, height: 960 });
 });
+
+test("app audio: off by default, scenario levels with defaults, REC_APP_AUDIO overrides", async () => {
+  const { resolveAppAudio } = (await import(MODE)) as {
+    resolveAppAudio(
+      own: { volume?: number; duckTo?: number } | undefined,
+      setting: string | undefined,
+    ): { volume: number; duckTo: number } | null;
+  };
+  assert.equal(resolveAppAudio(undefined, undefined), null);
+  assert.deepEqual(resolveAppAudio({}, undefined), { volume: 1, duckTo: 0.3 });
+  assert.deepEqual(resolveAppAudio({ volume: 0.6 }, undefined), { volume: 0.6, duckTo: 0.3 });
+  assert.equal(resolveAppAudio({ volume: 0.6 }, "0"), null);
+  assert.deepEqual(resolveAppAudio(undefined, "1"), { volume: 1, duckTo: 0.3 });
+  assert.deepEqual(resolveAppAudio({ volume: 7, duckTo: -1 }, undefined), { volume: 1, duckTo: 0 });
+});

@@ -1,7 +1,7 @@
 import type { Page } from "@playwright/test";
 import { requireEnv } from "./env.ts";
 import { resolveFormat, type VideoFormat } from "./format.ts";
-import { isVideoMode, settings } from "./mode.ts";
+import { isVideoMode, resolveAppAudio, settings } from "./mode.ts";
 import {
   loadNarration,
   segmentLength,
@@ -143,6 +143,14 @@ export interface ScenarioDefinition {
    * REC_COMPRESS_WAITS=0/1 overrides it when rendering.
    */
   compressWaits?: boolean;
+  /**
+   * The app's own sound in the video (games, media), mixed under the
+   * voice-over: `volume` 0-1 (default 1), `duckTo` 0-1, its level while the
+   * voice speaks (default 0.3). Off when not given; REC_APP_AUDIO=0/1
+   * overrides it. Recording then runs at the viewer's pace (sound cannot be
+   * stretched), and loading waits are cut, never sped up. Tab capture only.
+   */
+  appAudio?: { volume?: number; duckTo?: number };
   /** Opening card before the recording (video mode). Off when not given. */
   intro?: VideoCard;
   /** Closing card after the recording (video mode). Off when not given. */
@@ -216,6 +224,7 @@ export function scenario(
     rec.compressWaits = definition.compressWaits ?? true;
     rec.cards = { intro: definition.intro, outro: definition.outro };
     rec.showTransition = definition.showTransition ?? "pan";
+    rec.appAudio = resolveAppAudio(definition.appAudio);
     // Before the first page load, so the app starts in the layout it is recorded in.
     await rec.useFormat(resolveFormat(definition.format));
     if (definition.blur?.length) await blurOnScreen(page, definition.blur);

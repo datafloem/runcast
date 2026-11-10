@@ -109,6 +109,13 @@ shows each step separately in the Playwright report.
   `show: { target: "<selector>", transition: "cube" }`. Unlike a step's
   `transition: "cube"`, which hides the step, these only change how the view
   changes between two shown areas; the page keeps playing.
+- **App sound (optional):** if the scenario text says "App sound: yes", pass
+  `appAudio: { volume, duckTo }` (defaults 1 and 0.3). The app's own sound
+  (always captured with the tab, never on the speakers) is mixed under the
+  voice-over, lowered to `duckTo` while it speaks, and silent where the video
+  holds a frame. The recording runs at the viewer's pace and loading waits
+  are cut, never sped up. Try without it: `REC_APP_AUDIO=0 node tests/recording/.kit/cli.ts render <name>`.
+  Sound the app plays without a click (autoplay) is allowed in video mode.
 - **Captions (optional):** if the scenario text says "Captions: yes", pass
   `captions: true`; the renderer shows each step's `note` at the bottom while
   the step lasts. Try without re-recording:
@@ -117,7 +124,7 @@ shows each step separately in the Playwright report.
   landscape, pass `format: "vertical" | "vertical-crop" | "vertical-fit"`.
   The video is then 1080×1920 (`videos/<name>-vertical.mp4`).
   - `"vertical"` makes the page 9:16 before the first page load, in every mode
-    (480×854 in test and rehearsal), so the app runs in its **mobile layout**:
+    (540×960), so the app runs in its **mobile layout**:
     navigation may sit behind a menu button, tables may become cards, some
     controls may be hidden. Write and check the helpers against that layout
     (run `test <name>` and look at the failure screenshots); if a helper must

@@ -8,8 +8,8 @@ You describe the video to your AI assistant (Claude Code, Codex, Antigravity
 or another tool). The assistant writes a short script that drives a real
 Chrome browser through your app. The kit then records it with a smooth cursor
 and a calm, zooming camera, and renders an MP4. If you want them, you also get
-captions, opening and closing title cards, blurred private fields and a
-voice-over. The kit can upload the result to YouTube too.
+captions, opening and closing title cards, blurred private fields, the
+app's own sound and a voice-over. The kit can upload the result to YouTube too.
 
 You need no video editing and no screen-recording app. You don't click through
 the app yourself, and you can keep using your computer while it records:
