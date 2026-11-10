@@ -133,3 +133,56 @@ test("confirm answered per scenario", async () => {
   ]);
   await fresh.close();
 });
+
+test("a project's own dialog listener answers, and the video draws its answer", async () => {
+  process.env.REC_MODE = "rehearsal";
+  const { Recorder } = await import("../core/recorder.ts");
+  const { CaptureLog } = await import("../core/capture-log.ts");
+  const fresh = await browser.newPage();
+  await fresh.setContent(`<button id="ask" onclick="window.answers.push(confirm('Delete this order?'))">Delete</button>
+    <script>window.answers = [];</script>`);
+  const rec = new Recorder(fresh, { file: "/demo/scenarios/demo.spec.ts" } as never);
+  rec.dialogs = "accept";
+  rec.watchDialogs();
+  await rec.start();
+  const log = new CaptureLog("demo");
+  (rec as unknown as { capture: unknown }).capture = log;
+  // The step cancels this one itself (e.g. a "cancel the delete" flow).
+  const errors: Array<unknown> = [];
+  fresh.once("dialog", (dialog) => dialog.dismiss().catch((error: unknown) => errors.push(error)));
+  await fresh.locator("#ask").click();
+  assert.deepEqual(errors, []);
+  assert.deepEqual(await fresh.evaluate(() => (window as unknown as { answers: unknown[] }).answers), [false]);
+  assert.equal(log.data.dialogs?.[0]?.accepted, false);
+  await fresh.close();
+});
+
+test("rec.onDialog only answers a dialog of the next action", async () => {
+  process.env.REC_MODE = "rehearsal";
+  const { Recorder } = await import("../core/recorder.ts");
+  const fresh = await browser.newPage();
+  await fresh.setContent(`<button id="calm">Nothing</button>
+    <button id="ask" onclick="window.answers.push(confirm('Delete this order?'))">Delete</button>
+    <script>window.answers = [];</script>`);
+  const rec = new Recorder(fresh, { file: "/demo/scenarios/demo.spec.ts" } as never);
+  rec.watchDialogs();
+  rec.onDialog({ accept: false });
+  await rec.click(fresh.locator("#calm")); // opens no dialog: the answer lapses
+  await rec.click(fresh.locator("#ask"));
+  assert.deepEqual(await fresh.evaluate(() => (window as unknown as { answers: unknown[] }).answers), [true]);
+  await fresh.close();
+});
+
+test("rec.pickDate handles date-and-time inputs and names inputs it cannot set", async () => {
+  process.env.REC_MODE = "rehearsal";
+  const { Recorder } = await import("../core/recorder.ts");
+  const fresh = await browser.newPage();
+  await fresh.setContent(`<input id="when" type="datetime-local"><input id="at" type="time"><input id="month" type="month">`);
+  const rec = new Recorder(fresh, { file: "/demo/scenarios/demo.spec.ts" } as never);
+  await rec.start();
+  await rec.pickDate(fresh.locator("#when"), "2026-03-14T09:30");
+  assert.equal(await fresh.locator("#when").inputValue(), "2026-03-14T09:30");
+  await assert.rejects(rec.pickDate(fresh.locator("#at"), "2026-03-14"), /time input/);
+  await assert.rejects(rec.pickDate(fresh.locator("#month"), "2026-03-14"), /month input/);
+  await fresh.close();
+});

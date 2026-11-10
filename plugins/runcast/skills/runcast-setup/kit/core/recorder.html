@@ -126,11 +126,19 @@
             window.__runcastChunk(name, await toBase64(data), extension),
           );
         };
+        // A recording that ends before stopCapture (the tab went away, the
+        // encoder failed) is reported when it is stopped.
+        const problems = [];
+        for (const track of stream.getTracks()) {
+          track.addEventListener("ended", () => problems.push(`its ${track.kind} ended`));
+        }
+        recorder.onerror = (event) =>
+          problems.push(`the recorder failed (${event.error?.message ?? event.error ?? "unknown error"})`);
         const stopped = new Promise((resolve) => (recorder.onstop = resolve));
         const started = new Promise((resolve) => (recorder.onstart = () => resolve(Date.now())));
         recorder.start(target.timesliceMs ?? 1000);
         const startWall = await started;
-        running[name] = { recorder, stream, frames, startWall, stopped, sending: () => sending };
+        running[name] = { recorder, stream, frames, startWall, problems, stopped, sending: () => sending };
         return {
           mime,
           startWall,
@@ -157,7 +165,7 @@
         const firstFrameWall =
           first !== null && Number.isFinite(minDelay) ? first + minDelay : entry.startWall;
         // The sound, when recorded, shares this time zero (same file).
-        return { firstFrameWall };
+        return { firstFrameWall, problems: entry.problems };
       }
     </script>
   </body>

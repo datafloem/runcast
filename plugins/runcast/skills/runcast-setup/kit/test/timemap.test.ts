@@ -362,3 +362,18 @@ test("switches map to video time", () => {
   });
   assert.deepEqual(fitted.switchesOut, map.switchesOut);
 });
+
+test("app sound plays through moves logged at their real length", () => {
+  // Natural pace: each move is logged with the time it took (VirtualMouse).
+  const map = naturalMap(
+    [
+      { from: 200, to: 843, kind: "move", outMs: 643 },
+      { from: 843, to: 1260, kind: "aim", outMs: 400 },
+      { from: 1500, to: 2122, kind: "move", outMs: 622 },
+    ],
+    3000,
+  );
+  assert.deepEqual(audioPlan(map), [
+    { fileFrom: 0, fileTo: 3000, outFrom: 0, fadeIn: false, fadeOut: false },
+  ]);
+});

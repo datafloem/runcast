@@ -32,7 +32,7 @@ import { screenProblem } from "./on-screen.ts";
 import { captureRootFor } from "./project.ts";
 import type { ShowTransition, VideoCard } from "./scenario.ts";
 import type { Box, Capture, FocusKind, SourceSwitch } from "./capture-log.ts";
-import { sizeWindow, TabCapture } from "./tab-capture.ts";
+import { blockNetwork, sizeWindow, TabCapture } from "./tab-capture.ts";
 import { fitWindow, VideoCapture } from "./video-capture.ts";
 import { VirtualMouse } from "./virtual-mouse.ts";
 
@@ -139,10 +139,36 @@ export class Recorder {
   /**
    * Answers the next browser dialog (alert, confirm, prompt, beforeunload)
    * this way instead of the scenario's `dialogs`; call it right before the
-   * action that opens it. `text` answers a prompt.
+   * `rec` action that opens it. `text` answers a prompt. If that action
+   * opens no dialog, the answer lapses (with a warning) instead of
+   * answering a later, unrelated one.
    */
   onDialog(answer: { accept: boolean; text?: string }): void {
     this.nextDialog = answer;
+  }
+
+  /** Nesting of rec actions (an action may use others, e.g. select → click). */
+  private actionDepth = 0;
+
+  /**
+   * Runs one rec action. A pending onDialog answer that was there before
+   * the action and is still unused after it lapses.
+   */
+  private async act<T>(fn: () => Promise<T>): Promise<T> {
+    const outer = this.actionDepth === 0;
+    const pending = outer ? this.nextDialog : null;
+    this.actionDepth++;
+    try {
+      return await fn();
+    } finally {
+      this.actionDepth--;
+      if (pending && this.nextDialog === pending) {
+        this.nextDialog = null;
+        console.warn(
+          "rec.onDialog: the next action opened no dialog, so its answer was dropped. Call it right before the action that opens the dialog.",
+        );
+      }
+    }
   }
 
   /**
@@ -155,20 +181,42 @@ export class Recorder {
   }
 
   private async answerDialog(dialog: Dialog): Promise<void> {
+    // On camera, logged with the time it opened, once its answer is known.
+    const capture = this.capture && this.paced ? this.capture : null;
+    const at = capture?.now();
+    let origin: string | undefined;
+    try {
+      origin = new URL(this.page.url()).host || undefined;
+    } catch {
+      origin = undefined;
+    }
+    const log = (accepted: boolean, text?: string) =>
+      capture?.dialog(dialog.type(), dialog.message(), accepted, text, origin, at);
+
+    // The step listens for dialogs itself (page.on / once / waitForEvent):
+    // it answers, and the video shows what it answered.
+    const listeners = (this.page as unknown as { listenerCount(event: string): number })
+      .listenerCount("dialog");
+    if (listeners > 1) {
+      const accept = dialog.accept.bind(dialog);
+      const dismiss = dialog.dismiss.bind(dialog);
+      dialog.accept = (text?: string) => {
+        log(true, dialog.type() === "prompt" ? (text ?? dialog.defaultValue()) : undefined);
+        return accept(text);
+      };
+      dialog.dismiss = () => {
+        log(false);
+        return dismiss();
+      };
+      return;
+    }
+
     const answer = this.nextDialog ?? { accept: this.dialogs === "accept" };
     this.nextDialog = null;
     const text = dialog.type() === "prompt" && answer.accept
       ? (answer.text ?? dialog.defaultValue())
       : undefined;
-    if (this.capture && this.paced) {
-      let origin: string | undefined;
-      try {
-        origin = new URL(this.page.url()).host || undefined;
-      } catch {
-        origin = undefined;
-      }
-      this.capture.dialog(dialog.type(), dialog.message(), answer.accept, text, origin);
-    }
+    log(answer.accept, text);
     try {
       if (answer.accept) await dialog.accept(text);
       else await dialog.dismiss();
@@ -263,14 +311,19 @@ export class Recorder {
     fn: (stage: Page, mouse: VirtualMouse) => Promise<T>,
     transition: SourceSwitch["transition"] = "fade",
     back: SourceSwitch["transition"] = transition,
-    /** cursor: false hides the cursor while the stage shows (a scene). */
-    options: { cursor?: boolean } = {},
+    /**
+     * cursor: false hides the cursor while the stage shows (a scene).
+     * prepare loads what the stage shows before the video changes to it, so
+     * the transition never shows the stage's previous page.
+     */
+    options: { cursor?: boolean; prepare?: (stage: Page) => Promise<void> } = {},
   ): Promise<T> {
     const app = this.liveMouse();
     if (!app) throw new Error("rec.onStage runs on camera only (video and rehearsal).");
     const stage = await this.stagePage();
     this.stageMouse ??= new VirtualMouse(stage, this.capture, app.at, this.fastRecording);
     this.stageMouse.place(app.at);
+    await options.prepare?.(stage);
     this.switchTo("stage", transition, options.cursor ?? true);
     try {
       return await fn(stage, this.stageMouse);
@@ -314,6 +367,11 @@ export class Recorder {
     return this.liveMouse() !== null;
   }
 
+  /** Whether a stage tab can be shown: rehearsal, or video with tab capture. */
+  private get hasStage(): boolean {
+    return !isVideoMode || (this.capture instanceof TabCapture && this.capture.stage !== null);
+  }
+
   /** The stage tab: the recorded one in video mode, a plain page in rehearsal. */
   private async stagePage(): Promise<Page> {
     if (this.capture instanceof TabCapture && this.capture.stage) return this.capture.stage;
@@ -324,6 +382,7 @@ export class Recorder {
     }
     if (!this.rehearsalStage) {
       this.rehearsalStage = await this.page.context().newPage();
+      await blockNetwork(this.rehearsalStage);
       await this.rehearsalStage.setViewportSize(
         this.page.viewportSize() ?? pageSize,
       );
@@ -362,87 +421,97 @@ export class Recorder {
     return Promise.resolve();
   }
 
-  async hover(target: Target): Promise<void> {
-    const mouse = this.liveMouse();
-    if (!mouse) {
-      await this.pagePoint(target);
-      if (isLocator(target)) await target.hover();
-      else await this.page.mouse.move(...xy(await this.pagePoint(target)));
-      return;
-    }
-    const point = await this.pagePoint(target);
-    await mouse.moveTo(point);
-    this.logFocus("hover", target, point);
+  hover(target: Target): Promise<void> {
+    return this.act(async () => {
+      const mouse = this.liveMouse();
+      if (!mouse) {
+        await this.pagePoint(target);
+        if (isLocator(target)) await target.hover();
+        else await this.page.mouse.move(...xy(await this.pagePoint(target)));
+        return;
+      }
+      const point = await this.pagePoint(target);
+      await mouse.moveTo(point);
+      this.logFocus("hover", target, point);
+    });
   }
 
-  async click(target: Target): Promise<void> {
-    const mouse = this.liveMouse();
-    if (!mouse) {
-      await this.pagePoint(target);
-      if (isLocator(target)) await target.click();
-      else await this.page.mouse.click(...xy(await this.pagePoint(target)));
-      await sleep(this.aimMs);
-      return;
-    }
-    const point = await this.pagePoint(target);
-    await mouse.moveTo(point);
-    await this.rest("aim", settings.aimMs);
-    await mouse.click(point);
-    this.logFocus("click", target, point);
+  click(target: Target): Promise<void> {
+    return this.act(async () => {
+      const mouse = this.liveMouse();
+      if (!mouse) {
+        await this.pagePoint(target);
+        if (isLocator(target)) await target.click();
+        else await this.page.mouse.click(...xy(await this.pagePoint(target)));
+        await sleep(this.aimMs);
+        return;
+      }
+      const point = await this.pagePoint(target);
+      await mouse.moveTo(point);
+      await this.rest("aim", settings.aimMs);
+      await mouse.click(point);
+      this.logFocus("click", target, point);
+    });
   }
 
-  async doubleClick(target: Target): Promise<void> {
-    const mouse = this.liveMouse();
-    if (!mouse) {
-      await this.pagePoint(target);
-      if (isLocator(target)) await target.dblclick();
-      else await this.page.mouse.dblclick(...xy(await this.pagePoint(target)));
-      await sleep(this.aimMs);
-      return;
-    }
-    const point = await this.pagePoint(target);
-    await mouse.moveTo(point);
-    await this.rest("aim", settings.aimMs);
-    await mouse.doubleClick(point);
-    this.logFocus("double-click", target, point);
+  doubleClick(target: Target): Promise<void> {
+    return this.act(async () => {
+      const mouse = this.liveMouse();
+      if (!mouse) {
+        await this.pagePoint(target);
+        if (isLocator(target)) await target.dblclick();
+        else await this.page.mouse.dblclick(...xy(await this.pagePoint(target)));
+        await sleep(this.aimMs);
+        return;
+      }
+      const point = await this.pagePoint(target);
+      await mouse.moveTo(point);
+      await this.rest("aim", settings.aimMs);
+      await mouse.doubleClick(point);
+      this.logFocus("double-click", target, point);
+    });
   }
 
-  async rightClick(target: Target): Promise<void> {
-    const mouse = this.liveMouse();
-    if (!mouse) {
-      await this.pagePoint(target);
-      if (isLocator(target)) await target.click({ button: "right" });
-      else
-        await this.page.mouse.click(...xy(await this.pagePoint(target)), {
-          button: "right",
-        });
-      await sleep(this.aimMs);
-      return;
-    }
-    const point = await this.pagePoint(target);
-    await mouse.moveTo(point);
-    await this.rest("aim", settings.aimMs);
-    await mouse.rightClick(point);
-    this.logFocus("right-click", target, point);
+  rightClick(target: Target): Promise<void> {
+    return this.act(async () => {
+      const mouse = this.liveMouse();
+      if (!mouse) {
+        await this.pagePoint(target);
+        if (isLocator(target)) await target.click({ button: "right" });
+        else
+          await this.page.mouse.click(...xy(await this.pagePoint(target)), {
+            button: "right",
+          });
+        await sleep(this.aimMs);
+        return;
+      }
+      const point = await this.pagePoint(target);
+      await mouse.moveTo(point);
+      await this.rest("aim", settings.aimMs);
+      await mouse.rightClick(point);
+      this.logFocus("right-click", target, point);
+    });
   }
 
   /** Drags from one element to another, e.g. a card to another column. */
-  async drag(from: Target, to: Target): Promise<void> {
-    const mouse = this.liveMouse();
-    if (!mouse) {
+  drag(from: Target, to: Target): Promise<void> {
+    return this.act(async () => {
+      const mouse = this.liveMouse();
+      if (!mouse) {
+        const start = await this.pagePoint(from);
+        const end = await this.pagePoint(to);
+        await this.page.mouse.move(...xy(start));
+        await this.page.mouse.down();
+        await this.page.mouse.move(...xy(end), { steps: 25 });
+        await this.page.mouse.up();
+        return;
+      }
       const start = await this.pagePoint(from);
       const end = await this.pagePoint(to);
-      await this.page.mouse.move(...xy(start));
-      await this.page.mouse.down();
-      await this.page.mouse.move(...xy(end), { steps: 25 });
-      await this.page.mouse.up();
-      return;
-    }
-    const start = await this.pagePoint(from);
-    const end = await this.pagePoint(to);
-    const startedMs = this.capture?.now();
-    await mouse.drag(start, end);
-    this.logFocus("drag", to, end, startedMs);
+      const startedMs = this.capture?.now();
+      await mouse.drag(start, end);
+      this.logFocus("drag", to, end, startedMs);
+    });
   }
 
   /**
@@ -452,35 +521,53 @@ export class Recorder {
    * clicks the option, then the value is set (selectOption) and the list
    * goes. Test mode: selectOption only.
    */
-  async select(target: Locator, label: string): Promise<void> {
-    await this.pickWithStandIn(
-      target,
-      () => target.evaluate(showOptions),
-      this.page.locator(`[data-runcast-ui] [data-label=${cssString(label)}]`),
-      () => target.selectOption({ label }).then(() => undefined),
-    );
+  select(target: Locator, label: string): Promise<void> {
+    return this.act(async () => {
+      await this.pickWithStandIn(
+        target,
+        () => target.evaluate(showOptions),
+        this.page.locator(`[data-runcast-ui] [data-label=${cssString(label)}]`),
+        () => target.selectOption({ label }).then(() => undefined),
+      );
+    });
   }
 
   /**
-   * Sets a date input to `value` (YYYY-MM-DD). In video and rehearsal the kit
-   * draws a month grid under the field and the cursor clicks the day, then
-   * the value is set (fill); other inputs are typed into. Test mode: fill.
+   * Sets a date input to `value` (YYYY-MM-DD; a datetime-local input takes
+   * YYYY-MM-DDTHH:MM). In video and rehearsal the kit draws a month grid
+   * under the field and the cursor clicks the day, then the value is set
+   * (fill); a text field is typed into. Time, month and week inputs fail
+   * with a clear message. Test mode: fill.
    */
-  async pickDate(target: Locator, value: string): Promise<void> {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
-      throw new Error(`rec.pickDate: "${value}" is not a date (YYYY-MM-DD).`);
-    }
-    const type = await target.getAttribute("type");
-    if (type !== "date") {
-      await this.type(target, value);
-      return;
-    }
-    await this.pickWithStandIn(
-      target,
-      () => target.evaluate(showMonth, value),
-      this.page.locator(`[data-runcast-ui] [data-day="${Number(value.slice(8))}"]`),
-      () => target.fill(value),
-    );
+  pickDate(target: Locator, value: string): Promise<void> {
+    return this.act(async () => {
+      const type = (await target.getAttribute("type")) ?? "text";
+      if (["time", "month", "week"].includes(type)) {
+        throw new Error(
+          `rec.pickDate sets dates; ${target.toString()} is a ${type} input, which it cannot pick. ` +
+            "Use a date or datetime-local input, or a text field with rec.type.",
+        );
+      }
+      const pattern =
+        type === "datetime-local" ? /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/ : /^\d{4}-\d{2}-\d{2}$/;
+      if (!pattern.test(value)) {
+        throw new Error(
+          `rec.pickDate: "${value}" is not ${type === "datetime-local" ? "a date and time (YYYY-MM-DDTHH:MM)" : "a date (YYYY-MM-DD)"}.`,
+        );
+      }
+      if (type !== "date" && type !== "datetime-local") {
+        await this.type(target, value);
+        return;
+      }
+      // datetime-local: the day is picked in the month grid, the time set with it.
+      const day = value.slice(0, 10);
+      await this.pickWithStandIn(
+        target,
+        () => target.evaluate(showMonth, day),
+        this.page.locator(`[data-runcast-ui] [data-day="${Number(day.slice(8))}"]`),
+        () => target.fill(value),
+      );
+    });
   }
 
   /**
@@ -491,32 +578,39 @@ export class Recorder {
    * Test mode: the trigger is clicked and the files are set. Relative paths
    * are from the recording folder.
    */
-  async chooseFiles(
+  chooseFiles(
     trigger: Target,
     files: Array<string>,
     options: { transition?: SourceSwitch["transition"] } = {},
   ): Promise<void> {
-    const paths = this.filePaths(files);
-    const chooserOpens = this.page.waitForEvent("filechooser", { timeout: 15_000 });
-    await this.click(trigger);
-    const chooser = await chooserOpens;
-    if (paths.length > 1 && !chooser.isMultiple()) {
-      throw new Error(
-        `rec.chooseFiles: the file chooser takes one file, ${paths.length} were given.`,
-      );
-    }
-    if (this.liveMouse()) {
-      await this.onStage(async (stage, mouse) => {
-        await this.showFileManager(stage, paths, "open");
-        await this.pickFiles(stage, mouse, paths);
-        const open = stage.locator('[data-action="open"]');
-        await mouse.moveTo(await centreOf(open));
-        await this.rest("aim", settings.aimMs);
-        await mouse.click(await centreOf(open));
-        await sleep(150);
-      }, options.transition ?? "fade");
-    }
-    await chooser.setFiles(paths);
+    return this.act(async () => {
+      const paths = this.filePaths(files);
+      const chooserOpens = this.page.waitForEvent("filechooser", { timeout: 15_000 });
+      await this.click(trigger);
+      const chooser = await chooserOpens;
+      if (paths.length > 1 && !chooser.isMultiple()) {
+        throw new Error(
+          `rec.chooseFiles: the file chooser takes one file, ${paths.length} were given.`,
+        );
+      }
+      // Screen capture has no stage: the click is shown, the files are set.
+      if (this.liveMouse() && this.hasStage) {
+        await this.onStage(
+          async (stage, mouse) => {
+            await this.pickFiles(stage, mouse, paths);
+            const open = stage.locator('[data-action="open"]');
+            await mouse.moveTo(await centreOf(open));
+            await this.rest("aim", settings.aimMs);
+            await mouse.click(await centreOf(open));
+            await sleep(150);
+          },
+          options.transition ?? "fade",
+          options.transition ?? "fade",
+          { prepare: (stage) => this.showFileManager(stage, paths, "open") },
+        );
+      }
+      await chooser.setFiles(paths);
+    });
   }
 
   /**
@@ -528,75 +622,94 @@ export class Recorder {
    * on the way and a drop with real File objects. Test mode: the three
    * events at the zone's centre. Relative paths are from the recording folder.
    */
-  async dropFiles(
+  dropFiles(
     zone: Locator,
     files: Array<string>,
     options: { transition?: SourceSwitch["transition"] } = {},
   ): Promise<void> {
-    const paths = this.filePaths(files);
-    const payload = paths.map((file) => ({
-      name: path.basename(file),
-      type: mimeType(file),
-      base64: readFileSync(file).toString("base64"),
-    }));
-    const send = (
-      type: "dragenter" | "dragover" | "drop",
-      at: Point,
-      withFiles: boolean,
-    ) =>
-      this.page.evaluate(dispatchDrag, {
-        type,
-        x: at.x,
-        y: at.y,
-        ...(withFiles ? { files: payload } : {}),
+    return this.act(async () => {
+      const paths = this.filePaths(files);
+      const payload = paths.map((file) => ({
+        name: path.basename(file),
+        type: mimeType(file),
+        base64: readFileSync(file).toString("base64"),
+      }));
+      // A zone that never calls preventDefault on dragover drops nothing in
+      // a real browser either: usually the selector points elsewhere.
+      let accepted = false;
+      const send = async (
+        type: "dragenter" | "dragover" | "drop",
+        at: Point,
+        withFiles: boolean,
+      ) => {
+        const prevented = await this.page.evaluate(dispatchDrag, {
+          type,
+          x: at.x,
+          y: at.y,
+          ...(withFiles ? { files: payload } : {}),
+        });
+        if (type === "dragover" && prevented) accepted = true;
+      };
+      const warnIfRefused = () => {
+        if (accepted) return;
+        console.warn(
+          `rec.dropFiles: ${zone.toString()} never accepted the drag (no preventDefault on dragover), ` +
+            "so a browser would not drop there. Check that the locator is the drop zone.",
+        );
+      };
+
+      const mouse = this.liveMouse();
+      if (!mouse) {
+        const at = await this.pagePoint(zone);
+        await send("dragenter", at, true);
+        await send("dragover", at, false);
+        await send("drop", at, false);
+        warnIfRefused();
+        return;
+      }
+
+      await this.pagePoint(zone); // the zone must be ready before the files are picked
+      let grabbedAt = 0;
+      if (this.hasStage) {
+        let stageMouse: VirtualMouse | null = null;
+        await this.onStage(
+          async (stage, cursor) => {
+            const last = await this.pickFiles(stage, cursor, paths);
+            await cursor.down(last);
+            grabbedAt = this.capture?.now() ?? 0;
+            await sleep(150);
+            stageMouse = cursor;
+          },
+          "fade",
+          options.transition ?? "lift",
+          { prepare: (stage) => this.showFileManager(stage, paths, "drag") },
+        );
+        // The press stays on the stage; let go there quietly.
+        await (stageMouse as VirtualMouse | null)?.release().catch(() => {});
+      }
+      // Screen capture has no stage: the cursor carries the files from where it is.
+      const target = await this.pagePoint(zone);
+      const box = this.lastBox;
+      let entered = false;
+      const inside = (at: Point) =>
+        !!box && at.x >= box.x && at.x <= box.x + box.width && at.y >= box.y && at.y <= box.y + box.height;
+      await mouse.moveTo(target, undefined, async (at) => {
+        if (!inside(at)) return;
+        await send(entered ? "dragover" : "dragenter", at, !entered);
+        entered = true;
       });
-
-    const mouse = this.liveMouse();
-    if (!mouse) {
-      const at = await this.pagePoint(zone);
-      await send("dragenter", at, true);
-      await send("dragover", at, false);
-      await send("drop", at, false);
-      return;
-    }
-
-    await this.pagePoint(zone); // the zone must be ready before the files are picked
-    let grabbedAt = 0;
-    let stageMouse: VirtualMouse | null = null;
-    await this.onStage(
-      async (stage, cursor) => {
-        await this.showFileManager(stage, paths, "drag");
-        const last = await this.pickFiles(stage, cursor, paths);
-        await cursor.down(last);
-        grabbedAt = this.capture?.now() ?? 0;
-        await sleep(150);
-        stageMouse = cursor;
-      },
-      "fade",
-      options.transition ?? "lift",
-    );
-    // The press stays on the stage; let go there quietly.
-    await (stageMouse as VirtualMouse | null)?.up(mouse.at).catch(() => {});
-    const target = await this.pagePoint(zone);
-    const box = this.lastBox;
-    let entered = false;
-    const inside = (at: Point) =>
-      !!box && at.x >= box.x && at.x <= box.x + box.width && at.y >= box.y && at.y <= box.y + box.height;
-    await mouse.moveTo(target, undefined, async (at) => {
-      if (!inside(at)) return;
-      await send(entered ? "dragover" : "dragenter", at, !entered);
-      entered = true;
+      if (!entered) await send("dragenter", target, true);
+      await send("dragover", target, false);
+      await sleep(120);
+      await send("drop", target, false);
+      await mouse.up(target, false);
+      warnIfRefused();
+      if (this.capture instanceof TabCapture && !this.suspended) {
+        const label = paths.length === 1 ? path.basename(paths[0]!) : `${paths.length} files`;
+        this.capture.carry(grabbedAt, this.capture.now(), label);
+      }
+      this.logFocus("drag", zone, target);
     });
-    if (!entered) await send("dragenter", target, true);
-    await send("dragover", target, false);
-    await sleep(120);
-    await send("drop", target, false);
-    await mouse.up(target, false);
-    if (this.capture instanceof TabCapture && !this.suspended) {
-      const label = paths.length === 1 ? path.basename(paths[0]!) : `${paths.length} files`;
-      this.capture.carry(grabbedAt, this.capture.now(), label);
-    }
-    this.logFocus("drag", zone, target);
   }
 
   /** The files as absolute paths (relative ones from the recording folder), checked. */
@@ -634,7 +747,7 @@ export class Recorder {
     await stage.locator("[data-file]").first().waitFor();
   }
 
-  /** Selects the files in the file manager (Shift-click for more); returns where the last click was. */
+  /** Selects the files in the file manager (Ctrl/Cmd-click for each further one); returns where the last click was. */
   private async pickFiles(
     stage: Page,
     mouse: VirtualMouse,
@@ -683,35 +796,39 @@ export class Recorder {
   }
 
   /** Clicks the field, then types like a person (instantly in test mode). */
-  async type(target: Target, text: string, delayMs = 60): Promise<void> {
-    await this.click(target);
-    // A click measured while a panel still scrolls can miss the field; then
-    // the text would go nowhere. Make sure the field has the focus.
-    const field = "in" in target ? target.in : target;
-    if (!(await field.evaluate((el) => el === document.activeElement))) {
-      await field.focus();
-    }
-    const startedMs = this.capture?.now();
-    const fast = this.fastRecording && this.capture !== null;
-    await this.page.keyboard.type(text, {
-      delay: !this.paced ? 0 : fast ? FAST_TYPE_DELAY_MS : settings.typeDelay(delayMs),
+  type(target: Target, text: string, delayMs = 60): Promise<void> {
+    return this.act(async () => {
+      await this.click(target);
+      // A click measured while a panel still scrolls can miss the field; then
+      // the text would go nowhere. Make sure the field has the focus.
+      const field = "in" in target ? target.in : target;
+      if (!(await field.evaluate((el) => el === document.activeElement))) {
+        await field.focus();
+      }
+      const startedMs = this.capture?.now();
+      const fast = this.fastRecording && this.capture !== null;
+      await this.page.keyboard.type(text, {
+        delay: !this.paced ? 0 : fast ? FAST_TYPE_DELAY_MS : settings.typeDelay(delayMs),
+      });
+      if (this.paced && this.capture && startedMs !== undefined) {
+        const endedMs = this.capture.now();
+        const outMs = fast ? text.length * delayMs : endedMs - startedMs;
+        this.capture.span("type", startedMs, endedMs, outMs);
+      }
+      if (this.capture && this.lastBox && !this.suspended) {
+        const box = this.lastBox;
+        const centre = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+        this.capture.focus("type", centre, box, startedMs);
+      }
     });
-    if (this.paced && this.capture && startedMs !== undefined) {
-      const endedMs = this.capture.now();
-      const outMs = fast ? text.length * delayMs : endedMs - startedMs;
-      this.capture.span("type", startedMs, endedMs, outMs);
-    }
-    if (this.capture && this.lastBox && !this.suspended) {
-      const box = this.lastBox;
-      const centre = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
-      this.capture.focus("type", centre, box, startedMs);
-    }
   }
 
   /** Same as `type`, for secrets: kept out of Playwright's step log. */
-  async typeSecret(target: Locator, text: string): Promise<void> {
-    await this.click(target);
-    await target.fill(text);
+  typeSecret(target: Locator, text: string): Promise<void> {
+    return this.act(async () => {
+      await this.click(target);
+      await target.fill(text);
+    });
   }
 
   /** Time since the recording started, time off camera left out (0 before it). */
@@ -800,9 +917,16 @@ export class Recorder {
   async finish(): Promise<void> {
     this.resume();
     if (this.live) await this.rest("hold", settings.endHoldMs);
+    // A recording that stopped mid-way fails the test, after its step times
+    // are written: what was recorded still renders.
+    let stopError: unknown = null;
     if (this.capture) {
-      const file = await this.capture.stop();
-      console.log(`Video capture: ${path.dirname(file)}`);
+      try {
+        const file = await this.capture.stop();
+        console.log(`Video capture: ${path.dirname(file)}`);
+      } catch (error) {
+        stopError = error;
+      }
     }
     if (this.steps.length > 0) {
       const endSeconds = this.elapsedMs() / 1000;
@@ -834,6 +958,7 @@ export class Recorder {
       );
       console.log(`Step times: ${file}`);
     }
+    if (stopError) throw stopError;
   }
 
   /**

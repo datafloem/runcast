@@ -85,12 +85,19 @@ test("example scene plays its beats", async () => {
   await page.waitForTimeout(300);
   for (const beat of beats) assert.ok((await opacity(beat.id)) < 0.05, `${beat.id} shows before start`);
 
-  const startedAt = Date.now();
   await page.evaluate(() => (window as unknown as { runcastScene: { start(): void } }).runcastScene.start());
+  // Seek the scene's animations instead of waiting: no wall clock in the test.
+  const seek = (ms: number) =>
+    page.evaluate((t) => {
+      for (const animation of document.getAnimations()) {
+        animation.pause();
+        animation.currentTime = t;
+      }
+    }, ms);
   for (const [i, beat] of beats.entries()) {
     const next = beats[i + 1]?.at ?? duration;
-    // Settled before the next beat starts.
-    await page.waitForTimeout(Math.max(0, startedAt + next - 100 - Date.now()));
+    // Settled just before the next beat starts.
+    await seek(next - 100);
     assert.ok((await opacity(beat.id)) > 0.95, `${beat.id} not shown by ${next} ms`);
     if (beats[i + 1]) {
       assert.ok((await opacity(beats[i + 1]!.id)) < 0.05, `${beats[i + 1]!.id} shows early`);

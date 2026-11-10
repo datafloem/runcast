@@ -97,6 +97,20 @@ builds the new runtime, relinks `.kit`, keeps the newest three runtimes, and
 never overwrites the project's own files. After a fresh clone of a project,
 `setup` restores the `.kit` link.
 
+What changes for existing projects when they update to the version with
+tab capture:
+
+- **Video records a headless tab** (`REC_CAPTURE=tab`): the page is
+  `REC_PAGE_SIZE` (1440×810) instead of the screen's size, in tests too.
+  Set `REC_CAPTURE=screen` to keep recording the screen.
+- **Browser dialogs are accepted by default** in every mode (Playwright used
+  to dismiss them when nothing listened). A test that relied on a dismissed
+  `confirm()` sets `scenario({ dialogs: "dismiss" })` or
+  `rec.onDialog({ accept: false })` before the action; a step that listens
+  for dialogs itself (`page.on("dialog")`) still answers them itself.
+- **`steps.scene`**: add `scene` to the `export { hold } from "../kit.ts"`
+  line of `steps/index.ts` (new projects have it).
+
 ## Project layout
 
 ```
@@ -232,8 +246,10 @@ Add a scenario name to run one: `node tests/recording/.kit/cli.ts test login`.
      beat's last frame and the scene is never shortened. Test mode checks
      the contract. On its own: `node tests/recording/.kit/cli.ts scene preview <name>`
      (a draft and a contact sheet of the beats, `.captures/scene-<name>/check/sheet.png`)
-     and `scene render <name> [--gif]` (`videos/scene-<name>.mp4`, a 960 px
-     GIF).
+     and `scene render <name> [--gif] [--bare]` (`videos/scene-<name>.mp4`, a
+     960 px GIF; `--bare`: the scene alone, without the video's background
+     and frame, for articles and websites). Scene and stage pages cannot
+     reach the network: the kit blocks every request they make.
 3. Re-render without recording again: `node tests/recording/.kit/cli.ts render <scenario>`.
    Actions the camera does not show (a vertical crop too narrow for a
    scene) are printed as "Out of frame" and listed in `render-report.json`.
@@ -386,7 +402,8 @@ Steps and helpers move through `rec`, never `page.click`:
 - `spot(locator, x, y)`: a point inside an element (0–1), e.g. on a canvas.
 - `rec.type`: clicks the field and types; `rec.typeSecret` for passwords.
 - `rec.select(locator, label)`, `rec.pickDate(locator, "YYYY-MM-DD")`: a native
-  select or date input. The browser draws their lists outside the page, so
+  select or date input (`datetime-local` takes `"YYYY-MM-DDTHH:MM"`; time,
+  month and week inputs are refused with a message). The browser draws their lists outside the page, so
   in video and rehearsal the kit draws its own under the field (a list, a
   month grid; `core/native-ui.ts`) and the cursor clicks the entry; the
   value is set with Playwright. Test mode sets it directly. Never click a
@@ -404,11 +421,16 @@ Steps and helpers move through `rec`, never `page.click`:
   file manager shrinks and fades back, like a window going behind). The zone
   gets `dragenter`, `dragover` on the way and a `drop` with real `File`s.
   Test mode sends the three events. Relative paths are from the recording
-  folder; tab capture only (screen capture fails with a clear message).
+  folder. With screen capture there is no stage: `chooseFiles` shows the
+  click and sets the files, `dropFiles` carries the files from where the
+  cursor is (no file manager, no icon).
 - `rec.onStage(async (stage, mouse) => { ... }, transition)`: anything else
   the app's tab cannot show, played on the stage with its own cursor.
-- `rec.onDialog({ accept, text })`: how the next browser dialog is answered;
+- `rec.onDialog({ accept, text })`: how a dialog opened by the next `rec`
+  action is answered (it lapses, with a warning, if that action opens none);
   otherwise `scenario({ dialogs: "accept" | "dismiss" })` (default accept).
+  A step that listens for dialogs itself (`page.once("dialog", ...)`) answers
+  them itself, and the video draws its answer.
   The video holds the frame 1.5 s and draws the dialog (message, buttons)
   with the cursor clicking the answer; dialogs off camera add nothing.
   `scenario({ permissions: ["geolocation", ...] })` grants permissions

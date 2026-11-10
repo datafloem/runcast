@@ -43,6 +43,24 @@ export const TAB_CAPTURE_ARGS: ReadonlyArray<string> = [
 ];
 
 /**
+ * Keeps a kit page (the stage, a scene) off the network: every http(s) and
+ * ws(s) request it makes fails. Local files still load.
+ */
+export async function blockNetwork(page: Page): Promise<void> {
+  await page.route(/^(https?|wss?):/i, (route) => route.abort());
+}
+
+/**
+ * The Playwright channel tab capture records with (REC_CHANNEL): Google
+ * Chrome by default; "chromium" is Playwright's full Chromium in its new
+ * headless mode. Never the headless shell Playwright picks for headless
+ * Chromium without a channel: it has no tab capture.
+ */
+export function captureChannel(setting = process.env.REC_CHANNEL): string {
+  return setting && setting !== "" ? setting : "chrome";
+}
+
+/**
  * Playwright flags tab capture leaves out: muted, a tab gives no sound to
  * capture. The capture keeps it off the speakers (suppressLocalAudioPlayback).
  */
@@ -167,6 +185,7 @@ export class TabCapture implements Capture {
 
     if (this.options.stage !== false) {
       this.stage = await this.page.context().newPage();
+      await blockNetwork(this.stage);
       await sizeWindow(this.stage, viewport);
       await this.stage.goto(
         pathToFileURL(path.join(import.meta.dirname, "stage", "blank.html")).href,
@@ -181,6 +200,9 @@ export class TabCapture implements Capture {
         error = caught;
         await this.recorder?.close().catch(() => {});
         this.recorder = null;
+        // What that attempt recorded goes: the next one starts new files.
+        for (const file of this.files.values()) rmSync(file, { force: true });
+        this.files.clear();
       }
     }
     if (!this.started) {
@@ -302,8 +324,9 @@ export class TabCapture implements Capture {
     accepted: boolean,
     text?: string,
     origin?: string,
+    at?: number,
   ): void {
-    this.log.dialog(type, message, accepted, text, origin);
+    this.log.dialog(type, message, accepted, text, origin, at);
   }
 
   focus(
@@ -321,6 +344,7 @@ export class TabCapture implements Capture {
     this.log.finish();
     this.log.detach(this.page);
     const recorder = this.recorder;
+    const problems: Array<string> = [];
     if (recorder) {
       const stopOne = (name: string) =>
         withTimeout(
@@ -328,7 +352,9 @@ export class TabCapture implements Capture {
             (stream) =>
               (
                 window as unknown as {
-                  stopCapture(name: string): Promise<{ firstFrameWall: number } | null>;
+                  stopCapture(
+                    name: string,
+                  ): Promise<{ firstFrameWall: number; problems: Array<string> } | null>;
                 }
               ).stopCapture(stream),
             name,
@@ -341,9 +367,11 @@ export class TabCapture implements Capture {
         });
       const app = await stopOne("screen");
       if (app && Number.isFinite(app.firstFrameWall)) this.startWall = app.firstFrameWall;
+      for (const problem of app?.problems ?? []) problems.push(`the app's tab: ${problem}`);
       if (this.stage) {
         const stage = await stopOne("stage");
         this.stageWall = stage?.firstFrameWall ?? NaN;
+        for (const problem of stage?.problems ?? []) problems.push(`the stage: ${problem}`);
       }
       await recorder.close().catch(() => {});
       this.recorder = null;
@@ -365,26 +393,53 @@ export class TabCapture implements Capture {
         startMs: this.data.video.startMs - APP_AUDIO_DELAY_MS,
       };
     }
-    return this.log.write(this.dir);
+    const file = this.log.write(this.dir);
+    if (problems.length > 0) {
+      throw new Error(
+        `The recording stopped before the end: ${problems.join("; ")}. ` +
+          `What was recorded is in ${this.dir}.`,
+      );
+    }
+    return file;
   }
 }
 
 /**
  * Runs in the app's page: puts the marker into the title and keeps it there
- * while the capture starts, even when the app sets its own title meanwhile
- * (a route change); the app's latest title comes back with unmarkTitle.
+ * while the capture starts, without fighting the app. The app's own title
+ * writes (document.title) are kept aside and read back as the app wrote
+ * them, so an app that checks or defends its title sees its own; a direct
+ * change of the <title> element is undone a bounded number of times (the
+ * start is retried if the marker is lost). unmarkTitle brings back the
+ * app's latest title.
  */
 function markTitle(marker: string): void {
-  const win = window as Window & {
-    __runcastTitle?: { app: string; marker: string; observer: MutationObserver };
+  type State = { app: string; marker: string; observer: MutationObserver; fixes: number };
+  const win = window as Window & { __runcastTitle?: State };
+  const real = Object.getOwnPropertyDescriptor(Document.prototype, "title")!;
+  const read = () => real.get!.call(document) as string;
+  const write = (title: string) => real.set!.call(document, title);
+  const state: State = {
+    app: read(),
+    marker,
+    fixes: 0,
+    observer: new MutationObserver(() => {
+      const now = read();
+      if (now === state.marker || state.fixes >= 50) return;
+      state.fixes++;
+      state.app = now;
+      write(state.marker);
+    }),
   };
-  const state = { app: document.title, marker, observer: new MutationObserver(() => {
-    if (document.title === state.marker) return;
-    state.app = document.title;
-    document.title = state.marker;
-  }) };
   win.__runcastTitle = state;
-  document.title = marker;
+  Object.defineProperty(document, "title", {
+    configurable: true,
+    get: () => state.app,
+    set: (title: unknown) => {
+      state.app = String(title);
+    },
+  });
+  write(marker);
   state.observer.observe(document.documentElement, {
     subtree: true,
     childList: true,
@@ -394,12 +449,14 @@ function markTitle(marker: string): void {
 
 function unmarkTitle(): void {
   const win = window as Window & {
-    __runcastTitle?: { app: string; marker: string; observer: MutationObserver };
+    __runcastTitle?: { app: string; observer: MutationObserver };
   };
   const state = win.__runcastTitle;
   if (!state) return;
   state.observer.disconnect();
   delete win.__runcastTitle;
+  // Back to the browser's own document.title, set to the app's latest.
+  delete (document as unknown as { title?: string }).title;
   document.title = state.app;
 }
 

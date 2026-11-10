@@ -65,7 +65,12 @@ export class VirtualMouse {
     }
     this.position = to;
     if (this.capture && startedMs !== undefined) {
-      this.capture.span("move", startedMs, this.capture.now(), natural);
+      const endedMs = this.capture.now();
+      // Recording fast, the renderer plays the move at its natural length.
+      // At natural pace it plays as it was: CDP round trips and timers make
+      // a move take a little longer than planned, and a stretched span
+      // would lose the app's sound.
+      this.capture.span("move", startedMs, endedMs, this.fast ? natural : endedMs - startedMs);
     }
   }
 
@@ -92,6 +97,11 @@ export class VirtualMouse {
     if (send) await this.page.mouse.up();
     this.capture?.pointer(at, "up");
     this.position = at;
+  }
+
+  /** Lets go of the button without showing it (the press stayed on a tab no longer shown). */
+  async release(): Promise<void> {
+    await this.page.mouse.up();
   }
 
   /** A click with keys held (Shift, Control, Meta), e.g. to select several files. */

@@ -41,7 +41,9 @@ records and fails with the list of problems:
    fetched. Time comes only from CSS animations or timers started by
    `start()`.
 5. **Local files only**: everything in the scene's folder (images, fonts,
-   scripts). No CDN, no network: the page is opened as a `file://` page.
+   scripts). No CDN, no network: the page is opened as a `file://` page and
+   the kit blocks every network request it makes, so anything loaded from
+   the web is simply missing in the preview.
 6. **No sound.**
 7. **The brand from the kit**: read `var(--runcast-brand)` (the accent
    colour from `recording.config.ts`) and `var(--runcast-logo)` (a CSS
@@ -99,8 +101,9 @@ node tests/recording/.kit/cli.ts scene render <name> --gif
 ```
 
 writes `videos/scene-<name>.mp4` and, with `--gif`, `videos/scene-<name>.gif`
-(960 px wide, 15 fps). It records again only when the scene's files changed
-since the last recording.
+(960 px wide, 15 fps). `--bare` leaves out the video's background and
+rounded frame: the scene alone fills the picture. It records again only when
+the scene's files changed since the last recording.
 
 ## When it does not work
 

@@ -62,15 +62,17 @@ your computer, only when you or your assistant run the command named.
 - **Your app**, at the base URL in `recording.config.ts`, in the browser that
   Playwright drives, signed in with the test account you put in
   `tests/recording/.env.local`.
-- **The kit's own local pages**, in that same browser, in video mode: the
-  recorder (`core/recorder.html` in the runtime folder, opened as a
-  `file://` page) records the app's tab and hands the video to the kit
+- **The kit's own local pages**, in that same browser, in video mode and
+  rehearsal (and, for scenes, `scene preview` / `scene render` and test
+  runs): the recorder (`core/recorder.html` in the runtime folder, opened as
+  a `file://` page) records the app's tab and hands the video to the kit
   inside the browser; the stage (`core/stage/*.html`: a blank page and a
   file manager listing the files a step uploads) is a second recorded tab,
   where scenes from your recording folder (`scenes/<name>/index.html`,
-  opened as `file://` pages) play too. These pages load nothing from the
-  network. Files a step uploads are read
-  from your recording folder and handed to your app in the browser only.
+  opened as `file://` pages) play too. The kit blocks every network request
+  from the stage and scene pages; the recorder loads nothing. Files a step
+  uploads are read from your recording folder and handed to your app in the
+  browser only.
 - **ElevenLabs** (`api.elevenlabs.io`), only when you run
   `narration generate`. It sends each voice-over line's text, plus the lines
   just before and after it, with your `ELEVENLABS_API_KEY` from `.env.local`,
@@ -103,10 +105,13 @@ your computer, only when you or your assistant run the command named.
 
 **Records**
 
-- In video mode only: by default the app's tab in the headless browser, with
-  Chrome's own tab capture (nothing else on your screen is recorded),
-  picture and the tab's sound; the sound is kept off your speakers and goes
-  into the video only when the scenario asks for it (`appAudio`). With
+- In video mode, and when you run `scene preview` or `scene render` (a scene
+  alone): by default the app's tab (or the scene) in the headless browser,
+  with Chrome's own tab capture (nothing else on your screen is recorded),
+  picture and the tab's sound. While it records, the sound is kept off your
+  speakers; before the recording starts (preparation steps) and after it
+  stops, an app that plays sound can be heard. The sound goes into the video
+  only when the scenario asks for it (`appAudio`). With
   `REC_CAPTURE=screen`, with ffmpeg: on macOS the screen, cropped to the
   browser's page area; on Linux the display (Xvfb when there is no screen),
   limited to the page area; on Windows the page area of the main screen

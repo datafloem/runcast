@@ -59,7 +59,11 @@ export function appAudioFilter(
   });
   const joined = plan.map((_, i) => `[aq${i}]`).join("");
   const mix = n === 1 ? `${joined}anull` : `${joined}amix=inputs=${n}:normalize=0:duration=longest`;
-  parts.push(`${mix},volume='${duckExpression(clips, options)}':eval=frame[${options.outLabel}]`);
+  // The mix's frames can come out without timestamps; counted from the
+  // samples again, the level below knows the time (else t is NaN: silence).
+  parts.push(
+    `${mix},asetpts=N/SR/TB,volume='${duckExpression(clips, options)}':eval=frame[${options.outLabel}]`,
+  );
   return parts.join(";");
 }
 
@@ -71,10 +75,13 @@ function duckExpression(
   if (clips.length === 0 || duckTo >= 1) return volume.toFixed(3);
   const ramp = DUCK_RAMP_MS / 1000;
   // 0 outside a clip, 1 inside it, ramping before it starts and after it ends.
+  // Numbers in parentheses: "t--0.2" (a ramp starting before 0 s) is not
+  // an expression ffmpeg reads, and gives NaN.
+  const n = (seconds: number) => `(${seconds.toFixed(3)})`;
   const inside = clips.map((clip) => {
     const down = (clip.at - DUCK_RAMP_MS) / 1000;
     const up = (clip.at + clip.ms + DUCK_RAMP_MS) / 1000;
-    return `clip(min((t-${down.toFixed(3)})/${ramp},(${up.toFixed(3)}-t)/${ramp}),0,1)`;
+    return `clip(min((t-${n(down)})/${ramp},(${n(up)}-t)/${ramp}),0,1)`;
   });
   const any = inside.reduce((all, one) => `max(${all},${one})`);
   return `${volume.toFixed(3)}*(1-${(1 - duckTo).toFixed(3)}*${any})`;

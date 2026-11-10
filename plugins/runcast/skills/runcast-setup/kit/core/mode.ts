@@ -38,8 +38,8 @@ const capture: "tab" | "screen" = env.REC_CAPTURE === "screen" ? "screen" : "tab
 
 export const settings = {
   capture,
-  /** Tab capture: video pixels per CSS pixel (REC_SCALE, default 2). */
-  scale: Math.max(1, Number(env.REC_SCALE ?? 2) || 2),
+  /** Tab capture: video pixels per CSS pixel (REC_SCALE, default 2; 1 to 3, as video encoders top out near 4K). */
+  scale: Math.min(3, Math.max(1, Number(env.REC_SCALE ?? 2) || 2)),
   /** Only screen capture needs a window on screen. */
   headless: !isVideoMode || capture === "tab",
   /**

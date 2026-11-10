@@ -2,7 +2,10 @@
 // tab like a scenario, then checked or rendered.
 //
 //   node <recording folder>/.kit/cli.ts scene preview <name>          draft MP4 + contact sheet of the beats
-//   node <recording folder>/.kit/cli.ts scene render <name> [--gif]   videos/scene-<name>.mp4 (and .gif)
+//   node <recording folder>/.kit/cli.ts scene render <name> [--gif] [--bare]   videos/scene-<name>.mp4 (and .gif)
+//
+// --bare: the scene alone, filling the frame (for articles and websites),
+// without the video's background and rounded frame.
 //
 // The scene is <recording folder>/scenes/<name>/index.html. Its recording
 // goes to .captures/scene-<name>/ with each beat as a step, so the renderer's
@@ -22,6 +25,8 @@ import { chromium } from "@playwright/test";
 import { captureRootFor, kitCommand, loadProject } from "../core/project.ts";
 import { brandStyle, sceneFile, sceneProblems } from "../core/scene-contract.ts";
 import {
+  blockNetwork,
+  captureChannel,
   sizeWindow,
   TabCapture,
   TAB_CAPTURE_ARGS,
@@ -43,7 +48,7 @@ const KIT_CMD = kitCommand(project.dir);
 const [command, name, ...flags] = process.argv.slice(2);
 if (!["preview", "render"].includes(command ?? "") || !name) {
   console.error(
-    `Usage: ${KIT_CMD} scene preview <name>\n       ${KIT_CMD} scene render <name> [--gif]`,
+    `Usage: ${KIT_CMD} scene preview <name>\n       ${KIT_CMD} scene render <name> [--gif] [--bare]`,
   );
   process.exit(1);
 }
@@ -60,7 +65,7 @@ async function record(): Promise<void> {
   const format = resolveFormat(undefined);
   const size = recordsVertically(format) ? VERTICAL_PAGE : pageSize;
   const browser = await chromium.launch({
-    channel: process.env.REC_CHANNEL === "chromium" ? undefined : (process.env.REC_CHANNEL ?? "chrome"),
+    channel: captureChannel(),
     headless: true,
     args: [...TAB_CAPTURE_ARGS, `--force-device-scale-factor=${settings.scale}`],
     ignoreDefaultArgs: [...TAB_CAPTURE_IGNORED_ARGS],
@@ -72,6 +77,7 @@ async function record(): Promise<void> {
       locale: project.locale ?? "en-US",
     });
     const page = await context.newPage();
+    await blockNetwork(page);
     await sizeWindow(page, size);
     await page.goto(`${pathToFileURL(file).href}?record`);
     const problems = await page.evaluate(
@@ -155,7 +161,7 @@ try {
     console.log(`Beats: ${path.relative(process.cwd(), sheet)}`);
     console.log(`Draft: ${path.relative(process.cwd(), draft)}`);
   } else {
-    const video = await render(captureDir);
+    const video = await render(captureDir, { bare: flags.includes("--bare") });
     console.log(`Video: ${path.relative(process.cwd(), video)}`);
     if (flags.includes("--gif")) {
       const gif = video.replace(/\.mp4$/, ".gif");

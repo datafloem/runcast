@@ -346,6 +346,15 @@ REC_FROM=3 node tests/recording/.kit/cli.ts video <name>
 REC_FROM=3 REC_TO=3 node tests/recording/.kit/cli.ts test <name>
 ```
 
+A few settings you may want, in `tests/recording/.env.local`:
+
+- `REC_CAPTURE=screen`: record a visible Chrome window instead of a hidden
+  tab (only for flows that must show real operating-system dialogs).
+- `REC_SCALE=1`: record at the page's own size instead of twice as sharp
+  (smaller files, less detail when the camera zooms); 1 to 3, default 2.
+- `REC_APP_AUDIO=1` / `0`: put the app's own sound in the video or leave it
+  out, whatever the scenario says.
+
 All settings are listed in `tests/recording/.env.example` and in the
 [kit guide](plugins/runcast/skills/runcast-setup/kit/README.md#settings-envlocal).
 

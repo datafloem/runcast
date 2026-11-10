@@ -7,13 +7,21 @@ import path from "node:path";
 import { after, before, test } from "node:test";
 import { chromium, type Browser, type BrowserContext, type Page } from "@playwright/test";
 import {
+  captureChannel,
   sizeWindow,
   TabCapture,
   TAB_CAPTURE_ARGS,
   TAB_CAPTURE_IGNORED_ARGS,
 } from "../core/tab-capture.ts";
 
-const channel = process.env.REC_CHANNEL === "chromium" ? undefined : "chrome";
+const channel = captureChannel();
+
+test("REC_CHANNEL=chromium records with Playwright's full Chromium, not the headless shell", () => {
+  // The headless shell has no tab capture (getDisplayMedia: NotSupportedError).
+  assert.equal(captureChannel("chromium"), "chromium");
+  assert.equal(captureChannel(undefined), "chrome");
+  assert.equal(captureChannel("msedge"), "msedge");
+});
 
 let browser: Browser;
 let context: BrowserContext;
@@ -117,19 +125,42 @@ test("events.json holds video file, size and startMs", () => {
   assert.equal(events.video.width, 2880);
   assert.equal(events.video.height, 1620);
   assert.ok(Number.isFinite(events.video.startMs), `startMs ${events.video.startMs}`);
-  assert.ok(Math.abs(events.video.startMs) < 2000, `startMs ${events.video.startMs}`);
+  // Before time zero: the file starts when the app's tab is captured, time
+  // zero once the stage is captured too (seconds on a busy machine).
+  assert.ok(events.video.startMs <= 0 && events.video.startMs > -10_000, `startMs ${events.video.startMs}`);
   assert.ok(events.durationMs >= 2000);
 });
 
 test("capture picks the marked tab when the title changes right after", async () => {
+  // An app that keeps setting its own title the whole time capture starts:
+  // on a timer, every frame, and whenever anything touches the title.
   const file = await record(
     `<title>Loading</title><style>body{margin:0;background:#e01010}</style>
-     <script>setTimeout(() => { document.title = "Orders - Customers app"; }, 10);</script>`,
+     <script>(() => {
+       // In a function: setContent keeps the window, so top-level names would clash with later pages.
+       let n = 0;
+       const set = () => { const title = "Orders " + (n++ % 7) + " - Customers app"; if (document.title !== title) document.title = title; };
+       const timer = setInterval(set, 1);
+       let frames = true;
+       const frame = () => { if (!frames) return; set(); requestAnimationFrame(frame); }; frame();
+       const observer = new MutationObserver(() => { if (!document.title.startsWith("Orders")) set(); });
+       observer.observe(document.head, { subtree: true, childList: true, characterData: true });
+       window.stopTitles = () => { clearInterval(timer); frames = false; observer.disconnect(); };
+     })();</script>`,
     1500,
   );
   const events = JSON.parse(readFileSync(file, "utf-8")) as { video: { file: string } };
   const [r, g, b] = colourAt(path.join(path.dirname(file), events.video.file), 0.8);
   assert.ok(r > 180 && g < 60 && b < 60, `colour ${r},${g},${b}`);
+  await page.evaluate(() => (window as unknown as { stopTitles(): void }).stopTitles());
+  // The app has its own title and the browser's document.title back.
+  assert.deepEqual(
+    await page.evaluate(() => [
+      document.title.startsWith("Orders"),
+      Object.getOwnPropertyDescriptor(document, "title") === undefined,
+    ]),
+    [true, true],
+  );
 });
 
 /** File time (s, from the first frame) and colour of each frame's pixel at (x, y) in video pixels. */
@@ -279,4 +310,76 @@ test("stage stream records its own file with the same size", async () => {
   }
   // The stage recorded its animation.
   assert.ok(frameSizes(path.join(dir, events.stage.file)).length >= 15);
+});
+
+test("a retried start leaves no first-attempt chunks in the file", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "runcast-tab-"));
+  dirs.push(dir);
+  await sizeWindow(page, { width: 1440, height: 810 });
+  await page.setContent(ANIMATED);
+  const capture = new TabCapture(page, dir, "demo", { scale: 2 });
+  // The stage fails once, near the start timeout: the app's tab has been
+  // recording for seconds and sent chunks.
+  const inner = capture as unknown as {
+    captureTab: (recorder: unknown, tab: unknown, name: string, audio: boolean) => Promise<unknown>;
+  };
+  const original = inner.captureTab.bind(capture);
+  let failed = false;
+  inner.captureTab = async (recorder, tab, name, audio) => {
+    if (name === "stage" && !failed) {
+      failed = true;
+      await wait(4000);
+      throw new Error("stage did not start");
+    }
+    return original(recorder, tab, name, audio);
+  };
+  await capture.start();
+  assert.ok(failed);
+  await wait(1000);
+  const file = await capture.stop();
+  const events = JSON.parse(readFileSync(file, "utf-8")) as { video: { file: string } };
+  const bytes = readFileSync(path.join(dir, events.video.file));
+  // One recording in the file: one header (ftyp / EBML), not one per attempt.
+  const marker = events.video.file.endsWith(".mp4") ? "ftyp" : "\x1a\x45\xdf\xa3";
+  let headers = 0;
+  for (let i = bytes.indexOf(marker, 0, "latin1"); i >= 0; i = bytes.indexOf(marker, i + 1, "latin1")) headers++;
+  assert.equal(headers, 1);
+});
+
+test("a recording that stops mid-way fails the take", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "runcast-tab-"));
+  dirs.push(dir);
+  await sizeWindow(page, { width: 1440, height: 810 });
+  await page.setContent(ANIMATED);
+  const capture = new TabCapture(page, dir, "demo", { scale: 2 });
+  await capture.start();
+  await wait(800);
+  // The stage tab goes away: its recording ends on its own.
+  await capture.stage!.close();
+  await wait(500);
+  await assert.rejects(capture.stop(), /stopped before the end: the stage/);
+  // What was recorded stays, with its events.
+  assert.ok(readFileSync(path.join(dir, "events.json"), "utf-8").includes('"video"'));
+});
+
+test("the stage cannot reach the network", async () => {
+  const { createServer } = await import("node:http");
+  const server = createServer((_, response) => response.writeHead(200, { "access-control-allow-origin": "*" }).end("ok"));
+  await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+  const url = `http://127.0.0.1:${(server.address() as { port: number }).port}/`;
+  const dir = mkdtempSync(path.join(tmpdir(), "runcast-tab-"));
+  dirs.push(dir);
+  await sizeWindow(page, { width: 1440, height: 810 });
+  await page.setContent(`<style>body{margin:0;background:#2050d0}</style>`);
+  const capture = new TabCapture(page, dir, "demo", { scale: 2 });
+  await capture.start();
+  const reach = (p: Page) =>
+    p.evaluate((u) => fetch(u).then((r) => r.text()).catch(() => "blocked"), url);
+  try {
+    assert.equal(await reach(page), "ok");
+    assert.equal(await reach(capture.stage!), "blocked");
+  } finally {
+    await capture.stop();
+    server.close();
+  }
 });

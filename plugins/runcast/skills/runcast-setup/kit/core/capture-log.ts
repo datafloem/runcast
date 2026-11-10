@@ -149,6 +149,7 @@ export interface Capture {
     accepted: boolean,
     text?: string,
     origin?: string,
+    at?: number,
   ): void;
 }
 
@@ -226,9 +227,11 @@ export class CaptureLog {
     accepted: boolean,
     text?: string,
     origin?: string,
+    /** When it opened, if it was answered later (default now). */
+    at?: number,
   ): void {
     if (this.pausedAt) return;
-    const t = this.now();
+    const t = at ?? this.now();
     (this.data.dialogs ??= []).push({
       t,
       type,

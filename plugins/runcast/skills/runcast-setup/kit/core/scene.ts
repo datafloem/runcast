@@ -8,6 +8,7 @@ import type { SourceSwitch } from "./capture-log.ts";
 import { projectDirOf } from "./narration.ts";
 import { loadProject } from "./project.ts";
 import { test } from "./recorder.ts";
+import { blockNetwork } from "./tab-capture.ts";
 import type { Step, StepOptions } from "./scenario.ts";
 import { brandStyle, sceneFile, sceneProblems } from "./scene-contract.ts";
 
@@ -46,6 +47,7 @@ export function scene(
       if (!rec.isLive || !rec.onCamera) {
         // Test mode (and preparation): the scene loads and keeps the contract.
         const check = await page.context().newPage();
+        await blockNetwork(check);
         try {
           await openScene(check, url, file);
         } finally {
@@ -55,10 +57,10 @@ export function scene(
       }
 
       const project = await loadProject(projectDir);
+      let scene = { duration: 0, beats: [] as Array<{ id: string; at: number }> };
       await rec.onStage(
         async (stage) => {
-          const { beats, duration } = await openScene(stage, url, file);
-          await stage.addStyleTag({ content: brandStyle(project.brand, projectDir) });
+          const { beats, duration } = scene;
           await rec.realTime(async () => {
             const startedAt = Date.now();
             await stage.evaluate(() =>
@@ -75,7 +77,14 @@ export function scene(
         },
         options.transition ?? "fade",
         options.transition ?? "fade",
-        { cursor: false },
+        {
+          cursor: false,
+          // Loaded, checked and branded before the video changes to it.
+          prepare: async (stage) => {
+            scene = await openScene(stage, url, file);
+            await stage.addStyleTag({ content: brandStyle(project.brand, projectDir) });
+          },
+        },
       );
     },
   };

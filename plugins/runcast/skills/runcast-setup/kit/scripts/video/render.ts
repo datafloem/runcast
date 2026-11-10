@@ -18,7 +18,7 @@ import {
   type Image,
   type SKRSContext2D,
 } from "@napi-rs/canvas";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -217,7 +217,11 @@ interface Prepared {
 }
 
 /** Reads a capture folder and builds its time map, camera and drawing. */
-async function prepare(captureDir: string): Promise<Prepared> {
+async function prepare(
+  captureDir: string,
+  /** bare: the page alone, filling the frame (no background, no rounded frame). */
+  options: { bare?: boolean } = {},
+): Promise<Prepared> {
   const capture = JSON.parse(
     readFileSync(path.join(captureDir, "events.json"), "utf-8"),
   ) as CaptureFile;
@@ -240,7 +244,14 @@ async function prepare(captureDir: string): Promise<Prepared> {
   // vertical video from a landscape capture.
   const format = resolveFormat(stepsData?.format);
   const { viewport, scale } = capture;
-  const layout = layoutFor(format, viewport);
+  const framed = layoutFor(format, viewport);
+  const layout: Layout = options.bare
+    ? {
+        ...framed,
+        content: { x: 0, y: 0, w: framed.width, h: framed.height },
+        radius: 0,
+      }
+    : framed;
   const { width: OUT_WIDTH, height: OUT_HEIGHT } = layout;
 
   mkdirSync(VIDEOS_DIR, { recursive: true });
@@ -326,8 +337,13 @@ async function prepare(captureDir: string): Promise<Prepared> {
       ms: cardAudio.outro.ms,
     });
   }
-  // The audio file's clock is the screen file's, shifted by the sound's delay.
-  const audioShift = appSound ? capture.video.startMs - appSound.startMs : 0;
+  // Plan times are on the recording clock (ms since it started, off camera
+  // included). The audio filter counts from the audio's first sample, which
+  // is recording time audio.startMs, moved by where the audio stream starts
+  // against the file's start (ffmpeg seeks the picture from the file's start).
+  const audioShift = appSound
+    ? -appSound.startMs - audioLeadMs(path.join(captureDir, appSound.file))
+    : 0;
   const appAudio: AppAudioMix | null = appSound
     ? {
         file: path.join(captureDir, appSound.file),
@@ -894,9 +910,9 @@ async function prepare(captureDir: string): Promise<Prepared> {
  */
 export async function render(
   captureDir: string,
-  options: { draft?: boolean; steps?: [number, number] } = {},
+  options: { draft?: boolean; steps?: [number, number]; bare?: boolean } = {},
 ): Promise<string> {
-  const job = await prepare(captureDir);
+  const job = await prepare(captureDir, { bare: options.bare });
   const { width, height } = job.layout;
   let fromMs = 0;
   let toMs = job.totalMs;
@@ -1027,6 +1043,30 @@ export async function check(captureDir: string): Promise<string> {
   const file = path.join(dir, "sheet.png");
   writeFileSync(file, await sheet.encode("png"));
   return file;
+}
+
+/**
+ * How much later the file's audio stream starts than the file itself (ms):
+ * the picture is read from the file's start, the sound from its own first
+ * sample. 0 when it cannot be read.
+ */
+function audioLeadMs(file: string): number {
+  try {
+    const starts = execFileSync(
+      "ffprobe",
+      ["-v", "error", "-show_entries", "stream=codec_type,start_time", "-of", "csv=p=0", file],
+      { encoding: "utf-8" },
+    )
+      .split("\n")
+      .map((line) => line.trim().split(","))
+      .filter((parts) => parts.length >= 2 && !Number.isNaN(Number(parts[1])));
+    const audio = starts.find((parts) => parts[0] === "audio");
+    if (!audio) return 0;
+    const first = Math.min(...starts.map((parts) => Number(parts[1])));
+    return (Number(audio[1]) - first) * 1000;
+  } catch {
+    return 0;
+  }
 }
 
 /** scenarios/<name>.spec.ts of a capture's scenario (its narration file sits next to it). */

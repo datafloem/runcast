@@ -121,3 +121,41 @@ test("a second upload shows its own files on the stage", async () => {
   assert.deepEqual(await inputFiles(page), ["orders.csv", "logo.png"]);
   await page.context().close();
 });
+
+test("the video changes to the stage only once its files are shown", async () => {
+  const { TabCapture } = await import("../core/tab-capture.ts");
+  const page = await freshPage();
+  const rec = new Recorder(page, { file: path.join(dir, "scenarios", "demo.spec.ts") } as never);
+  await rec.start();
+  // A capture that is not recording: only its log is used.
+  const capture = new TabCapture(page, dir, "demo", { scale: 1 });
+  (rec as unknown as { capture: unknown }).capture = capture;
+  const seen: Array<string> = [];
+  const stagePage = () => page.context().pages().find((p) => p !== page)!;
+  const source = capture.source.bind(capture);
+  capture.source = (to, transition, cursor) => {
+    if (to === "stage") seen.push(decodeURIComponent(stagePage().url()));
+    source(to, transition, cursor);
+  };
+  await rec.dropFiles(page.locator("#zone"), [files[0]!]);
+  await rec.chooseFiles(page.locator("#pick"), files);
+  assert.equal(seen.length, 2);
+  assert.ok(seen[0]!.includes("files.html") && seen[0]!.includes("orders.csv"), seen[0]);
+  assert.ok(seen[1]!.includes("logo.png"), `second switch showed ${seen[1]}`);
+  await page.context().close();
+});
+
+test("dropFiles warns when the zone never accepts the drag", async () => {
+  const page = await freshPage();
+  const rec = new Recorder(page, { file: path.join(dir, "scenarios", "demo.spec.ts") } as never);
+  const warnings: Array<string> = [];
+  const warn = console.warn;
+  console.warn = (message: string) => warnings.push(String(message));
+  try {
+    await rec.dropFiles(page.locator("#pick"), [files[0]!]); // a button, not a drop zone
+  } finally {
+    console.warn = warn;
+  }
+  assert.match(warnings.join("\n"), /never accepted the drag/);
+  await page.context().close();
+});

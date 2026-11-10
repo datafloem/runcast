@@ -278,9 +278,11 @@ element, a wrong record, a stray window).
    **Dialogs** (`alert`, `confirm`, `prompt`, leave-page) are answered by the
    kit: `scenario({ dialogs: "accept" | "dismiss" })` (default "accept");
    `rec.onDialog({ accept: false })` (or `{ accept: true, text: "…" }` for a
-   prompt) right before the action answers the next one differently. The
-   video holds the frame 1.5 s and draws the dialog being answered. Never add
-   your own `page.on("dialog")`. Permission prompts never show:
+   prompt) right before the `rec` action answers a dialog that action opens
+   (unused, it lapses with a warning). The video holds the frame 1.5 s and
+   draws the dialog being answered. Prefer these over your own
+   `page.on("dialog")`; if a step does listen itself, it answers and the
+   video draws its answer. Permission prompts never show:
    `scenario({ permissions: ["geolocation"] })` grants them up front.
 2. **The on-screen message is the step's `note`.** `scenario()` marks each step
    and writes time and message to `steps.json` (video:
@@ -300,8 +302,9 @@ element, a wrong record, a stray window).
    covered, not animating, not moving (waiting up to 5 s). A step that fails
    with "cannot be shown: it is covered by …" or "still animating" needs a
    wait in the helper (an `expect` that the toast or dialog is gone, or that
-   the screen finished opening), never a `rec.pause`. Tests run at the newest
-   video's page size, so fix such failures before recording.
+   the screen finished opening), never a `rec.pause`. Tests run at the video's
+   page size (`REC_PAGE_SIZE`, 1440×810; with screen capture the newest
+   video's), so fix such failures before recording.
 5. **Pace for the viewer:** short stops on important screens with
    `rec.pause(ms)` and `rec.hover(...)` (1–3 s). Long waits make the video
    drag (the renderer shortens them only to fit a voice-over); hasty clicks

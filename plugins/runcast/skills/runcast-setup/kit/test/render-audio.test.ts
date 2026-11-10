@@ -61,3 +61,37 @@ test("duck envelope covers every clip", () => {
   }
   assert.ok(Math.abs(full - between) < 0.5, `full ${full}, between ${between}`);
 });
+
+test("a voice clip at the very start still leaves the sound after it", () => {
+  // Its duck ramp starts before 0 s: the expression must not break on a negative time.
+  const whole = [{ fileFrom: 0, fileTo: 6000, outFrom: 0, fadeIn: false, fadeOut: false }];
+  const filter = appAudioFilter(whole, [{ at: 0, ms: 1000 }], {
+    volume: 1,
+    duckTo: 0.3,
+    inputIndex: 1,
+    outLabel: "app",
+  });
+  const after = levelDb(filter, 2.0, 2.8);
+  const during = levelDb(filter, 0.2, 0.8);
+  assert.ok(Number.isFinite(after) && Number.isFinite(during), `after ${after} dB, during ${during} dB`);
+  assert.ok(Math.abs(after - during - 10.5) < 1, `after ${after}, during ${during}`);
+});
+
+test("pieces after the first keep their sound once mixed", () => {
+  // Several pieces are mixed; the level that follows needs the mix's time.
+  const plan = [
+    { fileFrom: 0, fileTo: 1500, outFrom: 0, fadeIn: false, fadeOut: true },
+    { fileFrom: 1500, fileTo: 3000, outFrom: 2500, fadeIn: true, fadeOut: true },
+    { fileFrom: 3000, fileTo: 5000, outFrom: 4500, fadeIn: true, fadeOut: false },
+  ];
+  const filter = appAudioFilter(plan, [{ at: 0, ms: 800 }, { at: 3000, ms: 500 }], {
+    volume: 1,
+    duckTo: 0.3,
+    inputIndex: 1,
+    outLabel: "app",
+  });
+  const first = levelDb(filter, 1.0, 1.3);
+  const later = levelDb(filter, 5.0, 6.0);
+  assert.ok(Number.isFinite(later), `later piece ${later} dB`);
+  assert.ok(Math.abs(first - later) < 1, `first ${first} dB, later ${later} dB`);
+});

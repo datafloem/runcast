@@ -224,8 +224,9 @@ export class VideoCapture implements Capture {
     accepted: boolean,
     text?: string,
     origin?: string,
+    at?: number,
   ): void {
-    this.log.dialog(type, message, accepted, text, origin);
+    this.log.dialog(type, message, accepted, text, origin, at);
   }
 
   focus(

@@ -7,7 +7,11 @@ import { defineConfig, type ReporterDescription } from "@playwright/test";
 import path from "node:path";
 import { readFileSync } from "node:fs";
 import { findCaptures, type ProjectConfig } from "./project.ts";
-import { TAB_CAPTURE_ARGS, TAB_CAPTURE_IGNORED_ARGS } from "./tab-capture.ts";
+import {
+  captureChannel,
+  TAB_CAPTURE_ARGS,
+  TAB_CAPTURE_IGNORED_ARGS,
+} from "./tab-capture.ts";
 import { ensureDisplay } from "./xvfb.ts";
 
 export async function definePlaywrightConfig(project: ProjectConfig) {
@@ -74,7 +78,13 @@ export async function definePlaywrightConfig(project: ProjectConfig) {
     reporter,
     use: {
       baseURL: project.baseURL,
-      channel: channel === "chromium" ? undefined : channel,
+      // Tab capture needs a full browser ("chromium": Playwright's, in new
+      // headless); the other modes may use the lighter headless shell.
+      channel: tabCapture
+        ? captureChannel(channel)
+        : channel === "chromium"
+          ? undefined
+          : channel,
       locale: project.locale ?? "en-US",
       colorScheme: project.colorScheme,
       storageState: { cookies: [], origins: [{ origin, localStorage }] },

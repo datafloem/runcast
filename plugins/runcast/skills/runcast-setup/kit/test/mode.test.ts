@@ -71,3 +71,8 @@ test("app audio: off by default, scenario levels with defaults, REC_APP_AUDIO ov
   assert.deepEqual(resolveAppAudio(undefined, "1"), { volume: 1, duckTo: 0.3 });
   assert.deepEqual(resolveAppAudio({ volume: 7, duckTo: -1 }, undefined), { volume: 1, duckTo: 0 });
 });
+
+test("REC_SCALE stays between 1 and 3", () => {
+  assert.equal(settingsWith({ REC_MODE: "video", REC_SCALE: "10" }).scale, 3);
+  assert.equal(settingsWith({ REC_MODE: "video", REC_SCALE: "0.5" }).scale, 1);
+});
