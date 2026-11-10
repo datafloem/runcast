@@ -124,7 +124,7 @@ shows each step separately in the Playwright report.
   the take). Test mode checks that the scene loads and keeps its contract.
 - **App sound (optional):** if the scenario text says "App sound: yes", pass
   `appAudio: { volume, duckTo }` (defaults 1 and 0.3). The app's own sound
-  (always captured with the tab, never on the speakers) is mixed under the
+  (always captured with the tab, kept off the speakers while recording) is mixed under the
   voice-over, lowered to `duckTo` while it speaks, and silent where the video
   holds a frame. The recording runs at the viewer's pace and loading waits
   are cut, never sped up. Try without it: `REC_APP_AUDIO=0 node tests/recording/.kit/cli.ts render <name>`.
@@ -174,7 +174,7 @@ shows each step separately in the Playwright report.
 
 | Mode      | Command                                             | Notes                                                                                                                     |
 | --------- | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| video     | `node tests/recording/.kit/cli.ts video <name>`     | Headless Chrome, the app's tab recorded by the kit's recorder tab, then the MP4. Any OS and CI; the user can keep working. `REC_CAPTURE=screen` records a visible window with ffmpeg instead (only for real OS dialogs; macOS needs Screen Recording permission, Linux Xvfb without a screen, Windows an unlocked desktop) |
+| video     | `node tests/recording/.kit/cli.ts video <name>`     | Headless Chrome, the app's tab recorded by the kit's recorder tab, then a picture per step and the voice-over fit (`--render`: also the MP4). Any OS and CI; the user can keep working. `REC_CAPTURE=screen` records a visible window with ffmpeg instead (only for real OS dialogs; macOS needs Screen Recording permission, Linux Xvfb without a screen, Windows an unlocked desktop) |
 | rehearsal | `node tests/recording/.kit/cli.ts rehearsal <name>` | The video's pace and timing, headless and not recorded. For measuring step lengths                                        |
 | test      | `node tests/recording/.kit/cli.ts test <name>`      | Headless end-to-end, no pauses (the default mode)                                                                         |
 

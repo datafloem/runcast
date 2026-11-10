@@ -42,6 +42,7 @@ import {
 import { homedir } from "node:os";
 import path from "node:path";
 import { parseEnv } from "node:util";
+import { pruneRuntimes, registerLink } from "./core/runtimes.ts";
 
 // The kit lives inside the runcast-setup skill (skills/runcast-setup/kit/),
 // so tools that install only a plugin's skills (Antigravity) still ship it.
@@ -163,20 +164,8 @@ function ensureRuntime(): string {
     path.join(runtime, RUNTIME_MARKER),
     `${JSON.stringify({ id, builtAt: new Date().toISOString(), from: KIT }, null, 2)}\n`,
   );
-  pruneRuntimes(runtime);
+  pruneRuntimes(RUNTIME_HOME, runtime, KEEP_RUNTIMES);
   return runtime;
-}
-
-/** Keeps the newest few runtimes; older ones are no longer linked by anyone up to date. */
-function pruneRuntimes(current: string): void {
-  const all = readdirSync(RUNTIME_HOME)
-    .map((name) => path.join(RUNTIME_HOME, name))
-    .filter(
-      (dir) => dir !== current && existsSync(path.join(dir, RUNTIME_MARKER)),
-    )
-    .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs);
-  for (const old of all.slice(KEEP_RUNTIMES - 1))
-    rmSync(old, { recursive: true, force: true });
 }
 
 /** Creates the recording folder from the templates; existing files are kept. */
@@ -232,6 +221,8 @@ function link(runtime: string): void {
     );
     console.log(`  linked   ${rel(kitLink)} -> ${runtime}`);
   }
+  // Pruning (from any project's setup) keeps runtimes that are still linked.
+  registerLink(runtime, kitLink);
   const ignore = path.join(projectDir, ".gitignore");
   const lines = existsSync(ignore)
     ? readFileSync(ignore, "utf-8").split("\n")

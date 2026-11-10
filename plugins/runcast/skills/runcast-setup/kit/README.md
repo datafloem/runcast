@@ -93,8 +93,9 @@ A project may add npm scripts for these, but needs none.
 ### Updating the kit
 
 Update the plugin (or replace the copied folder) and run `setup` again: it
-builds the new runtime, relinks `.kit`, keeps the newest three runtimes, and
-never overwrites the project's own files. After a fresh clone of a project,
+builds the new runtime, relinks `.kit`, keeps the newest three runtimes and
+every runtime another project's `.kit` still links to (listed in the
+runtime's `.links.json`), and never overwrites the project's own files. After a fresh clone of a project,
 `setup` restores the `.kit` link.
 
 What changes for existing projects when they update to the version with
@@ -229,7 +230,7 @@ Add a scenario name to run one: `node tests/recording/.kit/cli.ts test login`.
      mixes the app's own sound (games, media) under the voice-over: `volume`
      0–1 (default 1), lowered to `duckTo` of it (default 0.3) while a voice
      clip plays, with 200 ms ramps. Tab capture always records the tab's
-     sound (kept off the speakers); only 1:1 stretches of the video play it,
+     sound (kept off the speakers while recording); only 1:1 stretches of the video play it,
      held frames are silent and every join fades over 100 ms. The recording
      runs at the viewer's pace (sound cannot be stretched) and loading waits
      fitted to narration are cut, never sped up. `REC_APP_AUDIO=0/1`

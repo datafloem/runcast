@@ -49,8 +49,10 @@ your computer, only when you or your assistant run the command named.
   (or `REC_KIT_HOME`), and runs `npm ci --omit=dev` there. That downloads
   three pinned packages and their dependencies from the npm registry:
   `@playwright/test`, `@napi-rs/canvas` and `@types/node`. Your project
-  installs nothing. Runcast keeps the newest few runtime folders there and
-  removes older ones.
+  installs nothing. Each runtime folder lists, in `.links.json`, the paths
+  of the projects' `.kit` links that point at it. Runcast keeps the newest
+  few runtime folders and any that a project still links to, and removes
+  the others.
 - Creates the recording folder in your project (default `tests/recording/`)
   from templates, links `tests/recording/.kit` to the runtime and adds `.kit`
   to that folder's `.gitignore`.

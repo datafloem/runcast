@@ -408,7 +408,8 @@ plugin's `cli.ts setup` again.
 **Update:** update the plugin in your AI tool, then ask the assistant to set
 up recordings again (or run setup again). It builds the new runtime, re-links
 `.kit`, and never overwrites your project's own files. The newest three
-runtimes are kept and older ones are deleted.
+runtimes are kept, and so is any runtime another project still uses; older
+ones are deleted.
 
 **Remove from a project:** delete the recording folder.
 
