@@ -63,6 +63,18 @@ export class VirtualMouse {
     this.position = at;
   }
 
+  /**
+   * A click the video shows without sending it: for a control whose real
+   * click would open something the browser draws outside the page (a
+   * select's list), which the kit shows itself instead.
+   */
+  async tap(at: Point): Promise<void> {
+    this.capture?.pointer(at, "down");
+    await sleep(70);
+    this.capture?.pointer(at, "up");
+    this.position = at;
+  }
+
   async doubleClick(at: Point): Promise<void> {
     this.capture?.pointer(at, "down");
     await this.page.mouse.dblclick(at.x, at.y);

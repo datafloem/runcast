@@ -38,3 +38,25 @@ test("write puts events.json in the folder", () => {
   assert.equal(data.spans.length, 1);
   rmSync(dir, { recursive: true, force: true });
 });
+
+test("a dialog logs itself and a 1.5 s held frame", () => {
+  const log = new CaptureLog("demo");
+  log.dialog("confirm", "Delete this order?", true);
+  assert.equal(log.data.dialogs?.length, 1);
+  assert.deepEqual(
+    { ...log.data.dialogs![0], t: 0 },
+    { t: 0, type: "confirm", message: "Delete this order?", accepted: true },
+  );
+  const [span] = log.data.spans;
+  assert.equal(span?.kind, "dialog");
+  assert.equal(span?.outMs, 1500);
+  assert.equal(span?.from, span?.to);
+});
+
+test("dialogs off camera add no freeze", () => {
+  const log = new CaptureLog("demo");
+  log.pause();
+  log.dialog("alert", "Saved", true);
+  assert.equal(log.data.dialogs?.length ?? 0, 0);
+  assert.equal(log.data.spans.length, 0);
+});

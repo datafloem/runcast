@@ -1,5 +1,6 @@
 import {
   test as base,
+  type Dialog,
   type Locator,
   type Page,
   type TestInfo,
@@ -20,6 +21,7 @@ import {
   type AppAudio,
 } from "./mode.ts";
 import { projectDirOf } from "./narration.ts";
+import { removeStandIn, showMonth, showOptions } from "./native-ui.ts";
 import { screenProblem } from "./on-screen.ts";
 import { captureRootFor } from "./project.ts";
 import type { ShowTransition, VideoCard } from "./scenario.ts";
@@ -107,6 +109,10 @@ export class Recorder {
   showTransition: ShowTransition = "pan";
   /** The app's sound in the video (see ScenarioDefinition.appAudio); null: off. */
   appAudio: AppAudio | null = null;
+  /** How browser dialogs are answered (see ScenarioDefinition.dialogs). */
+  dialogs: "accept" | "dismiss" = "accept";
+  /** The answer for the next dialog only (onDialog). */
+  private nextDialog: { accept: boolean; text?: string } | null = null;
   /** The video's shape (see ScenarioDefinition); set by useFormat(). */
   private format: VideoFormat = "landscape";
   /** Tab capture: the window has been sized to the page size. */
@@ -118,6 +124,47 @@ export class Recorder {
   constructor(page: Page, testInfo: TestInfo) {
     this.page = page;
     this.testInfo = testInfo;
+  }
+
+  /**
+   * Answers the next browser dialog (alert, confirm, prompt, beforeunload)
+   * this way instead of the scenario's `dialogs`; call it right before the
+   * action that opens it. `text` answers a prompt.
+   */
+  onDialog(answer: { accept: boolean; text?: string }): void {
+    this.nextDialog = answer;
+  }
+
+  /**
+   * Answers the page's dialogs from now on (the rec fixture does this, in
+   * every mode). On camera in video mode each one is logged, and the video
+   * holds the frame and draws it being answered.
+   */
+  watchDialogs(): void {
+    this.page.on("dialog", (dialog) => void this.answerDialog(dialog));
+  }
+
+  private async answerDialog(dialog: Dialog): Promise<void> {
+    const answer = this.nextDialog ?? { accept: this.dialogs === "accept" };
+    this.nextDialog = null;
+    const text = dialog.type() === "prompt" && answer.accept
+      ? (answer.text ?? dialog.defaultValue())
+      : undefined;
+    if (this.capture && this.paced) {
+      let origin: string | undefined;
+      try {
+        origin = new URL(this.page.url()).host || undefined;
+      } catch {
+        origin = undefined;
+      }
+      this.capture.dialog(dialog.type(), dialog.message(), answer.accept, text, origin);
+    }
+    try {
+      if (answer.accept) await dialog.accept(text);
+      else await dialog.dismiss();
+    } catch {
+      // The page went away (a navigation answered a beforeunload).
+    }
   }
 
   /** True once `start()` ran: actions are the ones the video shows. */
@@ -306,6 +353,75 @@ export class Recorder {
     const startedMs = this.capture?.now();
     await mouse.drag(start, end);
     this.logFocus("drag", to, end, startedMs);
+  }
+
+  /**
+   * Picks an option of a native <select> by its label. Never click a select
+   * yourself: its list is drawn by the browser outside the page. In video
+   * and rehearsal the kit draws the list under the select, the cursor
+   * clicks the option, then the value is set (selectOption) and the list
+   * goes. Test mode: selectOption only.
+   */
+  async select(target: Locator, label: string): Promise<void> {
+    await this.pickWithStandIn(
+      target,
+      () => target.evaluate(showOptions),
+      this.page.locator(`[data-runcast-ui] [data-label=${cssString(label)}]`),
+      () => target.selectOption({ label }).then(() => undefined),
+    );
+  }
+
+  /**
+   * Sets a date input to `value` (YYYY-MM-DD). In video and rehearsal the kit
+   * draws a month grid under the field and the cursor clicks the day, then
+   * the value is set (fill); other inputs are typed into. Test mode: fill.
+   */
+  async pickDate(target: Locator, value: string): Promise<void> {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+      throw new Error(`rec.pickDate: "${value}" is not a date (YYYY-MM-DD).`);
+    }
+    const type = await target.getAttribute("type");
+    if (type !== "date") {
+      await this.type(target, value);
+      return;
+    }
+    await this.pickWithStandIn(
+      target,
+      () => target.evaluate(showMonth, value),
+      this.page.locator(`[data-runcast-ui] [data-day="${Number(value.slice(8))}"]`),
+      () => target.fill(value),
+    );
+  }
+
+  /**
+   * A control whose picker the browser draws outside the page: the cursor
+   * goes to it and taps it (shown, not sent), the kit's stand-in appears,
+   * the cursor clicks the entry, `set` sets the real value, the stand-in
+   * goes. Test mode and preparation: `set` only.
+   */
+  private async pickWithStandIn(
+    target: Locator,
+    show: () => Promise<void>,
+    entry: Locator,
+    set: () => Promise<void>,
+  ): Promise<void> {
+    const mouse = this.liveMouse();
+    const point = await this.pagePoint(target);
+    if (!mouse) {
+      await set();
+      return;
+    }
+    await mouse.moveTo(point);
+    await this.rest("aim", settings.aimMs);
+    await mouse.tap(point);
+    this.logFocus("click", target, point);
+    try {
+      await show();
+      await this.click(entry);
+      await set();
+    } finally {
+      await this.page.evaluate(removeStandIn).catch(() => {});
+    }
   }
 
   /** Clicks the field, then types like a person (instantly in test mode). */
@@ -584,6 +700,11 @@ function isStaleElementError(error: unknown): boolean {
   );
 }
 
+/** A CSS string literal (attribute selectors) for any text. */
+function cssString(text: string): string {
+  return `"${text.replace(/["\\]/g, "\\$&").replace(/\n/g, "\\a ")}"`;
+}
+
 function isLocator(target: Target): target is Locator {
   return !("in" in target);
 }
@@ -595,6 +716,7 @@ function xy(point: Point): [number, number] {
 export const test = base.extend<{ rec: Recorder }>({
   rec: async ({ page }, provide, testInfo) => {
     const rec = new Recorder(page, testInfo);
+    rec.watchDialogs();
     await provide(rec);
     await rec.finish();
   },

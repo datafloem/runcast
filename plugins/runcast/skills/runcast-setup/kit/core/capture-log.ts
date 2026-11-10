@@ -45,7 +45,14 @@ export interface CaptureDialog {
   type: string;
   message: string;
   accepted: boolean;
+  /** prompt: the text answered. */
+  text?: string;
+  /** The page's host, which the browser names in the dialog. */
+  origin?: string;
 }
+
+/** How long the video holds the frame while it shows a dialog being answered. */
+export const DIALOG_FREEZE_MS = 1500;
 
 /** Which captured tab the video shows from `t` on, and how it gets there. */
 export interface SourceSwitch {
@@ -133,6 +140,14 @@ export interface Capture {
     transition?: string,
   ): void;
   span(kind: SpanKind, from: number, to: number, outMs: number): void;
+  /** A browser dialog the kit answered (see CaptureLog.dialog). */
+  dialog(
+    type: string,
+    message: string,
+    accepted: boolean,
+    text?: string,
+    origin?: string,
+  ): void;
 }
 
 /**
@@ -197,6 +212,30 @@ export class CaptureLog {
       kind,
       outMs: Math.round(outMs),
     });
+  }
+
+  /**
+   * A browser dialog the kit answered: logged, with a held frame of
+   * DIALOG_FREEZE_MS over which the renderer draws it. Dropped off camera.
+   */
+  dialog(
+    type: string,
+    message: string,
+    accepted: boolean,
+    text?: string,
+    origin?: string,
+  ): void {
+    if (this.pausedAt) return;
+    const t = this.now();
+    (this.data.dialogs ??= []).push({
+      t,
+      type,
+      message,
+      accepted,
+      ...(text !== undefined ? { text } : {}),
+      ...(origin ? { origin } : {}),
+    });
+    this.data.spans.push({ from: t, to: t, kind: "dialog", outMs: DIALOG_FREEZE_MS });
   }
 
   pointer(at: Point, kind: PointerKind): void {

@@ -285,3 +285,20 @@ test("without speeding up, a long wait loses its middle instead", () => {
     ],
   );
 });
+
+test("dialog span becomes a freeze", () => {
+  const map = naturalMap([{ from: 500, to: 500, kind: "dialog", outMs: 1500 }], 1000);
+  assert.equal(map.outMs, 2500);
+  const held = map.segments.find((s) => s.kind === "dialog");
+  assert.ok(held, "no dialog segment");
+  assert.deepEqual(
+    [held.recFrom, held.recTo, held.fileFrom, held.fileTo, held.outFrom, held.outTo],
+    [500, 500, 500, 500, 500, 2000],
+  );
+  assert.equal(map.toRec(1200), 500);
+  assert.equal(map.toOut(700), 2200);
+  assert.deepEqual(audioPlan(map).map((p) => [p.fileFrom, p.fileTo, p.outFrom]), [
+    [0, 500, 0],
+    [500, 1000, 2000],
+  ]);
+});

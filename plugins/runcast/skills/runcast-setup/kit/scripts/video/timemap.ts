@@ -11,7 +11,7 @@
 //
 // Pure functions, no kit imports: plain Node runs this file.
 
-export type SpanKind = "move" | "aim" | "hold" | "type" | "cut";
+export type SpanKind = "move" | "aim" | "hold" | "type" | "cut" | "dialog";
 
 /** A logged stretch of the recording (core/capture-log.ts). */
 export interface Span {
@@ -27,6 +27,7 @@ export interface Span {
 /**
  * - wait: app time between spans, 1:1 unless shortened;
  * - freeze: one frame held (recFrom === recTo);
+ * - dialog: a held frame the renderer draws a browser dialog over;
  * - cut: no video time (an off-camera step, or the middle of a long wait).
  */
 export type SegmentKind = SpanKind | "wait" | "freeze";
@@ -100,6 +101,12 @@ export function naturalMap(
     if (from > cursor) push("wait", cursor, from, from - cursor);
     if (span.kind === "cut") {
       push("cut", from, from, 0, span.skipMs ?? 0);
+      cursor = from;
+      continue;
+    }
+    if (span.kind === "dialog") {
+      // The page waits for the answer: its frame is held while the dialog shows.
+      push("dialog", from, from, Math.max(0, span.outMs));
       cursor = from;
       continue;
     }
@@ -346,7 +353,7 @@ function ownerOf(segment: Segment, starts: Array<number>): number {
   if (segment.recTo > segment.recFrom) {
     return lastAtOrBefore((segment.recFrom + segment.recTo) / 2, false);
   }
-  if (segment.kind === "freeze") {
+  if (segment.kind === "freeze" || segment.kind === "dialog") {
     const before = lastAtOrBefore(segment.recFrom, true);
     return before >= 0 ? before : lastAtOrBefore(segment.recFrom, false);
   }

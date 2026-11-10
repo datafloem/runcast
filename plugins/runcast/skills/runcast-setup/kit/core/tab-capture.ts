@@ -249,6 +249,16 @@ export class TabCapture implements Capture {
     this.log.pointer(at, kind);
   }
 
+  dialog(
+    type: string,
+    message: string,
+    accepted: boolean,
+    text?: string,
+    origin?: string,
+  ): void {
+    this.log.dialog(type, message, accepted, text, origin);
+  }
+
   focus(
     kind: FocusKind,
     at: Point,

@@ -249,9 +249,23 @@ element, a wrong record, a stray window).
    repeats another's work, merge them.
 1. **Every interaction goes through `rec`:** `rec.click`, `rec.doubleClick`,
    `rec.rightClick`, `rec.hover`, `rec.drag(from, to)`, `rec.type`,
-   `rec.typeSecret` (and `rec.show` to point the camera without touching). Never `page.click`, `locator.click` or `locator.fill`: the
+   `rec.typeSecret`, `rec.select`, `rec.pickDate` (and `rec.show` to point the camera without touching). Never `page.click`, `locator.click` or `locator.fill`: the
    cursor would not go there, the camera would not see it and the pace breaks.
    Exception: the keyboard (`page.keyboard.type/press`).
+   **Never click a native `<select>` or a date input's picker:** the browser
+   draws their lists outside the page, where the recording cannot see them.
+   Use `rec.select(locator, "Germany")` (by the option's label) and
+   `rec.pickDate(locator, "2026-03-14")`: the kit draws its own list or month
+   grid under the field and the cursor picks the entry (test mode sets the
+   value directly). Custom dropdowns built from page elements are clicked
+   with `rec.click` as usual.
+   **Dialogs** (`alert`, `confirm`, `prompt`, leave-page) are answered by the
+   kit: `scenario({ dialogs: "accept" | "dismiss" })` (default "accept");
+   `rec.onDialog({ accept: false })` (or `{ accept: true, text: "…" }` for a
+   prompt) right before the action answers the next one differently. The
+   video holds the frame 1.5 s and draws the dialog being answered. Never add
+   your own `page.on("dialog")`. Permission prompts never show:
+   `scenario({ permissions: ["geolocation"] })` grants them up front.
 2. **The on-screen message is the step's `note`.** `scenario()` marks each step
    and writes time and message to `steps.json` (video:
    `.captures/<name>/`, rehearsal: `.results/<test>/`). Never draw

@@ -370,6 +370,18 @@ Steps and helpers move through `rec`, never `page.click`:
   `rec.drag(from, to)`: the cursor travels there; the camera sees it.
 - `spot(locator, x, y)`: a point inside an element (0–1), e.g. on a canvas.
 - `rec.type`: clicks the field and types; `rec.typeSecret` for passwords.
+- `rec.select(locator, label)`, `rec.pickDate(locator, "YYYY-MM-DD")`: a native
+  select or date input. The browser draws their lists outside the page, so
+  in video and rehearsal the kit draws its own under the field (a list, a
+  month grid; `core/native-ui.ts`) and the cursor clicks the entry; the
+  value is set with Playwright. Test mode sets it directly. Never click a
+  native select.
+- `rec.onDialog({ accept, text })`: how the next browser dialog is answered;
+  otherwise `scenario({ dialogs: "accept" | "dismiss" })` (default accept).
+  The video holds the frame 1.5 s and draws the dialog (message, buttons)
+  with the cursor clicking the answer; dialogs off camera add nothing.
+  `scenario({ permissions: ["geolocation", ...] })` grants permissions
+  before the first page load, so their prompts never show.
 - `rec.pause(ms)`: time for the viewer to read (skipped in tests).
 - `rec.show(locator, { ms, transition })`: points the camera at an element
   without touching it, until the next action (checks it is visible in tests).

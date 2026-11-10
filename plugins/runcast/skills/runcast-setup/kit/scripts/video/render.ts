@@ -99,6 +99,17 @@ interface CaptureFile {
   cuts?: Array<{ at: number; ms: number }>;
   /** Tab capture: the app's sound (a file with an audio track) and when it starts. */
   audio?: { file: string; startMs: number };
+  /** Browser dialogs the kit answered; each has a "dialog" span. */
+  dialogs?: Array<CaptureDialog>;
+}
+
+interface CaptureDialog {
+  t: number;
+  type: string;
+  message: string;
+  accepted: boolean;
+  text?: string;
+  origin?: string;
 }
 
 /** The app's sound in the video: the recording's audio, where it plays, its levels. */
@@ -349,6 +360,17 @@ async function prepare(captureDir: string): Promise<Prepared> {
     })),
   );
 
+  // Browser dialogs over their held frames (video ms), with where they start.
+  const dialogs = map.segments.flatMap((segment) => {
+    if (segment.kind !== "dialog") return [];
+    const dialog = (capture.dialogs ?? []).find(
+      (d) => Math.abs(d.t - segment.recFrom) <= 1,
+    );
+    return dialog ? [{ from: segment.outFrom, to: segment.outTo, dialog }] : [];
+  });
+  const dialogAt = (t: number) =>
+    dialogs.find((d) => t >= d.from && t < d.to);
+
   // The frame shown just before a cut, faded out over the first frames after it.
   const beforeCut = createCanvas(OUT_WIDTH, OUT_HEIGHT);
   let cutFadeFrom = -Infinity;
@@ -462,10 +484,25 @@ async function prepare(captureDir: string): Promise<Prepared> {
     }
     // Cursor size follows the zoom a little, so it stays readable.
     const cursorScale = 1.5 * (1 + (camera.zoom - 1) * 0.45);
+    const cursor = cursorAtTime(events.pointer, t);
+    const open = dialogAt(t);
+    if (open) {
+      // A browser dialog: drawn over the held frame, the cursor answering it.
+      drawDialog(
+        ctx,
+        open.dialog,
+        (t - open.from) / Math.max(1, open.to - open.from),
+        { x: contentX, y: contentY, w: contentW, h: contentH, unit: contentW / view.width },
+        cursor ? toOut(cursor) : null,
+        cursorScale,
+      );
+      ctx.restore();
+      if (captions) drawCaptionAt(t);
+      return;
+    }
     for (const click of clicksAtTime(events.pointer, t)) {
       drawRipple(ctx, toOut(click), click.age, cursorScale);
     }
-    const cursor = cursorAtTime(events.pointer, t);
     if (cursor) {
       const pressed = events.pointer.some(
         (s) => s.kind === "down" && t >= s.t && t - s.t < 140,
@@ -680,6 +717,7 @@ async function prepare(captureDir: string): Promise<Prepared> {
     if (map.cutsOut.some((at) => sceneT >= at && sceneT < at + CUT_FADE_MS + frameMs))
       return null;
     if (clicksAtTime(events.pointer, sceneT).length > 0) return null;
+    if (dialogAt(sceneT)) return null;
     const source = Math.floor((map.toRec(sceneT) * FPS) / 1000 + 1e-6);
     const camera = cameraAtTime(track, sceneT, viewport, view);
     const cursor = cursorAtTime(events.pointer, sceneT);
@@ -1029,6 +1067,120 @@ function wrapText(
   }
   if (line) lines.push(line);
   return lines;
+}
+
+/**
+ * A browser dialog (alert, confirm, prompt, beforeunload) over the content
+ * area, `p` (0-1) through its held frame: it fades in, the cursor moves to
+ * the chosen button and clicks it, the dialog fades out. Sizes are CSS
+ * pixels times `area.unit`, independent of the camera.
+ */
+function drawDialog(
+  ctx: SKRSContext2D,
+  dialog: CaptureDialog,
+  p: number,
+  area: { x: number; y: number; w: number; h: number; unit: number },
+  cursorFrom: { x: number; y: number } | null,
+  cursorScale: number,
+) {
+  const u = area.unit;
+  const alpha = p < 0.12 ? p / 0.12 : p > 0.85 ? Math.max(0, (1 - p) / 0.15) : 1;
+  const width = Math.min(448 * u, area.w * 0.92);
+  const pad = 24 * u;
+  const leave = dialog.type === "beforeunload";
+  const title = leave ? "Leave site?" : dialog.origin ? `${dialog.origin} says` : "";
+  const message = leave
+    ? "Changes that you made may not be saved."
+    : dialog.message;
+  ctx.save();
+  ctx.font = `${15 * u}px ${FONT}`;
+  const lines = wrapText(ctx, message, width - 2 * pad).slice(0, 8);
+  const lineH = 21 * u;
+  const titleH = title ? 30 * u : 0;
+  const inputH = dialog.type === "prompt" ? 44 * u : 0;
+  const buttonH = 32 * u;
+  const height = pad + titleH + lines.length * lineH + inputH + 20 * u + buttonH + pad;
+  const x = area.x + (area.w - width) / 2;
+  const y = area.y + Math.min(area.h * 0.12, 64 * u);
+
+  // The page dims a little behind it.
+  ctx.globalAlpha = alpha;
+  ctx.fillStyle = "rgba(0, 0, 0, 0.18)";
+  ctx.fillRect(area.x, area.y, area.w, area.h);
+  ctx.shadowColor = "rgba(0, 0, 0, 0.35)";
+  ctx.shadowBlur = 30 * u;
+  ctx.shadowOffsetY = 8 * u;
+  roundedRect(ctx, x, y, width, height, 12 * u);
+  ctx.fillStyle = "#ffffff";
+  ctx.fill();
+  ctx.shadowColor = "transparent";
+
+  let cy = y + pad;
+  ctx.textBaseline = "top";
+  if (title) {
+    ctx.font = `600 ${16 * u}px ${FONT}`;
+    ctx.fillStyle = "#1f2328";
+    ctx.fillText(title, x + pad, cy);
+    cy += titleH;
+  }
+  ctx.font = `${15 * u}px ${FONT}`;
+  ctx.fillStyle = "#3d4248";
+  for (const line of lines) {
+    ctx.fillText(line, x + pad, cy);
+    cy += lineH;
+  }
+  if (inputH) {
+    cy += 8 * u;
+    roundedRect(ctx, x + pad, cy, width - 2 * pad, 30 * u, 6 * u);
+    ctx.strokeStyle = "#2f6feb";
+    ctx.lineWidth = 2 * u;
+    ctx.stroke();
+    ctx.fillStyle = "#1f2328";
+    ctx.textBaseline = "middle";
+    ctx.fillText(dialog.text ?? "", x + pad + 10 * u, cy + 15 * u);
+    ctx.textBaseline = "top";
+    cy += inputH - 8 * u;
+  }
+
+  // Buttons, right-aligned: [Cancel] [OK] (an alert has OK only).
+  const labels =
+    dialog.type === "alert" ? ["OK"] : leave ? ["Cancel", "Leave"] : ["Cancel", "OK"];
+  const buttonW = 84 * u;
+  const gap = 8 * u;
+  const by = y + height - pad - buttonH;
+  const pressed = p >= 0.6 && p < 0.72;
+  const chosen = dialog.accepted ? labels.length - 1 : 0;
+  const centres: Array<{ x: number; y: number }> = [];
+  labels.forEach((label, i) => {
+    const bx = x + width - pad - (labels.length - i) * buttonW - (labels.length - 1 - i) * gap;
+    const primary = i === labels.length - 1;
+    roundedRect(ctx, bx, by, buttonW, buttonH, 8 * u);
+    ctx.fillStyle = primary
+      ? pressed && i === chosen ? "#1f56c4" : "#2f6feb"
+      : pressed && i === chosen ? "#d9dde3" : "#eef1f4";
+    ctx.fill();
+    ctx.fillStyle = primary ? "#ffffff" : "#1f2328";
+    ctx.font = `500 ${14 * u}px ${FONT}`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(label, bx + buttonW / 2, by + buttonH / 2);
+    ctx.textAlign = "left";
+    centres.push({ x: bx + buttonW / 2, y: by + buttonH / 2 });
+  });
+  ctx.restore();
+
+  // The cursor: from where it was to the chosen button, a click, then it stays.
+  const target = centres[chosen]!;
+  const from = cursorFrom ?? { x: target.x, y: target.y + 80 * u };
+  const move = easeInOutCubic(Math.min(1, Math.max(0, (p - 0.12) / 0.43)));
+  const at = {
+    x: from.x + (target.x - from.x) * move,
+    y: from.y + (target.y - from.y) * move,
+  };
+  if (p >= 0.6 && p < 0.6 + 500 / 1500) {
+    drawRipple(ctx, at, ((p - 0.6) * 1500) % 500, cursorScale);
+  }
+  drawCursor(ctx, at, cursorScale * (pressed ? 0.85 : 1));
 }
 
 /** Where everything goes in the output frame, per video format. */

@@ -233,6 +233,17 @@ Settle the steps in groups of 2–3. For each step:
 | Focus         | Where the viewer should look once the step is done: the element that carries its message (see below), and its transition if it differs |
 | Check         | What must be on screen when the step ends (a success message, a new row, a total...). The test's value |
 | Transition    | Only if chosen in phase 1: does a cube turn replace this step? Only for steps that just move elsewhere |
+| Browser UI    | Does the step open something the browser draws itself? Mark it: a select list, a date picker, a dialog (alert, confirm, prompt, leave-page), a permission prompt |
+
+**Browser-drawn controls.** A recorded tab cannot show what the browser draws
+outside the page, so the kit shows its own: a select's list and a date
+input's month grid are drawn under the field and the cursor picks the entry;
+a dialog is drawn over a held frame (1.5 s) with the cursor clicking OK or
+Cancel. For each marked step agree the answer: which option or date, and
+for a dialog whether it is accepted or cancelled (the scenario's default is
+"accept"; prompts need the text). Permission prompts (location,
+notifications, clipboard) are granted before the video starts, so they never
+show: list the permissions in the text ("Permissions").
 
 **Focus decides the camera.** Work it out yourself from the goal and the
 screen, then confirm: what should the viewer see when this step ends? After

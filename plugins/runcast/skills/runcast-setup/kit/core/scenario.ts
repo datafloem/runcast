@@ -151,6 +151,19 @@ export interface ScenarioDefinition {
    * stretched), and loading waits are cut, never sped up. Tab capture only.
    */
   appAudio?: { volume?: number; duckTo?: number };
+  /**
+   * How browser dialogs (alert, confirm, prompt, beforeunload) are answered:
+   * "accept" (default) or "dismiss". A step can answer the next one
+   * differently with `rec.onDialog({ accept, text })`. The video holds the
+   * frame and draws the dialog being answered (1.5 s).
+   */
+  dialogs?: "accept" | "dismiss";
+  /**
+   * Browser permissions granted before the first page load, so no prompt
+   * shows, e.g. `["geolocation", "notifications", "clipboard-read"]`
+   * (Playwright's names).
+   */
+  permissions?: Array<string>;
   /** Opening card before the recording (video mode). Off when not given. */
   intro?: VideoCard;
   /** Closing card after the recording (video mode). Off when not given. */
@@ -225,6 +238,10 @@ export function scenario(
     rec.cards = { intro: definition.intro, outro: definition.outro };
     rec.showTransition = definition.showTransition ?? "pan";
     rec.appAudio = resolveAppAudio(definition.appAudio);
+    rec.dialogs = definition.dialogs ?? "accept";
+    if (definition.permissions?.length) {
+      await page.context().grantPermissions(definition.permissions);
+    }
     // Before the first page load, so the app starts in the layout it is recorded in.
     await rec.useFormat(resolveFormat(definition.format));
     if (definition.blur?.length) await blurOnScreen(page, definition.blur);
