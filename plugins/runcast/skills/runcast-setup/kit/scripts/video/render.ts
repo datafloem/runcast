@@ -64,6 +64,7 @@ import {
 import { appAudioFilter, shiftPlan } from "./audio.ts";
 import { readFrameAt, readFrames } from "./frames.ts";
 import { progressText } from "./progress.ts";
+import { clipEndMs, voiceClipFilter } from "./voice-edges.ts";
 import { applyScenes, type PlaceholderLog, type SceneNow } from "./scenes.ts";
 import {
   readSceneCapture,
@@ -207,8 +208,8 @@ interface Prepared {
   /** Recorded steps on the video clock (intro included). */
   steps: Array<{ id?: string; title: string; startMs: number }>;
   report: Array<StepFit>;
-  /** Voice-over clips: file, start and length (ms, intro included). */
-  clips: Array<{ file: string; at: number; ms: number }>;
+  /** Voice-over clips: file, start, length and how much of the file plays (ms, intro included). */
+  clips: Array<VoiceClip>;
   /** The app's sound, or null. */
   appAudio: AppAudioMix | null;
   canvas: Canvas;
@@ -330,6 +331,13 @@ async function prepare(
       ? null
       : loadNarration(specFor(capture.scenario));
   const voices = script ? stepVoices(script) : new Map<string, never>();
+  // A clip that ends on the start of the next text (voice-edges.ts) plays,
+  // and lasts, only up to before it.
+  for (const voice of voices.values()) {
+    if (!voice.audio) continue;
+    const end = clipEnd(path.join(RECORDING_DIR, voice.audio));
+    voice.ms = Math.min(voice.ms, end + (script?.gapMs ?? 0));
+  }
   const compressWaits =
     process.env.REC_COMPRESS_WAITS !== undefined
       ? process.env.REC_COMPRESS_WAITS !== "0"
@@ -364,26 +372,18 @@ async function prepare(
   const sceneMs = map.outMs;
 
   const gapMs = script?.gapMs ?? 0;
-  const clips = steps.flatMap((step) => {
+  const clips: Array<VoiceClip> = steps.flatMap((step) => {
     const voice = step.id ? voices.get(step.id) : undefined;
-    return voice?.audio
-      ? [
-          {
-            file: path.join(RECORDING_DIR, voice.audio),
-            at: introMs + step.seconds * 1000,
-            ms: Math.max(0, voice.ms - gapMs),
-          },
-        ]
-      : [];
+    if (!voice?.audio) return [];
+    const ms = Math.max(0, voice.ms - gapMs);
+    return [
+      { file: path.join(RECORDING_DIR, voice.audio), at: introMs + step.seconds * 1000, ms, endMs: ms },
+    ];
   });
   if (stepsData?.intro && cardAudio.intro)
-    clips.push({ file: cardAudio.intro.file, at: 300, ms: cardAudio.intro.ms });
+    clips.push({ ...cardAudio.intro, at: 300, endMs: cardAudio.intro.ms });
   if (stepsData?.outro && cardAudio.outro) {
-    clips.push({
-      file: cardAudio.outro.file,
-      at: introMs + sceneMs + 300,
-      ms: cardAudio.outro.ms,
-    });
+    clips.push({ ...cardAudio.outro, at: introMs + sceneMs + 300, endMs: cardAudio.outro.ms });
   }
   // Plan times are on the recording clock (ms since it started, off camera
   // included). The audio filter counts from the audio's first sample, which
@@ -1025,7 +1025,7 @@ export async function render(
   const startMs = (firstFrame * 1000) / FPS;
   const clips = job.clips
     .map((clip) => ({ ...clip, at: clip.at - startMs }))
-    .filter((clip) => clip.at < toMs - startMs);
+    .filter((clip) => clip.at < toMs - startMs && clip.at + clip.endMs > 0);
   const appAudio = job.appAudio
     ? { ...job.appAudio, plan: shiftPlan(job.appAudio.plan, startMs) }
     : null;
@@ -1233,6 +1233,27 @@ function writeReport(
 }
 
 /** Audio for the title cards: narration segments "intro" / "outro" with audio. */
+/** A voice-over clip in the video: its file, start, length and how much of the file plays (ms). */
+interface VoiceClip {
+  file: string;
+  at: number;
+  ms: number;
+  endMs: number;
+}
+
+const clipEnds = new Map<string, number>();
+
+/** How much of a clip file plays (voice-edges.ts); unlimited for a missing file. */
+function clipEnd(file: string): number {
+  if (!existsSync(file)) return Number.POSITIVE_INFINITY;
+  let end = clipEnds.get(file);
+  if (end === undefined) {
+    end = clipEndMs(file);
+    clipEnds.set(file, end);
+  }
+  return end;
+}
+
 function narrationForCards(scenario: string): {
   intro?: { file: string; ms: number };
   outro?: { file: string; ms: number };
@@ -1243,9 +1264,9 @@ function narrationForCards(scenario: string): {
     const segment = script.segments.find((s) => s.step === id);
     if (!segment?.audio) return undefined;
     const { ms, measured } = segmentLength(segment, script);
-    return measured
-      ? { file: path.join(RECORDING_DIR, segment.audio), ms }
-      : undefined;
+    if (!measured) return undefined;
+    const file = path.join(RECORDING_DIR, segment.audio);
+    return { file, ms: Math.min(ms, clipEnd(file)) };
   };
   return { intro: find("intro"), outro: find("outro") };
 }
@@ -1874,7 +1895,7 @@ function fitBox(
  */
 function startEncoder(
   out: string,
-  clips: Array<{ file: string; at: number; ms: number }>,
+  clips: Array<VoiceClip>,
   size: { width: number; height: number },
   options: {
     draft?: boolean;
@@ -1903,11 +1924,7 @@ function startEncoder(
   const first = app ? 2 : 1;
   const existing = clips.filter((clip) => existsSync(clip.file));
   for (const clip of existing) args.push("-i", clip.file);
-  // A clip that started before the video (a --steps range) is trimmed instead.
-  const place = (clip: { at: number }, i: number) =>
-    clip.at >= 0
-      ? `[${i + first}:a]adelay=${Math.round(clip.at)}:all=1[a${i}]`
-      : `[${i + first}:a]atrim=start=${(-clip.at / 1000).toFixed(3)},asetpts=PTS-STARTPTS[a${i}]`;
+  const place = (clip: VoiceClip, i: number) => voiceClipFilter(clip, i + first, `a${i}`);
   const sources = [
     ...(app ? ["[app]"] : []),
     ...existing.map((_, i) => `[a${i}]`),

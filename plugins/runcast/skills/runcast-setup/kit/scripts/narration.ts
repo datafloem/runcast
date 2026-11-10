@@ -33,6 +33,7 @@ import {
 } from "../core/narration.ts";
 import { findCaptures, kitCommand, loadProject } from "../core/project.ts";
 import { naturalMap, stepStartMs, type Span } from "./video/timemap.ts";
+import { clipEndMs } from "./video/voice-edges.ts";
 
 // Also loads the project's .env.local (ElevenLabs key and voice).
 const PROJECT_DIR = (await loadProject()).dir;
@@ -489,7 +490,7 @@ function measure(script: NarrationScript): void {
       );
       return;
     }
-    segment.durationMs = audioLengthMs(file);
+    segment.durationMs = playedMs(file, audioLengthMs(file));
     segment.audio = path.relative(RECORDING_DIR, file);
     segment.audioTextHash = textHash(segment.text);
     console.log(`${segment.step}: ${(segment.durationMs / 1000).toFixed(2)} s`);
@@ -531,6 +532,19 @@ function ffmpeg(args: Array<string>): void {
   } catch (error) {
     const stderr = (error as { stderr?: Buffer }).stderr?.toString() ?? "";
     fail(`ffmpeg failed (is it installed?): ${stderr || String(error)}`);
+  }
+}
+
+/**
+ * How much of a clip the render plays: up to a stray start of the next
+ * text at its end (voice-edges.ts), else all of it. Needs ffmpeg; without
+ * it, the whole length.
+ */
+function playedMs(file: string, lengthMs: number): number {
+  try {
+    return Math.min(lengthMs, clipEndMs(file));
+  } catch {
+    return lengthMs;
   }
 }
 
@@ -631,7 +645,7 @@ async function generate(script: NarrationScript): Promise<void> {
 
     let durationMs: number;
     try {
-      durationMs = audioLengthMs(file);
+      durationMs = playedMs(file, audioLengthMs(file));
     } catch {
       const ends = result.alignment?.character_end_times_seconds ?? [];
       durationMs = Math.round((ends.at(-1) ?? 0) * 1000);
