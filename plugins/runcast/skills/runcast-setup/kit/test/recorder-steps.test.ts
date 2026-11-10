@@ -63,3 +63,24 @@ test("step() still takes the old narration option and ignores it", async () => {
   assert.equal("narration" in mark!, false);
   rmSync(dir, { recursive: true, force: true });
 });
+
+test("on camera, a 1 px jitter is not movement", async () => {
+  // A page drawn at a fractional scale jitters by up to a pixel.
+  const { chromium } = await import("@playwright/test");
+  const browser = await chromium.launch({
+    channel: process.env.REC_CHANNEL === "chromium" ? undefined : "chrome",
+  });
+  try {
+    const page = await browser.newPage({ viewport: { width: 800, height: 600 } });
+    await page.setContent(`<button id="go" onclick="this.dataset.clicked = '1'">Go</button><script>
+      let up = false; const b = document.getElementById("go");
+      const step = () => { up = !up; b.style.transform = up ? "translateY(1px)" : "none"; requestAnimationFrame(step); };
+      step();</script>`);
+    const rec = new Recorder(page, { file: "/demo/scenarios/demo.spec.ts" } as never);
+    await rec.start();
+    await rec.click(page.locator("#go"));
+    assert.equal(await page.locator("#go").getAttribute("data-clicked"), "1");
+  } finally {
+    await browser.close();
+  }
+});

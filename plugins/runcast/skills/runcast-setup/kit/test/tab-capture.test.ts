@@ -30,7 +30,7 @@ before(async () => {
   browser = await chromium.launch({
     channel,
     headless: true,
-    args: [...TAB_CAPTURE_ARGS, "--force-device-scale-factor=2"],
+    args: [...TAB_CAPTURE_ARGS, "--force-device-scale-factor=1.5"],
     ignoreDefaultArgs: [...TAB_CAPTURE_IGNORED_ARGS],
   });
   context = await browser.newContext({ viewport: null });
@@ -45,7 +45,7 @@ after(async () => {
 
 test("sizeWindow gives the exact page size", async () => {
   for (const size of [
-    { width: 1440, height: 810 },
+    { width: 1920, height: 1080 },
     { width: 540, height: 960 },
   ]) {
     await sizeWindow(page, size);
@@ -88,9 +88,9 @@ async function record(
 ): Promise<string> {
   const dir = mkdtempSync(path.join(tmpdir(), "runcast-tab-"));
   dirs.push(dir);
-  await sizeWindow(page, { width: 1440, height: 810 });
+  await sizeWindow(page, { width: 1920, height: 1080 });
   await page.setContent(html);
-  const capture = new TabCapture(page, dir, "demo", { scale: 2, audio: options.audio });
+  const capture = new TabCapture(page, dir, "demo", { scale: 1.5, audio: options.audio });
   await capture.start();
   options.onStart?.(capture);
   await wait(ms);
@@ -120,8 +120,8 @@ test("events.json holds video file, size and startMs", () => {
     video: { file: string; startMs: number; width: number; height: number };
   };
   assert.match(events.video.file, /^screen\.(mp4|webm)$/);
-  assert.deepEqual(events.viewport, { width: 1440, height: 810 });
-  assert.equal(events.scale, 2);
+  assert.deepEqual(events.viewport, { width: 1920, height: 1080 });
+  assert.equal(events.scale, 1.5);
   assert.equal(events.video.width, 2880);
   assert.equal(events.video.height, 1620);
   assert.ok(Number.isFinite(events.video.startMs), `startMs ${events.video.startMs}`);
@@ -189,13 +189,13 @@ function pixelTrack(file: string, x: number, y: number): Array<{ t: number; rgb:
 test("click lands within 50 ms of its colour change", async () => {
   const dir = mkdtempSync(path.join(tmpdir(), "runcast-tab-"));
   dirs.push(dir);
-  await sizeWindow(page, { width: 1440, height: 810 });
+  await sizeWindow(page, { width: 1920, height: 1080 });
   await page.setContent(
     `<style>html,body{margin:0;height:100%;background:#fff}</style>
      <script>const colours = ["#f00", "#0f0", "#00f"]; let n = 0;
        addEventListener("mousedown", () => { document.body.style.background = colours[n++ % 3]; });</script>`,
   );
-  const capture = new TabCapture(page, dir, "demo", { scale: 2 });
+  const capture = new TabCapture(page, dir, "demo", { scale: 1.5 });
   await capture.start();
   await page.mouse.move(700, 400);
   for (let i = 0; i < 3; i++) {
@@ -211,6 +211,7 @@ test("click lands within 50 ms of its colour change", async () => {
     video: { file: string; startMs: number };
     pointer: Array<{ t: number; kind: string }>;
   };
+  // The middle of the 2880x1620 frame.
   const track = pixelTrack(path.join(dir, events.video.file), 1440, 810);
   const isColour = [
     (c: number[]) => c[0]! > 200 && c[1]! < 60 && c[2]! < 60,
@@ -240,7 +241,7 @@ test("window is sized before the first load", async () => {
   await first.goto(
     `data:text/html,<script>window.firstSize = innerWidth + "x" + innerHeight;</script>`,
   );
-  assert.equal(await first.evaluate(() => (window as unknown as { firstSize: string }).firstSize), "1440x810");
+  assert.equal(await first.evaluate(() => (window as unknown as { firstSize: string }).firstSize), "1920x1080");
   await fresh.close();
 });
 
@@ -273,14 +274,14 @@ test("a beeping page gives a non-silent audio track", async () => {
 test("stage stream records its own file with the same size", async () => {
   const dir = mkdtempSync(path.join(tmpdir(), "runcast-tab-"));
   dirs.push(dir);
-  await sizeWindow(page, { width: 1440, height: 810 });
+  await sizeWindow(page, { width: 1920, height: 1080 });
   await page.setContent(`<style>body{margin:0;background:#2050d0}</style>`);
-  const capture = new TabCapture(page, dir, "demo", { scale: 2 });
+  const capture = new TabCapture(page, dir, "demo", { scale: 1.5 });
   await capture.start();
   assert.ok(capture.stage, "no stage tab");
   assert.deepEqual(
     await capture.stage.evaluate(() => [window.innerWidth, window.innerHeight]),
-    [1440, 810],
+    [1920, 1080],
   );
   capture.source("stage", "lift");
   await capture.stage.setContent(ANIMATED.replace("#2050d0", "#d05020"));
@@ -315,9 +316,9 @@ test("stage stream records its own file with the same size", async () => {
 test("a retried start leaves no first-attempt chunks in the file", async () => {
   const dir = mkdtempSync(path.join(tmpdir(), "runcast-tab-"));
   dirs.push(dir);
-  await sizeWindow(page, { width: 1440, height: 810 });
+  await sizeWindow(page, { width: 1920, height: 1080 });
   await page.setContent(ANIMATED);
-  const capture = new TabCapture(page, dir, "demo", { scale: 2 });
+  const capture = new TabCapture(page, dir, "demo", { scale: 1.5 });
   // The stage fails once, near the start timeout: the app's tab has been
   // recording for seconds and sent chunks.
   const inner = capture as unknown as {
@@ -349,9 +350,9 @@ test("a retried start leaves no first-attempt chunks in the file", async () => {
 test("a recording that stops mid-way fails the take", async () => {
   const dir = mkdtempSync(path.join(tmpdir(), "runcast-tab-"));
   dirs.push(dir);
-  await sizeWindow(page, { width: 1440, height: 810 });
+  await sizeWindow(page, { width: 1920, height: 1080 });
   await page.setContent(ANIMATED);
-  const capture = new TabCapture(page, dir, "demo", { scale: 2 });
+  const capture = new TabCapture(page, dir, "demo", { scale: 1.5 });
   await capture.start();
   await wait(800);
   // The stage tab goes away: its recording ends on its own.
@@ -369,9 +370,9 @@ test("the stage cannot reach the network", async () => {
   const url = `http://127.0.0.1:${(server.address() as { port: number }).port}/`;
   const dir = mkdtempSync(path.join(tmpdir(), "runcast-tab-"));
   dirs.push(dir);
-  await sizeWindow(page, { width: 1440, height: 810 });
+  await sizeWindow(page, { width: 1920, height: 1080 });
   await page.setContent(`<style>body{margin:0;background:#2050d0}</style>`);
-  const capture = new TabCapture(page, dir, "demo", { scale: 2 });
+  const capture = new TabCapture(page, dir, "demo", { scale: 1.5 });
   await capture.start();
   const reach = (p: Page) =>
     p.evaluate((u) => fetch(u).then((r) => r.text()).catch(() => "blocked"), url);

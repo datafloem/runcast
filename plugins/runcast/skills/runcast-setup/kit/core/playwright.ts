@@ -98,7 +98,7 @@ export async function definePlaywrightConfig(project: ProjectConfig) {
             args: [
               // The recorder tab picks the app's tab by a title marker.
               ...TAB_CAPTURE_ARGS,
-              // Video pixels per CSS pixel (REC_SCALE): 2880x1620 for 1440x810.
+              // Video pixels per CSS pixel (REC_SCALE): 2880x1620 for 1920x1080 at 1.5.
               `--force-device-scale-factor=${settings.scale}`,
             ],
             // Not muted, so the app's sound can be recorded; the recorder
@@ -121,7 +121,13 @@ export async function definePlaywrightConfig(project: ProjectConfig) {
       // instead of waiting out the whole test timeout.
       actionTimeout: 30_000,
       screenshot: "only-on-failure",
-      trace: "retain-on-failure",
+      // Video mode: no trace (a tab recorded at 2880x1620 makes it hundreds of
+      // MB, and the video shows the run). Test and rehearsal: kept on
+      // failure, with screenshots and the action log but no DOM snapshots,
+      // which store every field's value, passwords included.
+      trace: isVideoMode
+        ? "off"
+        : { mode: "retain-on-failure", snapshots: false, screenshots: true, sources: true },
     },
   });
 }

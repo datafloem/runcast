@@ -39,7 +39,7 @@ wait until they say it is done; check what you can with
    `tests/recording/`) and ask which scenario's video to publish if it is not
    clear. List `videos/*.mp4` with their dates.
 2. If the MP4 is missing or older than the scenario's last change, offer to
-   render it first (`node tests/recording/.kit/cli.ts video <name>`, or `node tests/recording/.kit/cli.ts render
+   render it first (`node tests/recording/.kit/cli.ts video <name> --render`, or `node tests/recording/.kit/cli.ts render
 <name>` for the last capture). Recording writes to the app's backend: ask
    before running it.
 3. If both a landscape and a vertical MP4 exist, ask which one to publish

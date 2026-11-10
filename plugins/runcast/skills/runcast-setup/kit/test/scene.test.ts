@@ -22,7 +22,7 @@ before(async () => {
   browser = await chromium.launch({
     channel: process.env.REC_CHANNEL === "chromium" ? undefined : "chrome",
   });
-  page = await browser.newPage({ viewport: { width: 1440, height: 810 } });
+  page = await browser.newPage({ viewport: { width: 1920, height: 1080 } });
 });
 after(async () => {
   await browser.close();

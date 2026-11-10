@@ -238,7 +238,7 @@ Settle the steps in groups of 2–3. For each step:
 | Focus         | Where the viewer should look once the step is done: the element that carries its message (see below), and its transition if it differs |
 | Check         | What must be on screen when the step ends (a success message, a new row, a total...). The test's value |
 | Transition    | Only if chosen in phase 1: does a cube turn replace this step? Only for steps that just move elsewhere |
-| Browser UI    | Does the step open something the browser draws itself? Mark it: a select list, a date picker, a dialog (alert, confirm, prompt, leave-page), a permission prompt, a file choice or a drag-and-drop upload |
+| Browser UI    | Does the step open something the browser draws itself? Mark it: a select list, a date picker, a dialog (alert, confirm, prompt, leave-page), a permission prompt, a file choice or a drag-and-drop upload, a download |
 
 **Browser-drawn controls.** A recorded tab cannot show what the browser draws
 outside the page, so the kit shows its own: a select's list and a date
@@ -246,9 +246,16 @@ input's month grid are drawn under the field and the cursor picks the entry;
 a dialog is drawn over a held frame (1.5 s) with the cursor clicking OK or
 Cancel. For each marked step agree the answer: which option or date, and
 for a dialog whether it is accepted or cancelled (the scenario's default is
-"accept"; prompts need the text). Permission prompts (location,
-notifications, clipboard) are granted before the video starts, so they never
-show: list the permissions in the text ("Permissions").
+"accept"; prompts need the text). **Permission prompts** (location,
+notifications, camera, microphone, clipboard) are decided before the video
+starts, so a test never waits on them; when the page asks, the video holds
+the frame and draws Chrome's prompt with the cursor pressing the answer.
+Ask which permissions the flow uses and, for each, whether it is allowed or
+blocked (the app's "blocked" path); list them in the text ("Permissions").
+A **download** shows Chrome's download bubble (file name, size, done) at the
+top right; ask whether the viewer should then see the file itself (it opens
+on the stage: a table for CSV, text, JSON, a picture, a PDF) and for how
+long, and what the test should check in it.
 A **file upload** is staged: a file manager window appears (the video
 changes to it), the cursor picks the files — and for a drag and drop
 carries them, with their icon, back to the app's drop zone. Agree which
@@ -299,7 +306,7 @@ For every row marked "Scene", settle with the user, then make it with the
 | Length     | Roughly how many seconds (usually 4–10)                                       |
 | Beats      | The moments in order, each one idea (`customer`, `order`, `invoice`)          |
 | Look       | Light or dark, the app's own look or a plain diagram; which records it shows  |
-| Transition | How the video gets to it and back: `fade` (default), `slide`, `cube`, `cut`   |
+| Transition | How the video gets to it (`transition`) and back (`back`, default the same): `fade` (default), `slide`, `cube`, `cut`, `lift` |
 
 Write the scene (`<recording folder>/scenes/<name>/index.html`), run
 `node tests/recording/.kit/cli.ts scene preview <name>`, check the contact
@@ -307,6 +314,9 @@ sheet of its beats yourself, then show the user the sheet and the draft
 video. Change it until they approve; **do not go on before the user approves
 every scene.** Write each scene in the text ("Scenes") with its beats; a
 voice-over can later speak over single beats (`<step id>.<beat id>`).
+Scenes are added when rendering, so a scene can still change after the take:
+changing it later needs only a new render. A scene may open the video or
+follow another scene directly.
 
 ### 5. Review and approval
 

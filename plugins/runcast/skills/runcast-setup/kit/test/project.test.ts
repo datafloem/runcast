@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -28,8 +28,11 @@ test("findCaptures lists .captures and older .results captures, newest first", (
   const orders = capture(path.join(dir, ".captures", "orders", "capture"), 10);
   mkdirSync(path.join(dir, ".captures", "empty", "capture"), { recursive: true });
   assert.deepEqual(findCaptures(dir), [orders, customers, old]);
+  rmSync(dir, { recursive: true, force: true });
 });
 
 test("findCaptures without any output folder is empty", () => {
-  assert.deepEqual(findCaptures(mkdtempSync(path.join(tmpdir(), "runcast-"))), []);
+  const dir = mkdtempSync(path.join(tmpdir(), "runcast-"));
+  assert.deepEqual(findCaptures(dir), []);
+  rmSync(dir, { recursive: true, force: true });
 });

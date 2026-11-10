@@ -1,11 +1,11 @@
 // Reading single frames of a recording (render --check, previews).
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { after, before, test } from "node:test";
-import { readFrameAt } from "../scripts/video/frames.ts";
+import { readFrameAt, readFrames } from "../scripts/video/frames.ts";
 
 let dir: string;
 let file: string;
@@ -36,4 +36,44 @@ test("a frame asked past the end of a recording is its last frame", async () => 
   assert.ok(frame, "no frame");
   const [r, , b] = colour(frame)!;
   assert.ok(b > 200 && r < 60, `colour ${r},${b}`);
+});
+
+/**
+ * A recording like Chrome's tab capture: a frame only when the page changes
+ * (red at 0 s, blue at 1 s, green at 2.4 s), nothing in between.
+ */
+function sparse(): string {
+  const out = path.join(dir, "sparse.mp4");
+  const list = path.join(dir, "sparse.txt");
+  const still = (name: string, c: string) => {
+    const f = path.join(dir, `${name}.png`);
+    execFileSync("ffmpeg", ["-v", "error", "-y", "-f", "lavfi", "-i", `color=c=${c}:s=16x16:d=0.04`, "-frames:v", "1", f]);
+    return f;
+  };
+  const red = still("red", "red");
+  const blue = still("blue", "blue");
+  const green = still("green", "green");
+  writeFileSync(list, `file '${red}'\nduration 1\nfile '${blue}'\nduration 1.4\nfile '${green}'\nduration 0.6\nfile '${green}'\n`);
+  execFileSync("ffmpeg", ["-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", list, "-fps_mode", "vfr", "-pix_fmt", "yuv420p", out]);
+  return out;
+}
+
+test("in a recording with frames only on change, a frame is the one shown at that time, not the next", async () => {
+  const file = sparse();
+  const [r1, g1, b1] = colour(await readFrameAt(file, 1500, 16, 16))!;
+  assert.ok(b1 > 200 && r1 < 60 && g1 < 60, `1.5 s ${r1},${g1},${b1}`);
+  const [r2, , b2] = colour(await readFrameAt(file, 600, 16, 16))!;
+  assert.ok(r2 > 200 && b2 < 60, `0.6 s ${r2},${b2}`);
+});
+
+test("frames read from the middle of a sparse recording start with the frame shown there", async () => {
+  const file = sparse();
+  const frames: Array<[number, number, number]> = [];
+  // From 1.5 s: blue until 2.4 s (27 frames at 30 fps), then green.
+  for await (const frame of readFrames(file, 0, 16, 16, 1500, 30)) {
+    frames.push(colour(frame) as [number, number, number]);
+    if (frames.length >= 30) break;
+  }
+  const blue = frames.findIndex(([r, g, b]) => !(b > 200 && r < 60 && g < 60));
+  assert.equal(blue, 27, `first not-blue frame ${blue}: ${JSON.stringify(frames[0])}`);
 });

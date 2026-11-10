@@ -398,3 +398,77 @@ test("a voiced step with no segments of its own still gets its freeze", () => {
   assert.equal(report[1]!.freezeMs, 800);
   assert.equal(map.outMs, 3800);
 });
+
+// Scenes added at render time: a placeholder span on the capture clock that
+// adds virtual time and plays the scene's own capture.
+
+const flow = (from: number, ms: number, extra: Record<string, unknown> = {}) => ({
+  from,
+  to: from + ms,
+  kind: "scene" as const,
+  outMs: ms,
+  scene: "flow",
+  fileFrom: 500,
+  in: "fade" as const,
+  out: "cube" as const,
+  ...extra,
+});
+
+test("a scene span plays the scene's clock and skips no app time", () => {
+  const map = naturalMap([flow(1000, 3000)], 6000);
+  assert.equal(map.outMs, 6000);
+  assert.equal(map.sourceAt(500), "app");
+  assert.equal(map.sourceAt(2000), "scene:flow");
+  assert.equal(map.toRec(2000), 1500); // 500 + 1000 into the scene
+  assert.equal(map.sourceAt(5000), "app");
+  assert.equal(map.toRec(5000), 2000); // the app file did not move during the scene
+  assert.deepEqual(map.switchesOut, [
+    { at: 1000, from: "app", to: "scene:flow", transition: "fade" },
+    { at: 4000, from: "scene:flow", to: "app", transition: "cube" },
+  ]);
+  assert.deepEqual(audioPlan(map).map((p) => [p.fileFrom, p.fileTo, p.outFrom]), [
+    [0, 1000, 0],
+    [1000, 3000, 4000],
+  ]);
+});
+
+test("a scene at the very start opens the video", () => {
+  const map = naturalMap([flow(200, 3000)], 5000);
+  assert.equal(map.sourceAt(0), "scene:flow");
+  assert.equal(map.toRec(0), 500);
+  assert.deepEqual(map.switchesOut.map((s) => [s.from, s.to]), [["scene:flow", "app"]]);
+  assert.equal(map.outMs, 4800);
+});
+
+test("back-to-back scenes go straight from one to the next", () => {
+  const map = naturalMap(
+    [
+      flow(1000, 2000),
+      flow(3300, 2000, { scene: "orders", fileFrom: 400, in: "slide", out: "fade" }),
+    ],
+    7000,
+  );
+  assert.deepEqual(map.switchesOut, [
+    { at: 1000, from: "app", to: "scene:flow", transition: "fade" },
+    { at: 3000, from: "scene:flow", to: "scene:orders", transition: "slide" },
+    { at: 5000, from: "scene:orders", to: "app", transition: "fade" },
+  ]);
+});
+
+test("a longer voice freezes a beat's last scene frame", () => {
+  const { map } = fitNarration(
+    naturalMap([flow(1000, 3000)], 6000),
+    [
+      { id: "intro", startMs: 0 },
+      { id: "flow.customer", startMs: 1000 },
+      { id: "flow.order", startMs: 2500 },
+      { id: "after", startMs: 4000 },
+    ],
+    new Map([["flow.customer", 2500]]),
+    { compressWaits: true },
+  );
+  const freeze = map.segments.find((s) => s.kind === "freeze")!;
+  assert.equal(freeze.source, "scene:flow");
+  assert.equal(freeze.fileFrom, 2000); // the beat's last frame: 500 + 1500
+  assert.equal(map.outMs, 7000);
+});

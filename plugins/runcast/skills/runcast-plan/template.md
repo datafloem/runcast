@@ -13,7 +13,8 @@
 - **Blur:** <none / blurred fields, e.g. E-mail, Phone (blurred once filled)>
 - **App sound:** <no / yes: volume 0–1 (default 1), under the voice-over 0–1 of it (default 0.3)>
 - **Dialogs:** <none / accept (default) / dismiss; per-step answers, e.g. step 4: cancel the confirm>
-- **Permissions:** <none / granted before the video, e.g. geolocation, notifications>
+- **Permissions:** <none / each allowed or blocked, e.g. geolocation: allow, notifications: block (the video draws Chrome's prompt when the page asks)>
+- **Downloads:** <none / per step: the file, whether it opens on screen afterwards (and how long), what the test checks in it>
 - **Scenes:** <none / `<name>` (step N, `<step id>`): purpose; beats `a`, `b`, `c`; ~N s; transition; approved>
 - **Transitions:** <none / cube on step N (`<step id>`): the step is replaced by a cube turn to the next screen>
 - **Show transitions:** <pan / slide / fade / cube / cut between shown areas (Focus); per-step exceptions, e.g. step 5: cube>

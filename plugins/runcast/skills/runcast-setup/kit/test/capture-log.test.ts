@@ -68,3 +68,22 @@ test("the log knows how much longer the video is than the recording", () => {
   log.span("aim", 400, 650, 200); // longer than planned: nothing taken off
   assert.equal(log.stretchMs, 1400);
 });
+
+test("a scene placeholder adds virtual time and takes none", () => {
+  const log = new CaptureLog("demo");
+  const before = log.now();
+  log.scene({ name: "flow", duration: 3000, beats: [{ id: "a", at: 0 }], in: "fade", out: "cube", hash: "abc" });
+  const span = log.data.spans.find((s) => s.kind === "scene")!;
+  assert.equal(span.to - span.from, 3000);
+  assert.equal(span.outMs, 3000);
+  assert.ok(log.now() - before >= 3000 && log.now() - before < 3100);
+  assert.deepEqual(log.data.scenes?.[0], {
+    t: span.from,
+    name: "flow",
+    duration: 3000,
+    beats: [{ id: "a", at: 0 }],
+    in: "fade",
+    out: "cube",
+    hash: "abc",
+  });
+});

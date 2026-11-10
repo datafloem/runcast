@@ -16,7 +16,8 @@ export function screenProblem(
   if (window !== window.top) return null;
   const name = (el: Element) => {
     const id = el.id ? `#${el.id}` : "";
-    const classes = [...el.classList]
+    // Array.from, not spread: lib "DOM" alone has no iterable DOMTokenList.
+    const classes = Array.from(el.classList)
       .slice(0, 2)
       .map((c) => `.${c}`)
       .join("");

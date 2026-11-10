@@ -5,54 +5,83 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import type { SourceSwitch } from "./capture-log.ts";
-import { projectDirOf } from "./narration.ts";
 import { loadProject } from "./project.ts";
-import { test } from "./recorder.ts";
 import { blockNetwork } from "./tab-capture.ts";
 import type { Step, StepOptions } from "./scenario.ts";
-import { brandStyle, sceneFile, sceneProblems } from "./scene-contract.ts";
+import { brandStyle, sceneFile, sceneHash, sceneProblems } from "./scene-contract.ts";
 
-export { sceneFile, sceneProblems } from "./scene-contract.ts";
+export { sceneFile, sceneHash, sceneProblems } from "./scene-contract.ts";
 
 /**
- * A step that plays the scene `name` on the stage tab (video and
- * rehearsal), reached and left by `transition` (default "fade"). Each beat
- * becomes a step mark `<step id>.<beat id>` in steps.json, so narration can
- * speak over a beat; the renderer holds a beat's last frame for a longer
- * voice and never shortens the scene. Test mode loads the scene and checks
- * its contract.
+ * A step that shows the scene `name` (scenes/<name>/index.html), reached by
+ * `transition` (default "fade") and left by `back` (default: the same).
+ * Each beat becomes a step mark `<step id>.<beat id>` in steps.json, so
+ * narration can speak over a beat; a longer voice holds the beat's last
+ * frame and the scene is never shortened.
+ *
+ * Default: added when rendering. Recording only checks the scene's contract
+ * in an unrecorded page and leaves a placeholder of its length (no wall
+ * time), so changing or swapping a scene needs only `render`. `live: true`
+ * plays it on the stage tab during the take instead. Test mode checks the
+ * contract.
  */
 export function scene(
   options: Omit<StepOptions, "transition"> & {
     name: string;
     transition?: SourceSwitch["transition"];
+    back?: SourceSwitch["transition"];
+    live?: boolean;
   },
 ): Step {
   const id = options.id ?? options.name;
+  const title = options.title ?? "Scene";
+  const into = options.transition ?? "fade";
+  const back = options.back ?? into;
   return {
     id,
-    title: options.title ?? "Scene",
+    title,
     note: options.note,
     offCamera: options.offCamera,
     show: options.show,
     scene: options.name,
     run: async ({ page, rec }) => {
-      const projectDir = projectDirOf(test.info().file);
+      const projectDir = rec.projectDir;
       const file = sceneFile(projectDir, options.name);
       if (!existsSync(file)) {
         throw new Error(`Scene not found: ${path.relative(process.cwd(), file)}.`);
       }
       const url = `${pathToFileURL(file).href}?record`;
 
-      if (!rec.isLive || !rec.onCamera) {
-        // Test mode (and preparation): the scene loads and keeps the contract.
-        const check = await page.context().newPage();
-        await blockNetwork(check);
+      // Its contract, read in a page the video never shows.
+      const check = async () => {
+        const probe = await page.context().newPage();
+        await blockNetwork(probe);
         try {
-          await openScene(check, url, file);
+          return await openScene(probe, url, file);
         } finally {
-          await check.close();
+          await probe.close();
         }
+      };
+
+      if (!rec.isLive || !rec.onCamera) {
+        // Test mode (and preparation, off camera): the scene loads and keeps the contract.
+        await check();
+        return;
+      }
+
+      if (!options.live) {
+        const { duration, beats } = await check();
+        rec.scenePlaceholder(
+          { id, title },
+          {
+            name: options.name,
+            duration,
+            beats,
+            in: into,
+            out: back,
+            hash: sceneHash(path.dirname(file)),
+          },
+        );
         return;
       }
 
@@ -68,15 +97,13 @@ export function scene(
             );
             for (const beat of beats) {
               await sleepUntil(startedAt + beat.at);
-              await rec.step(`${options.title ?? "Scene"} › ${beat.id}`, undefined, {
-                id: `${id}.${beat.id}`,
-              });
+              await rec.step(`${title} › ${beat.id}`, undefined, { id: `${id}.${beat.id}` });
             }
             await sleepUntil(startedAt + duration);
           });
         },
-        options.transition ?? "fade",
-        options.transition ?? "fade",
+        into,
+        back,
         {
           cursor: false,
           // Loaded, checked and branded before the video changes to it.

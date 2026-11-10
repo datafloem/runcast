@@ -55,6 +55,10 @@ the browser runs hidden, in the background.
     step is on screen;
   - a 3D cube turn when the video moves to another part of the app, in place
     of the wait while the page loads;
+  - what the browser draws outside the page, shown in the video: select
+    lists, date pickers, dialogs, permission prompts, file uploads (a file
+    manager the cursor picks from), and downloads (Chrome's download bubble,
+    and the downloaded file itself if you like);
   - steps that run off camera: a long import or repeated work still runs,
     but the video skips it and goes on from the next step.
 - **An end-to-end test** made from the same script. It runs headless (no
@@ -272,11 +276,20 @@ node tests/recording/.kit/cli.ts video <name>
 ```
 
 A hidden Chrome runs through the flow by itself; nothing opens on your
-screen, so you can keep working. Then the kit renders the result:
+screen, so you can keep working. Then the kit checks the take in seconds:
+one picture per step in `tests/recording/.captures/<name>/check/sheet.png`
+and how the voice-over fits each step. If it looks right, render the video
+(a few minutes):
+
+```bash
+node tests/recording/.kit/cli.ts render <name>
+```
 
 ```text
 tests/recording/videos/<name>.mp4
 ```
+
+`video <name> --render` records and renders in one go.
 
 A vertical video goes to `videos/<name>-vertical.mp4`. To get a vertical
 version of a landscape recording without recording again:
@@ -290,6 +303,10 @@ To change captions, title cards or the camera without recording again:
 ```bash
 node tests/recording/.kit/cli.ts render <name>
 ```
+
+Animated scenes are added at this step too: change a scene (or swap it for a
+longer one) and just render again. The kit records the changed scene on its
+own; the app's flow is not recorded again.
 
 ### 7. Add a voice-over (optional)
 
@@ -331,7 +348,7 @@ Run these from your project's root folder. If your recording folder is not
 | `node tests/recording/.kit/cli.ts test`                  | Runs every scenario as a fast headless test                    |
 | `node tests/recording/.kit/cli.ts test <name>`           | Runs one scenario as a test                                    |
 | `node tests/recording/.kit/cli.ts rehearsal <name>`      | Runs at video pace without recording, to measure step lengths  |
-| `node tests/recording/.kit/cli.ts video <name>`          | Records and renders `videos/<name>.mp4`                        |
+| `node tests/recording/.kit/cli.ts video <name>`          | Records, then shows one picture per step and the voice-over fit (`--render`: also renders the MP4) |
 | `node tests/recording/.kit/cli.ts render <name>`         | Renders the last recording again (new captions, cards, camera) |
 | `node tests/recording/.kit/cli.ts render <name> --check` | One picture per step and the voice-over fit, in seconds        |
 | `node tests/recording/.kit/cli.ts render <name> --draft --steps 3-5` | A quick half-size video of steps 3 to 5 only       |
@@ -350,8 +367,11 @@ A few settings you may want, in `tests/recording/.env.local`:
 
 - `REC_CAPTURE=screen`: record a visible Chrome window instead of a hidden
   tab (only for flows that must show real operating-system dialogs).
-- `REC_SCALE=1`: record at the page's own size instead of twice as sharp
-  (smaller files, less detail when the camera zooms); 1 to 3, default 2.
+- `REC_SCALE=1`: record at the page's own size instead of 1.5 times as
+  sharp (smaller files, less detail when the camera zooms); 1 to 3, default
+  1.5 (the default page is 1920x1080, so the video is 2880x1620).
+- `REC_PAGE_WIDTH=1800` (with `REC_SCALE`): another page size, e.g. to keep
+  the layout of an old screen recording (`doctor` suggests the values).
 - `REC_APP_AUDIO=1` / `0`: put the app's own sound in the video or leave it
   out, whatever the scenario says.
 

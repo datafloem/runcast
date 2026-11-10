@@ -120,7 +120,7 @@ find, it becomes `PROJECT.md`:
 2. `node <recording folder>/.kit/cli.ts test --list` lists the login scenario.
 3. Ask the user to put the account in `.env.local` and to start the app,
    then run `node <recording folder>/.kit/cli.ts test login`. Fix selectors until it passes.
-4. Offer a short video check: `node <recording folder>/.kit/cli.ts video login`
+4. Offer a short video check: `node <recording folder>/.kit/cli.ts video login --render`
    (needs ffmpeg; it records a headless Chrome tab, so nothing opens and the
    user can keep working; with `REC_CAPTURE=screen` macOS needs Screen
    Recording permission, Linux xvfb without a screen, Windows an unlocked

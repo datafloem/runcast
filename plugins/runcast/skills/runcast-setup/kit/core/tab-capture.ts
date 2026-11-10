@@ -11,6 +11,7 @@ import {
   type Capture,
   type FocusKind,
   type PointerKind,
+  type ScenePlaceholder,
   type SourceSwitch,
   type SpanKind,
 } from "./capture-log.ts";
@@ -126,7 +127,7 @@ interface Started {
  * back through an exposed function and are appended to
  * <dir>/screen.mp4 (or .webm). Nothing shows on screen, the real cursor is
  * never in it (the renderer draws its own), and the frames are the page at
- * `scale` (2880x1620 for a 1440x810 page at 2).
+ * `scale` (2880x1620 for a 1920x1080 page at 1.5).
  */
 export class TabCapture implements Capture {
   private readonly log: CaptureLog;
@@ -316,6 +317,35 @@ export class TabCapture implements Capture {
 
   get stretchMs(): number {
     return this.log.stretchMs;
+  }
+
+  /**
+   * Waits (at most `timeoutMs`) until the stage's recording has a frame
+   * captured after `wall`: Chrome captures a background tab rarely (about
+   * once a second), so what was just put on the stage may not be recorded
+   * yet. Returns at once when frames cannot be watched.
+   */
+  async stageFrameAfter(wall: number, timeoutMs = 1_500): Promise<void> {
+    const recorder = this.recorder;
+    if (!recorder || !this.stage) return;
+    const until = Date.now() + timeoutMs;
+    while (Date.now() < until) {
+      const last = await recorder
+        .evaluate(() =>
+          (window as unknown as { lastFrameWall(name: string): number | null }).lastFrameWall("stage"),
+        )
+        .catch(() => null);
+      if (last === null || last > wall) return;
+      await new Promise((done) => setTimeout(done, 40));
+    }
+  }
+
+  download(name: string, size: number): void {
+    this.log.download(name, size);
+  }
+
+  scene(placeholder: Omit<ScenePlaceholder, "t">): void {
+    this.log.scene(placeholder);
   }
 
   pointer(at: Point, kind: PointerKind): void {

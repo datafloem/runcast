@@ -41,7 +41,7 @@
        * frame is read moves it onto the wall clock.
        */
       function watchFrames(track) {
-        const info = { first: null, minDelay: Infinity };
+        const info = { first: null, last: null, minDelay: Infinity };
         if (typeof MediaStreamTrackProcessor !== "function") {
           return { info, stop() {} };
         }
@@ -54,6 +54,7 @@
             value.close();
             const delay = performance.timeOrigin + performance.now() - timestamp;
             if (info.first === null) info.first = timestamp;
+            info.last = timestamp;
             if (delay < info.minDelay) info.minDelay = delay;
           }
         })().catch(() => {});
@@ -145,6 +146,17 @@
           audioTracks: stream.getAudioTracks().length,
           audioSettings: stream.getAudioTracks()[0]?.getSettings() ?? null,
         };
+      }
+
+      /**
+       * Wall-clock time of the newest frame a recording has (null before the
+       * first, or when frames cannot be watched).
+       */
+      function lastFrameWall(name = "screen") {
+        const info = running[name]?.frames.info;
+        return info && info.last !== null && Number.isFinite(info.minDelay)
+          ? info.last + info.minDelay
+          : null;
       }
 
       /**

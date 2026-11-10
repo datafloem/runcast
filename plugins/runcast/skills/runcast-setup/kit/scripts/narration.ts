@@ -56,6 +56,9 @@ const only = flags
   ?.slice("--only=".length);
 const force = flags.includes("--force");
 
+/** A step this much longer than its voice is flagged (the render flags it too). */
+const LONG_SILENCE_MS = 5000;
+
 /** Pause between segments in the one-take text; longer than any in-sentence pause. */
 const SPLIT_BREAK_S = 1.5;
 const FULL_TEXT = "full-text.txt";
@@ -364,7 +367,9 @@ function plan(script: NarrationScript): void {
       fit =
         diff > 0
           ? `step held ${(diff / 1000).toFixed(1)} s longer`
-          : `${(-diff / 1000).toFixed(1)} s silence`;
+          : -diff > LONG_SILENCE_MS
+            ? `${(-diff / 1000).toFixed(1)} s silence: long silence, lengthen the text to the budget or trim the step`
+            : `${(-diff / 1000).toFixed(1)} s silence`;
     }
     return [
       String(i + 1),

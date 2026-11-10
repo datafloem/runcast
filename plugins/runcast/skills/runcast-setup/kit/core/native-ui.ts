@@ -14,7 +14,9 @@ export function showOptions(select: Element): void {
   if (!(select instanceof HTMLSelectElement)) throw new Error("not a <select>");
   const box = select.getBoundingClientRect();
   const rowHeight = 28;
-  const options = [...select.options];
+  // Array.from, not spread: projects type-check with lib "DOM" alone, where
+  // DOM collections are not iterable (TypeScript 5).
+  const options = Array.from(select.options);
   const height = Math.min(options.length * rowHeight + 8, 320);
   const below = window.innerHeight - box.bottom;
   const top = below >= height + 4 || below >= box.top ? box.bottom + 2 : box.top - height - 2;

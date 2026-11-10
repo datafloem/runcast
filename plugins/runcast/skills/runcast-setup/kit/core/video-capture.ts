@@ -12,6 +12,7 @@ import {
   type Capture,
   type FocusKind,
   type PointerKind,
+  type ScenePlaceholder,
   type SpanKind,
 } from "./capture-log.ts";
 import type { Point } from "./cursor.ts";
@@ -216,6 +217,14 @@ export class VideoCapture implements Capture {
 
   get stretchMs(): number {
     return this.log.stretchMs;
+  }
+
+  download(name: string, size: number): void {
+    this.log.download(name, size);
+  }
+
+  scene(placeholder: Omit<ScenePlaceholder, "t">): void {
+    this.log.scene(placeholder);
   }
 
   pointer(at: Point, kind: PointerKind): void {

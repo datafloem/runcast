@@ -10,9 +10,14 @@ moves through the system, what happens on the customer's side, the idea
 behind a feature. It is a plain web page in the recording folder,
 `scenes/<name>/index.html` (default folder `tests/recording/`), that Runcast
 records in a headless browser tab exactly like the app, so it gets the same
-frame, camera look, captions and voice-over, and joins the app's footage with
-a transition. The scenario plays it with `scene({ name })` (see the
+frame, look, captions and voice-over, and joins the app's footage with a
+transition. The scenario shows it with `scene({ name })` (see the
 `runcast-scenario` skill); `scene render` makes it a video or GIF of its own.
+
+The scene is added when the video is rendered, not during the take: `render`
+records it on its own (into `.captures/scene-<name>/`) when it is new or its
+files changed. **Change a scene, then just render again**: no new take,
+even when its length or beats change.
 
 The kit's example is `example/index.html` next to this file (a made-up
 customers and orders app, three beats). Start from a copy of it.
@@ -52,8 +57,8 @@ records and fails with the list of problems:
 
 ## Layout and look
 
-- **The page size is the video's page:** 1440×810 CSS pixels in landscape
-  (`REC_PAGE_SIZE`), 540×960 for `format: "vertical"`, drawn at 2× for
+- **The page size is the video's page:** 1920×1080 CSS pixels in landscape
+  (`REC_PAGE_SIZE`), 540×960 for `format: "vertical"`, drawn at 1.5× for
   detail. In `vertical-crop` and `vertical-fit` videos the page stays
   landscape and the scene is shown whole, across the middle of the 9:16
   picture; for a full-height scene use `format: "vertical"`. Size everything in `vw` / `vh` (or check both sizes) so nothing is
@@ -92,9 +97,11 @@ records and fails with the list of problems:
    text readable at that size. Fix and preview again.
 4. Show the user the sheet (and the draft) and ask for approval. Change what
    they ask for and preview again; continue only after they approve.
-5. The scenario plays it with `scene({ id, name, title, transition })` (the
-   `runcast-scenario` skill). Narration segments can target its beats:
-   `{ "step": "<step id>.<beat id>", ... }`.
+5. The scenario shows it with `scene({ id, name, title, transition, back })`
+   (the `runcast-scenario` skill; `back`, the way out, defaults to
+   `transition`). Narration segments can target its beats:
+   `{ "step": "<step id>.<beat id>", ... }`. After a later change to the
+   scene, preview it, then `render` the video again.
 
 On its own, for an article or a website:
 

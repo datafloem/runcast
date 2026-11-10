@@ -9,7 +9,7 @@
 //   doctor                   what is installed, what is missing
 //   test [args]              headless end-to-end run (Playwright args, e.g. a scenario name)
 //   rehearsal [args]         the video's pace, headless, not recorded (measures step lengths)
-//   video [args]             record and render MP4s
+//   video [args]             record, then check each take (--render: also the MP4)
 //   render [scenario]        render the last capture again; --check (a picture per step),
 //                            --draft (half size, quick), --steps a-b (only those steps)
 //   scene <cmd> <name>       a scene alone (preview: draft + beats sheet; render [--gif] [--bare])
@@ -297,6 +297,8 @@ function doctor(): void {
       ? "  Video records a headless Chrome tab (REC_CAPTURE=tab): the computer stays free while it records."
       : "  Video records the screen (REC_CAPTURE=screen): leave the computer alone while it records.",
   );
+  if (capture === "tab") pageSizeHint();
+  staleSkillNames();
   if (capture === "screen" && process.platform === "linux") {
     check(
       Boolean(process.env.DISPLAY) || has("Xvfb", ["-help"]),
@@ -326,6 +328,56 @@ function doctor(): void {
     console.log(
       "  Windows video records the screen of a signed-in desktop session: keep it unlocked and Chrome on the main screen.",
     );
+  }
+}
+
+/**
+ * A project updating from screen capture: its newest screen recording had
+ * the screen's page size; tab capture records REC_PAGE_SIZE (1920x1080)
+ * unless told otherwise. Names the settings that keep the old layout.
+ */
+function pageSizeHint(): void {
+  if (projectSetting("REC_PAGE_SIZE") || projectSetting("REC_PAGE_WIDTH")) return;
+  const root = path.join(projectDir, ".captures");
+  if (!existsSync(root)) return;
+  const screen = readdirSync(root)
+    .map((name) => path.join(root, name, "capture", "events.json"))
+    .filter((file) => existsSync(file))
+    .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)
+    .map((file) => {
+      try {
+        return JSON.parse(readFileSync(file, "utf-8")) as {
+          viewport?: { width: number; height: number };
+          scale?: number;
+          video?: { file?: string };
+        };
+      } catch {
+        return null;
+      }
+    })
+    .find((events) => events?.video?.file?.endsWith(".mkv") && events.viewport);
+  if (!screen?.viewport) return;
+  const width = Math.round(screen.viewport.width);
+  const height = Math.round(screen.viewport.height);
+  if (width === 1920 && height === 1080) return;
+  const scale = Math.round((screen.scale ?? 2) * 100) / 100;
+  console.log(
+    `  Your last screen recording had a ${width}x${height} page at scale ${scale}; tab capture records 1920x1080 at 1.5. ` +
+      `To keep the old layout, add REC_PAGE_WIDTH=${width} and REC_SCALE=${Math.min(3, Math.max(1, scale))} to .env.local.`,
+  );
+}
+
+/** Project files written by an older kit that still name its old skills. */
+function staleSkillNames(): void {
+  for (const name of ["AGENTS.md", "CLAUDE.md", "README.md"]) {
+    const file = path.join(projectDir, name);
+    if (!existsSync(file)) continue;
+    if (/\brecording-(setup|scenario|scenario-plan|plan|publish)\b/.test(readFileSync(file, "utf-8"))) {
+      console.log(
+        `  ${name} still names the old skills (recording-*). They are runcast-setup, runcast-plan, ` +
+          `runcast-scenario, runcast-scene and runcast-publish now: update the file (setup keeps a project's own files).`,
+      );
+    }
   }
 }
 

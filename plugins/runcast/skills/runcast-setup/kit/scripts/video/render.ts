@@ -56,12 +56,21 @@ import {
   naturalMap,
   retimeCapture,
   stepStartMs,
+  type Source,
   type AudioPiece,
   type Span,
   type StepFit,
 } from "./timemap.ts";
 import { appAudioFilter, shiftPlan } from "./audio.ts";
-import { readFrameAt } from "./frames.ts";
+import { readFrameAt, readFrames } from "./frames.ts";
+import { progressText } from "./progress.ts";
+import { applyScenes, type PlaceholderLog, type SceneNow } from "./scenes.ts";
+import {
+  readSceneCapture,
+  recordSceneCapture,
+  sceneCaptureFresh,
+  sceneCaptureRoot,
+} from "./scene-capture.ts";
 import {
   findCaptures as findProjectCaptures,
   kitCommand,
@@ -75,6 +84,8 @@ const VIDEOS_DIR = path.join(RECORDING_DIR, "videos");
 
 const FPS = Number(process.env.REC_VIDEO_FPS ?? 30);
 const FONT = '"Helvetica Neue", Helvetica, Arial, sans-serif';
+/** How long the download bubble stays after a download (with its fades). */
+const DOWNLOAD_BUBBLE_MS = 3_400;
 const BRAND = hexToRgb(project.brand?.color ?? "#f97316");
 const FADE_IN_MS = 400;
 const CROSSFADE_MS = 500;
@@ -109,16 +120,21 @@ interface CaptureFile {
   /** Switches between the app's tab and the stage. */
   sources?: Array<{
     t: number;
-    source: SourceName;
+    source: "app" | "stage";
     transition: SourceTransition;
     /** false: no cursor until the next switch (a scene). */
     cursor?: boolean;
   }>;
   /** Files the cursor carried (drag and drop). */
   carries?: Array<{ from: number; to: number; label: string }>;
+  /** Scenes added at render time (steps.scene); each also has a "scene" span. */
+  scenes?: Array<PlaceholderLog>;
+  /** Files downloaded on camera (rec.download): the browser's download bubble. */
+  downloads?: Array<{ t: number; name: string; size: number }>;
 }
 
-type SourceName = "app" | "stage";
+/** A frame source: the app's tab, the stage tab, or a scene added at render time. */
+type SourceName = Source;
 type SourceTransition = "fade" | "slide" | "cube" | "cut" | "lift";
 
 interface CaptureDialog {
@@ -225,18 +241,45 @@ async function prepare(
   /** bare: the page alone, filling the frame (no background, no rounded frame). */
   options: { bare?: boolean } = {},
 ): Promise<Prepared> {
-  const capture = JSON.parse(
+  const loaded = JSON.parse(
     readFileSync(path.join(captureDir, "events.json"), "utf-8"),
   ) as CaptureFile;
-  const videoFile = path.join(captureDir, capture.video.file);
+  const videoFile = path.join(captureDir, loaded.video.file);
   if (!existsSync(videoFile))
     throw new Error(`${captureDir}: no screen recording`);
   const stepsFile = path.join(captureDir, "..", "steps.json");
   const stepsData = existsSync(stepsFile)
     ? (JSON.parse(readFileSync(stepsFile, "utf-8")) as StepsFile)
     : null;
-  /** Steps on the capture clock (steps.json). */
-  const recSteps = stepsData?.steps ?? [];
+
+  // Scenes added at render time: each from its own capture, recorded now
+  // when missing, changed or of another page size; the take gets their
+  // current lengths and beats.
+  const sceneTabs: Record<string, { file: string; startMs: number }> = {};
+  let take = { capture: loaded, steps: stepsData?.steps ?? [] };
+  if (loaded.scenes?.length) {
+    const current = new Map<string, SceneNow>();
+    for (const name of new Set(loaded.scenes.map((s) => s.name))) {
+      if (!sceneCaptureFresh(RECORDING_DIR, name, loaded.viewport, loaded.scale)) {
+        console.log(`Recording scene ${name} (new or changed)...`);
+        await recordSceneCapture(project, name, { viewport: loaded.viewport, scale: loaded.scale });
+      }
+      const info = readSceneCapture(RECORDING_DIR, name)!;
+      const sceneDir = path.join(sceneCaptureRoot(RECORDING_DIR, name), "capture");
+      const sceneEvents = JSON.parse(
+        readFileSync(path.join(sceneDir, "events.json"), "utf-8"),
+      ) as { video: { file: string; startMs: number } };
+      current.set(name, { duration: info.duration, beats: info.beats, startMs: info.startMs });
+      sceneTabs[`scene:${name}`] = {
+        file: path.join(sceneDir, sceneEvents.video.file),
+        startMs: sceneEvents.video.startMs,
+      };
+    }
+    take = applyScenes(loaded, take.steps, current);
+  }
+  const capture = take.capture;
+  /** Steps on the capture clock (steps.json, scene beats as the scenes are now). */
+  const recSteps = take.steps;
   // The scenario decides (captions: true); REC_CAPTIONS=1/0 overrides it here.
   const showCaptions =
     process.env.REC_CAPTIONS !== undefined
@@ -415,28 +458,34 @@ async function prepare(
   const { width: videoW, height: videoH } = capture.video;
   // Each recorded tab: its file, its start, and the canvas its frame goes to.
   const stageFile = capture.stage ? path.join(captureDir, capture.stage.file) : null;
-  const tabs: Record<SourceName, { file: string; startMs: number } | null> = {
+  const tabs: Record<string, { file: string; startMs: number } | null> = {
     app: { file: videoFile, startMs: capture.video.startMs },
     stage:
       capture.stage && stageFile && existsSync(stageFile)
         ? { file: stageFile, startMs: capture.stage.startMs }
         : null,
+    ...sceneTabs,
   };
-  const canvases: Record<SourceName, Canvas> = {
-    app: createCanvas(videoW, videoH),
-    stage: createCanvas(videoW, videoH),
+  const canvases = new Map<string, Canvas>();
+  const canvasOf = (which: SourceName) => {
+    let canvas = canvases.get(which);
+    if (!canvas) {
+      canvas = createCanvas(videoW, videoH);
+      canvases.set(which, canvas);
+    }
+    return canvas;
   };
-  const hasFrame: Record<SourceName, boolean> = { app: false, stage: false };
+  const hasFrame = new Set<string>();
   const putFrame = (frame: Buffer, which: SourceName) => {
     const pixels = new Uint8ClampedArray(
       frame.buffer,
       frame.byteOffset,
       frame.byteLength,
     );
-    canvases[which]
+    canvasOf(which)
       .getContext("2d")
       .putImageData(new ImageData(pixels, videoW, videoH), 0, 0);
-    hasFrame[which] = true;
+    hasFrame.add(which);
   };
 
   // A tab's recording, decoded by ffmpeg into raw frames at the output rate,
@@ -445,7 +494,7 @@ async function prepare(
   const streamTab = (which: SourceName, fromFileMs: number) => {
     const tab = tabs[which]!;
     const open = (index: number) =>
-      readFrames(tab.file, tab.startMs, videoW, videoH, (index * 1000) / FPS);
+      readFrames(tab.file, tab.startMs, videoW, videoH, (index * 1000) / FPS, FPS);
     const first = Math.max(0, Math.floor((fromFileMs * FPS) / 1000));
     let frames = open(first);
     /** Index of the decoded frame in its canvas (first - 1: none yet). */
@@ -490,10 +539,10 @@ async function prepare(
       async at(fileMs, which = "app") {
         if (!tabs[which]) return;
         const stream = (streams[which] ??= streamTab(which, fileMs));
-        await stream.at(fileMs);
+        await stream!.at(fileMs);
       },
       async close() {
-        for (const stream of Object.values(streams)) await stream.close();
+        for (const stream of Object.values(streams)) await stream!.close();
       },
     };
   };
@@ -517,8 +566,9 @@ async function prepare(
     viewport,
     view,
   );
+  // The stage and scenes are shown whole: the camera follows the app only.
   const cameraFor = (which: SourceName, t: number) =>
-    which === "stage" ? stageCamera : cameraAtTime(track, t, viewport, view);
+    which === "app" ? cameraAtTime(track, t, viewport, view) : stageCamera;
   // Files the cursor carries, on the video clock.
   const carries = (capture.carries ?? []).map((carry) => ({
     from: map.toOut(carry.from),
@@ -526,6 +576,10 @@ async function prepare(
     label: carry.label,
   }));
   const carryAt = (t: number) => carries.find((c) => t >= c.from && t < c.to);
+  // Download bubbles (video ms): the latest download shown, for a while.
+  const downloads = (capture.downloads ?? []).map((d) => ({ ...d, from: map.toOut(d.t) }));
+  const downloadAt = (t: number) =>
+    downloads.filter((d) => t >= d.from && t < d.from + DOWNLOAD_BUBBLE_MS).at(-1);
   // Stretches without a cursor (scenes), on the video clock.
   const switches = capture.sources ?? [];
   const noCursor = switches.flatMap((s, i) =>
@@ -533,7 +587,8 @@ async function prepare(
       ? [{ from: map.toOut(s.t), to: i + 1 < switches.length ? map.toOut(switches[i + 1]!.t) : Infinity }]
       : [],
   );
-  const cursorHidden = (t: number) => noCursor.some((r) => t >= r.from && t < r.to);
+  const cursorHidden = (t: number) =>
+    noCursor.some((r) => t >= r.from && t < r.to) || map.sourceAt(t).startsWith("scene:");
 
   /** Tab `which`'s recording at time t through `camera`, drawn over the background. */
   const drawView = (
@@ -545,7 +600,7 @@ async function prepare(
     // The stage in a crop layout (vertical-crop) is shown whole, fitted into
     // the frame: a scene or a file manager is laid out for the full page.
     const fitStage =
-      which === "stage" &&
+      which !== "app" &&
       (view.width < viewport.width - 0.5 || view.height < viewport.height - 0.5);
     const visibleW = fitStage ? viewport.width : view.width / camera.zoom;
     const visibleH = fitStage ? viewport.height : view.height / camera.zoom;
@@ -581,9 +636,9 @@ async function prepare(
     ctx.save();
     roundedRect(ctx, contentX, contentY, contentW, contentH, layout.radius);
     ctx.clip();
-    if (hasFrame[which]) {
+    if (hasFrame.has(which)) {
       ctx.drawImage(
-        canvases[which],
+        canvasOf(which),
         x0 * scale,
         y0 * scale,
         visibleW * scale,
@@ -600,7 +655,7 @@ async function prepare(
     const open = dialogAt(t);
     if (open) {
       // A browser dialog: drawn over the held frame, the cursor answering it.
-      drawDialog(
+      (open.dialog.type === "permission" ? drawPermissionPrompt : drawDialog)(
         ctx,
         open.dialog,
         (t - open.from) / Math.max(1, open.to - open.from),
@@ -611,6 +666,16 @@ async function prepare(
       ctx.restore();
       if (captions) drawCaptionAt(t);
       return;
+    }
+    const bubble = which === "app" ? downloadAt(t) : undefined;
+    if (bubble) {
+      drawDownloadBubble(ctx, bubble, t - bubble.from, {
+        x: contentX,
+        y: contentY,
+        w: contentW,
+        h: contentH,
+        unit: contentW / view.width,
+      });
     }
     for (const click of clicksAtTime(events.pointer, t)) {
       drawRipple(ctx, toOut(click), click.age, cursorScale);
@@ -640,8 +705,8 @@ async function prepare(
    * both drawn from the current frame and joined as a slide, fade or cube.
    */
   const drawScene = (t: number, which: SourceName = "app") => {
-    if (which === "stage") {
-      drawView(t, stageCamera, true, "stage");
+    if (which !== "app") {
+      drawView(t, stageCamera, true, which);
       return;
     }
     const turn = transitionAtTime(track, t);
@@ -990,9 +1055,8 @@ export async function render(
       lastKey = key;
       await write(ffmpeg.stdin, lastFrame);
       if (i % FPS === 0) {
-        process.stdout.write(
-          `\r${job.scenario}: ${(t / 1000).toFixed(0)} / ${(job.totalMs / 1000).toFixed(0)} s`,
-        );
+        const line = progressText(Boolean(process.stdout.isTTY), job.scenario, t, job.totalMs);
+        if (line) process.stdout.write(line);
       }
     }
   } catch (error) {
@@ -1010,9 +1074,12 @@ export async function render(
       code === 0 ? resolve() : reject(new Error(`ffmpeg exited with ${code}`)),
     );
   });
-  process.stdout.write("\n");
+  if (process.stdout.isTTY) process.stdout.write("\n");
   return out;
 }
+
+/** Silence after a step's voice longer than this is flagged (render and check). */
+const LONG_SILENCE_MS = 5000;
 
 /** Width of each step's check frame. */
 const CHECK_WIDTH = 960;
@@ -1137,6 +1204,15 @@ function writeReport(
         `Out of frame: ${row.step}, ${action.kind} at ${(action.atMs / 1000).toFixed(1)} s. ` +
           "The camera cannot show it (e.g. a vertical crop too narrow for the scene): " +
           "split the scene, show the area first, or use another format.",
+      );
+    }
+  }
+  for (const row of rows) {
+    if (row.voiceMs !== null && row.silenceMs > LONG_SILENCE_MS) {
+      console.warn(
+        `Long silence: ${row.step} leaves ${(row.silenceMs / 1000).toFixed(1)} s of silence after its voice. ` +
+          "Its cursor moves, rests and pauses are never shortened, and waits keep at least 0.6 s each: " +
+          "lengthen its narration (narration plan shows the word budget), or trim or split the step.",
       );
     }
   }
@@ -1423,6 +1499,283 @@ function drawDialog(
   drawCursor(ctx, at, cursorScale * (pressed ? 0.85 : 1));
 }
 
+/** What Chrome's permission prompt says for each permission. */
+const PERMISSION_TEXT: Record<string, string> = {
+  geolocation: "Know your location",
+  notifications: "Show notifications",
+  camera: "Use your camera",
+  microphone: "Use your microphone",
+  "clipboard-read": "See text and images copied to the clipboard",
+};
+
+/** A small line icon for a permission row, centred on (x, y), `r` its half size. */
+function drawPermissionIcon(ctx: SKRSContext2D, name: string, x: number, y: number, r: number) {
+  ctx.save();
+  ctx.strokeStyle = "#444746";
+  ctx.fillStyle = "#444746";
+  ctx.lineWidth = r * 0.18;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.beginPath();
+  if (name === "geolocation") {
+    // A pin: a circle drawn to a point below.
+    ctx.arc(x, y - r * 0.25, r * 0.6, Math.PI * 0.8, Math.PI * 2.2);
+    ctx.lineTo(x, y + r);
+    ctx.closePath();
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(x, y - r * 0.25, r * 0.2, 0, Math.PI * 2);
+    ctx.fill();
+  } else if (name === "notifications") {
+    // A bell.
+    ctx.moveTo(x - r * 0.7, y + r * 0.45);
+    ctx.quadraticCurveTo(x - r * 0.5, y + r * 0.2, x - r * 0.5, y - r * 0.2);
+    ctx.arc(x, y - r * 0.2, r * 0.5, Math.PI, 0);
+    ctx.quadraticCurveTo(x + r * 0.5, y + r * 0.2, x + r * 0.7, y + r * 0.45);
+    ctx.closePath();
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(x, y + r * 0.7, r * 0.15, 0, Math.PI * 2);
+    ctx.fill();
+  } else if (name === "camera") {
+    roundedRect(ctx, x - r * 0.9, y - r * 0.5, r * 1.2, r, r * 0.15);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(x + r * 0.35, y - r * 0.15);
+    ctx.lineTo(x + r * 0.9, y - r * 0.45);
+    ctx.lineTo(x + r * 0.9, y + r * 0.45);
+    ctx.lineTo(x + r * 0.35, y + r * 0.15);
+    ctx.stroke();
+  } else if (name === "microphone") {
+    roundedRect(ctx, x - r * 0.3, y - r * 0.9, r * 0.6, r * 1.1, r * 0.3);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(x, y - r * 0.15, r * 0.6, 0.1 * Math.PI, 0.9 * Math.PI);
+    ctx.moveTo(x, y + r * 0.45);
+    ctx.lineTo(x, y + r * 0.9);
+    ctx.stroke();
+  } else {
+    // A clipboard.
+    roundedRect(ctx, x - r * 0.65, y - r * 0.75, r * 1.3, r * 1.65, r * 0.15);
+    ctx.stroke();
+    ctx.beginPath();
+    roundedRect(ctx, x - r * 0.3, y - r * 0.95, r * 0.6, r * 0.35, r * 0.1);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+/**
+ * Chrome's permission prompt at the top left of the page area (under where
+ * the address bar would be), `p` (0-1) through its held frame: "<host>
+ * wants to", a row per permission and its buttons; the cursor presses allow
+ * or block. Unlike a dialog the page is not dimmed. Sizes are CSS pixels
+ * times `area.unit`, independent of the camera.
+ */
+function drawPermissionPrompt(
+  ctx: SKRSContext2D,
+  dialog: CaptureDialog,
+  p: number,
+  area: { x: number; y: number; w: number; h: number; unit: number },
+  cursorFrom: { x: number; y: number } | null,
+  cursorScale: number,
+) {
+  const u = area.unit;
+  const alpha = p < 0.12 ? p / 0.12 : p > 0.85 ? Math.max(0, (1 - p) / 0.15) : 1;
+  const names = dialog.message.split(",").filter(Boolean);
+  // Location, camera and microphone ask with three stacked choices; the others with Block / Allow.
+  const stacked = names.some((n) => ["geolocation", "camera", "microphone"].includes(n));
+  const labels = stacked
+    ? ["Allow while visiting the site", "Allow this time", "Never allow"]
+    : ["Block", "Allow"];
+  const chosen = stacked ? (dialog.accepted ? 0 : 2) : dialog.accepted ? 1 : 0;
+  const width = Math.min(340 * u, area.w * 0.9);
+  const pad = 20 * u;
+  const rowH = 34 * u;
+  const buttonH = 36 * u;
+  const gap = 8 * u;
+  const buttonsH = stacked ? labels.length * buttonH + (labels.length - 1) * gap : 32 * u;
+  const height = pad + 26 * u + names.length * rowH + 14 * u + buttonsH + pad;
+  const x = area.x + 16 * u;
+  const y = area.y + 8 * u;
+
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.shadowColor = "rgba(0, 0, 0, 0.3)";
+  ctx.shadowBlur = 26 * u;
+  ctx.shadowOffsetY = 6 * u;
+  roundedRect(ctx, x, y, width, height, 14 * u);
+  ctx.fillStyle = "#ffffff";
+  ctx.fill();
+  ctx.shadowColor = "transparent";
+
+  // "<host> wants to" and the close cross.
+  ctx.textBaseline = "middle";
+  ctx.font = `500 ${15 * u}px ${FONT}`;
+  ctx.fillStyle = "#1f1f1f";
+  ctx.fillText(`${dialog.origin ?? "This site"} wants to`, x + pad, y + pad + 10 * u);
+  const cx = x + width - pad - 5 * u;
+  const cy = y + pad + 10 * u;
+  ctx.strokeStyle = "#5f6368";
+  ctx.lineWidth = 1.6 * u;
+  ctx.beginPath();
+  ctx.moveTo(cx - 5 * u, cy - 5 * u);
+  ctx.lineTo(cx + 5 * u, cy + 5 * u);
+  ctx.moveTo(cx + 5 * u, cy - 5 * u);
+  ctx.lineTo(cx - 5 * u, cy + 5 * u);
+  ctx.stroke();
+
+  let ry = y + pad + 26 * u;
+  ctx.font = `${14 * u}px ${FONT}`;
+  for (const name of names) {
+    drawPermissionIcon(ctx, name, x + pad + 9 * u, ry + rowH / 2, 9 * u);
+    ctx.fillStyle = "#1f1f1f";
+    ctx.fillText(PERMISSION_TEXT[name] ?? name, x + pad + 30 * u, ry + rowH / 2);
+    ry += rowH;
+  }
+
+  const by = ry + 14 * u;
+  const pressed = p >= 0.6 && p < 0.72;
+  const centres: Array<{ x: number; y: number }> = [];
+  ctx.font = `500 ${14 * u}px ${FONT}`;
+  ctx.textAlign = "center";
+  labels.forEach((label, i) => {
+    let bx: number;
+    let bw: number;
+    let top: number;
+    let bh: number;
+    if (stacked) {
+      bx = x + pad;
+      bw = width - 2 * pad;
+      top = by + i * (buttonH + gap);
+      bh = buttonH;
+    } else {
+      bw = 84 * u;
+      bx = x + width - pad - (labels.length - i) * bw - (labels.length - 1 - i) * gap;
+      top = by;
+      bh = 32 * u;
+    }
+    roundedRect(ctx, bx, top, bw, bh, bh / 2);
+    ctx.fillStyle = pressed && i === chosen ? "#c2d4f5" : "#e9eef6";
+    ctx.fill();
+    ctx.fillStyle = "#0b57d0";
+    ctx.fillText(label, bx + bw / 2, top + bh / 2);
+    centres.push({ x: bx + bw / 2, y: top + bh / 2 });
+  });
+  ctx.textAlign = "left";
+  ctx.restore();
+
+  // The cursor: from where it was to the chosen button, a click, then it stays.
+  const target = centres[chosen]!;
+  const from = cursorFrom ?? { x: target.x + 60 * u, y: target.y + 80 * u };
+  const move = easeInOutCubic(Math.min(1, Math.max(0, (p - 0.12) / 0.43)));
+  const at = { x: from.x + (target.x - from.x) * move, y: from.y + (target.y - from.y) * move };
+  if (p >= 0.6 && p < 0.6 + 500 / 1500) {
+    drawRipple(ctx, at, ((p - 0.6) * 1500) % 500, cursorScale);
+  }
+  drawCursor(ctx, at, cursorScale * (pressed ? 0.85 : 1));
+}
+
+/** A size as Chrome names it: 512 B, 2.0 KB, 150 KB, 1.2 MB. */
+export function chromeSize(bytes: number): string {
+  const units = ["B", "KB", "MB", "GB"];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return unit === 0 ? `${bytes} B` : `${value < 100 ? value.toFixed(1) : Math.round(value)} ${units[unit]}`;
+}
+
+/**
+ * Chrome's download bubble at the top right of the page area, `age` ms
+ * after the file finished: file icon, name, "<size> • Done" and a green
+ * tick. It fades in, stays, and fades out; the video does not stop for it.
+ * Sizes are CSS pixels times `area.unit`, independent of the camera.
+ */
+function drawDownloadBubble(
+  ctx: SKRSContext2D,
+  download: { name: string; size: number },
+  age: number,
+  area: { x: number; y: number; w: number; h: number; unit: number },
+) {
+  const u = area.unit;
+  const alpha = Math.min(1, age / 180, Math.max(0, (DOWNLOAD_BUBBLE_MS - age) / 320));
+  if (alpha <= 0) return;
+  const width = Math.min(360 * u, area.w * 0.6);
+  const height = 64 * u;
+  const x = area.x + area.w - width - 12 * u;
+  // It drops in a little as it appears.
+  const y = area.y + 8 * u - (1 - Math.min(1, age / 180)) * 8 * u;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.shadowColor = "rgba(0, 0, 0, 0.28)";
+  ctx.shadowBlur = 24 * u;
+  ctx.shadowOffsetY = 6 * u;
+  roundedRect(ctx, x, y, width, height, 10 * u);
+  ctx.fillStyle = "#ffffff";
+  ctx.fill();
+  ctx.shadowColor = "transparent";
+
+  // The file: a page with its corner folded, the extension under it.
+  const ext = (download.name.split(".").pop() ?? "").slice(0, 4).toUpperCase();
+  const ix = x + 16 * u;
+  const iy = y + 14 * u;
+  const iw = 28 * u;
+  const ih = 36 * u;
+  ctx.beginPath();
+  ctx.moveTo(ix, iy);
+  ctx.lineTo(ix + iw - 9 * u, iy);
+  ctx.lineTo(ix + iw, iy + 9 * u);
+  ctx.lineTo(ix + iw, iy + ih);
+  ctx.lineTo(ix, iy + ih);
+  ctx.closePath();
+  ctx.fillStyle = "#e8eaed";
+  ctx.fill();
+  ctx.fillStyle = "#5f6368";
+  ctx.font = `700 ${8 * u}px ${FONT}`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "alphabetic";
+  ctx.fillText(ext, ix + iw / 2, iy + ih - 6 * u);
+  ctx.textAlign = "left";
+
+  // Name and status.
+  const tx = ix + iw + 14 * u;
+  const tickR = 11 * u;
+  const maxText = x + width - tx - 2 * tickR - 28 * u;
+  ctx.font = `500 ${14 * u}px ${FONT}`;
+  ctx.fillStyle = "#1f1f1f";
+  let name = download.name;
+  if (ctx.measureText(name).width > maxText) {
+    while (name.length > 4 && ctx.measureText(`${name}…`).width > maxText) name = name.slice(0, -1);
+    name = `${name}…`;
+  }
+  ctx.textBaseline = "middle";
+  ctx.fillText(name, tx, y + 24 * u);
+  ctx.font = `${12.5 * u}px ${FONT}`;
+  ctx.fillStyle = "#5f6368";
+  ctx.fillText(`${chromeSize(download.size)} • Done`, tx, y + 43 * u);
+
+  // The tick.
+  const cx = x + width - 18 * u - tickR;
+  const cy = y + height / 2;
+  ctx.beginPath();
+  ctx.arc(cx, cy, tickR, 0, Math.PI * 2);
+  ctx.fillStyle = "#1e8e3e";
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(cx - 5 * u, cy);
+  ctx.lineTo(cx - 1.5 * u, cy + 3.8 * u);
+  ctx.lineTo(cx + 5.5 * u, cy - 4 * u);
+  ctx.strokeStyle = "#ffffff";
+  ctx.lineWidth = 2.2 * u;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.stroke();
+  ctx.restore();
+}
+
 /** Where everything goes in the output frame, per video format. */
 interface Layout {
   width: number;
@@ -1514,61 +1867,6 @@ function fitBox(
   };
 }
 
-/**
- * Raw RGBA frames of the recording at FPS, starting at recording time
- * `fromMs` (default 0). The
- * screen recording usually starts a little before that (startMs < 0): skip
- * ahead. If it started later, repeat its first frame until then. Off-camera
- * time stays in: the time map (timemap.ts) decides which frame shows when.
- */
-async function* readFrames(
-  file: string,
-  startMs: number,
-  width: number,
-  height: number,
-  /** Recording time of the first frame wanted (a --steps range). */
-  fromMs = 0,
-): AsyncGenerator<Buffer> {
-  // Recording time r is at r - startMs in the file.
-  const offset = fromMs - startMs;
-  const args = ["-v", "error"];
-  if (offset > 0) args.push("-ss", (offset / 1000).toFixed(3));
-  args.push("-i", file);
-  if (offset < 0) {
-    args.push(
-      "-vf",
-      `tpad=start_duration=${(-offset / 1000).toFixed(3)}:start_mode=clone`,
-    );
-  }
-  args.push("-r", String(FPS), "-f", "rawvideo", "-pix_fmt", "rgba", "pipe:1");
-  const decoder = spawn("ffmpeg", args, {
-    stdio: ["ignore", "pipe", "ignore"],
-  });
-
-  const frameSize = width * height * 4;
-  // Collect pieces and join them once per frame: joining on every piece
-  // copies the growing buffer again and again.
-  const pieces: Array<Buffer> = [];
-  let size = 0;
-  try {
-    for await (const chunk of decoder.stdout as AsyncIterable<Buffer>) {
-      pieces.push(chunk);
-      size += chunk.length;
-      while (size >= frameSize) {
-        const joined = Buffer.concat(pieces, size);
-        yield joined.subarray(0, frameSize);
-        const rest = joined.subarray(frameSize);
-        pieces.length = 0;
-        if (rest.length > 0) pieces.push(rest);
-        size = rest.length;
-      }
-    }
-  } finally {
-    // The video may be longer than needed: stop the decoder quietly.
-    decoder.stdout.destroy();
-    decoder.kill();
-  }
-}
 
 /**
  * ffmpeg reading raw RGBA frames from stdin, mixing in the app's sound

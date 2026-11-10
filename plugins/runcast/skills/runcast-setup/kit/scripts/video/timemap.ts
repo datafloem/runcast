@@ -11,7 +11,7 @@
 //
 // Pure functions, no kit imports: plain Node runs this file.
 
-export type SpanKind = "move" | "aim" | "hold" | "type" | "cut" | "dialog";
+export type SpanKind = "move" | "aim" | "hold" | "type" | "cut" | "dialog" | "scene";
 
 /** A logged stretch of the recording (core/capture-log.ts). */
 export interface Span {
@@ -22,6 +22,13 @@ export interface Span {
   outMs: number;
   /** "cut" only: screen-file time left out (an off-camera step). */
   skipMs?: number;
+  /** "scene" only (added when rendering): the scene's name. */
+  scene?: string;
+  /** "scene" only: where the scene starts on its own capture's clock. */
+  fileFrom?: number;
+  /** "scene" only: how the video gets to the scene and leaves it. */
+  in?: SourceTransition;
+  out?: SourceTransition;
 }
 
 /**
@@ -32,14 +39,17 @@ export interface Span {
  */
 export type SegmentKind = SpanKind | "wait" | "freeze";
 
-/** Which captured tab a stretch of video shows (tab capture: the app or the stage). */
-export type Source = "app" | "stage";
+/**
+ * What a stretch of video shows: the app's tab, the stage tab, or a scene
+ * added when rendering (`scene:<name>`, from its own capture).
+ */
+export type Source = "app" | "stage" | `scene:${string}`;
 export type SourceTransition = "fade" | "slide" | "cube" | "cut" | "lift";
 
 /** From `t` (capture clock) on the video shows `source`, reached by `transition` (core/capture-log.ts). */
 export interface SourceSwitch {
   t: number;
-  source: Source;
+  source: "app" | "stage";
   transition: SourceTransition;
 }
 
@@ -120,6 +130,26 @@ export function naturalMap(
   for (const span of all) {
     const from = Math.max(span.from, cursor);
     if (from > cursor) push("wait", cursor, from, from - cursor);
+    if (span.kind === "scene") {
+      // Virtual time: the scene plays its own capture; the app's file does
+      // not move meanwhile (the capture clock jumped by the scene's length).
+      const to = Math.max(span.to, from);
+      const sceneFrom = span.fileFrom ?? 0;
+      segments.push({
+        kind: "scene",
+        recFrom: from,
+        recTo: to,
+        fileFrom: sceneFrom,
+        fileTo: sceneFrom + (to - from),
+        outFrom: 0,
+        outTo: to - from,
+        source: `scene:${span.scene ?? "scene"}`,
+        via: span.in ?? "fade",
+      });
+      skipped -= to - from;
+      cursor = to;
+      continue;
+    }
     if (span.kind === "cut") {
       push("cut", from, from, 0, span.skipMs ?? 0);
       cursor = from;
@@ -143,7 +173,51 @@ export function naturalMap(
     cursor = to;
   }
   if (durationMs > cursor) push("wait", cursor, durationMs, durationMs - cursor);
-  return mapFromSegments(withSources(segments, switches));
+  const sourced = withSources(segments, switches);
+  // The stretch right after a scene comes back by the scene's out transition.
+  for (let i = 1; i < sourced.length; i++) {
+    const before = sourced[i - 1]!;
+    const segment = sourced[i]!;
+    if (before.kind === "scene" && segment.kind !== "scene" && segment.via === undefined) {
+      const span = all.find((s) => s.kind === "scene" && s.to === before.recTo);
+      sourced[i] = { ...segment, via: span?.out ?? "fade" };
+    }
+  }
+  return mapFromSegments(dropShortAppBetweenScenes(sourced));
+}
+
+/** App time shorter than this next to scenes (before one at the start, or between two) is left out. */
+const SHORT_APP_MS = 600;
+
+/**
+ * A scene that opens the video, or follows another scene, is reached with
+ * a few hundred ms of app time beside it (the step's own start): that time
+ * is left out, so the video starts on the scene and goes from one scene
+ * straight to the next.
+ */
+function dropShortAppBetweenScenes(segments: Array<Segment>): Array<Segment> {
+  const isScene = (s: Segment) => s.kind === "scene";
+  const result = segments.map((s) => ({ ...s }));
+  let i = 0;
+  while (i < result.length) {
+    if (isScene(result[i]!)) {
+      i++;
+      continue;
+    }
+    let j = i;
+    let length = 0;
+    while (j < result.length && !isScene(result[j]!)) {
+      length += outLength(result[j]!);
+      j++;
+    }
+    const sceneAfter = j < result.length;
+    const sceneBefore = i > 0 && isScene(result[i - 1]!);
+    if (sceneAfter && (sceneBefore || i === 0) && length < SHORT_APP_MS) {
+      for (let k = i; k < j; k++) result[k]!.outTo = result[k]!.outFrom;
+    }
+    i = j;
+  }
+  return result;
 }
 
 /**
@@ -160,6 +234,8 @@ function withSources(segments: Array<Segment>, switches: Array<SourceSwitch>): A
     return found;
   };
   return split.map((segment) => {
+    // A scene keeps its own source.
+    if (segment.kind === "scene") return segment;
     const at =
       segment.recTo > segment.recFrom
         ? switchAt((segment.recFrom + segment.recTo) / 2, false)
@@ -190,10 +266,12 @@ export function mapFromSegments(input: Array<Segment>): TimeMap {
     return segments[0];
   };
 
+  // Where the video changes source; stretches with no video time are passed over.
   const switchesOut: TimeMap["switchesOut"] = [];
-  for (let i = 1; i < segments.length; i++) {
-    const before = segments[i - 1]!;
-    const after = segments[i]!;
+  const shown = segments.filter((s) => s.outTo > s.outFrom);
+  for (let i = 1; i < shown.length; i++) {
+    const before = shown[i - 1]!;
+    const after = shown[i]!;
     if (after.source !== before.source) {
       switchesOut.push({
         at: after.outFrom,

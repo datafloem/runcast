@@ -30,12 +30,19 @@ function settingsWith(env: Record<string, string>): {
   return JSON.parse(out);
 }
 
-test("video mode records a headless tab at 1440x810, scale 2, by default", () => {
+test("video mode records a headless tab at 1920x1080, scale 1.5, by default", () => {
   const s = settingsWith({ REC_MODE: "video" });
   assert.equal(s.capture, "tab");
-  assert.equal(s.scale, 2);
+  assert.equal(s.scale, 1.5);
   assert.equal(s.headless, true);
-  assert.deepEqual(s.pageSize, { width: 1440, height: 810 });
+  assert.deepEqual(s.pageSize, { width: 1920, height: 1080 });
+  // Whole device pixels: a 2880x1620 video.
+  assert.deepEqual([s.pageSize.width * s.scale, s.pageSize.height * s.scale], [2880, 1620]);
+});
+
+test("tests and rehearsals use the same default page", () => {
+  assert.deepEqual(settingsWith({}).pageSize, { width: 1920, height: 1080 });
+  assert.deepEqual(settingsWith({ REC_MODE: "rehearsal" }).pageSize, { width: 1920, height: 1080 });
 });
 
 test("REC_CAPTURE=screen keeps a visible window", () => {

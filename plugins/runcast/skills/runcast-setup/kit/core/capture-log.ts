@@ -21,7 +21,7 @@ export type PointerKind = "move" | "down" | "up";
  * target before clicking, a viewer pause, typing, an off-camera cut, or a
  * browser dialog the renderer draws over a held frame.
  */
-export type SpanKind = "move" | "aim" | "hold" | "type" | "cut" | "dialog";
+export type SpanKind = "move" | "aim" | "hold" | "type" | "cut" | "dialog" | "scene";
 export interface CaptureSpan {
   from: number;
   to: number;
@@ -29,6 +29,29 @@ export interface CaptureSpan {
   outMs: number;
   /** "cut" only: recording time left out. */
   skipMs?: number;
+  /** "scene" only: the scene the renderer adds here, and its transitions. */
+  scene?: string;
+  in?: SourceSwitch["transition"];
+  out?: SourceSwitch["transition"];
+}
+
+/**
+ * A scene the renderer adds (steps.scene, render-time): logged at `t` with
+ * the contract it had when recorded; the renderer uses the scene's current
+ * capture and length.
+ */
+export interface ScenePlaceholder {
+  t: number;
+  name: string;
+  duration: number;
+  beats: Array<{ id: string; at: number }>;
+  in: SourceSwitch["transition"];
+  out: SourceSwitch["transition"];
+  /** The scene folder's content when recorded (core/scene-contract.ts sceneHash). */
+  hash: string;
+  /** The scene step's id and title: its beats are steps "<id>.<beat id>". */
+  step?: string;
+  title?: string;
 }
 export type FocusKind =
   | "click"
@@ -49,6 +72,15 @@ export interface CaptureDialog {
   text?: string;
   /** The page's host, which the browser names in the dialog. */
   origin?: string;
+}
+
+/** A file the page downloaded; the renderer draws the browser's download bubble. */
+export interface CaptureDownload {
+  /** When the file finished. */
+  t: number;
+  name: string;
+  /** Bytes. */
+  size: number;
 }
 
 /** How long the video holds the frame while it shows a dialog being answered. */
@@ -118,6 +150,10 @@ export interface CaptureFile {
   audio?: { file: string; startMs: number };
   /** The stage tab's recording (tab capture). */
   stage?: { file: string; startMs: number };
+  /** Scenes the renderer adds; each also has a "scene" span. */
+  scenes?: Array<ScenePlaceholder>;
+  /** Files downloaded on camera (rec.download). */
+  downloads?: Array<CaptureDownload>;
 }
 
 /** What a recording does, whichever way it captures the page. */
@@ -144,6 +180,8 @@ export interface Capture {
   span(kind: SpanKind, from: number, to: number, outMs: number): void;
   /** How much longer the video is than the recording so far (CaptureLog.stretchMs). */
   readonly stretchMs: number;
+  /** A scene the renderer adds here (see CaptureLog.scene). */
+  scene(placeholder: Omit<ScenePlaceholder, "t">): void;
   /** A browser dialog the kit answered (see CaptureLog.dialog). */
   dialog(
     type: string,
@@ -153,6 +191,8 @@ export interface Capture {
     origin?: string,
     at?: number,
   ): void;
+  /** A file the page downloaded (see CaptureLog.download). */
+  download(name: string, size: number): void;
 }
 
 /**
@@ -252,6 +292,36 @@ export class CaptureLog {
     });
     this.data.spans.push({ from: t, to: t, kind: "dialog", outMs: DIALOG_FREEZE_MS });
     this.stretchMs += DIALOG_FREEZE_MS;
+  }
+
+  /**
+   * A file the page downloaded, now: the renderer shows the browser's
+   * download bubble over the video, which does not stop. Dropped off camera.
+   */
+  download(name: string, size: number): void {
+    if (this.pausedAt) return;
+    (this.data.downloads ??= []).push({ t: this.now(), name, size });
+  }
+
+  /**
+   * A scene the renderer adds at this point: a "scene" span of its length.
+   * It adds virtual time: the clock jumps by the scene's length while the
+   * recording (the app's file) does not, the inverse of an off-camera cut.
+   */
+  scene(placeholder: Omit<ScenePlaceholder, "t">): void {
+    if (this.pausedAt) return;
+    const t = this.now();
+    this.data.spans.push({
+      from: t,
+      to: t + placeholder.duration,
+      kind: "scene",
+      outMs: placeholder.duration,
+      scene: placeholder.name,
+      in: placeholder.in,
+      out: placeholder.out,
+    });
+    (this.data.scenes ??= []).push({ t, ...placeholder });
+    this.pausedMs -= placeholder.duration;
   }
 
   /** The cursor carried a file from `from` to `to` (drag and drop): the renderer draws its icon. */

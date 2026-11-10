@@ -8,6 +8,7 @@ import {
   type NarrationScript,
 } from "./narration.ts";
 import { sleep } from "./cursor.ts";
+import type { PermissionsOption } from "./permissions.ts";
 import { test, type Recorder, type Ui } from "./recorder.ts";
 
 /** What a step gets: the page, the recorder, and state shared along the scenario. */
@@ -161,11 +162,15 @@ export interface ScenarioDefinition {
    */
   dialogs?: "accept" | "dismiss";
   /**
-   * Browser permissions granted before the first page load, so no prompt
-   * shows, e.g. `["geolocation", "notifications", "clipboard-read"]`
-   * (Playwright's names).
+   * Browser permissions, decided before the first page load so a test never
+   * waits on a prompt: a list of allowed ones, e.g. `["geolocation",
+   * "notifications"]` (Playwright's names), or each with its answer,
+   * `{ geolocation: "allow", notifications: "block" }`. A blocked request
+   * fails as in Chrome. When the page asks (location, notifications,
+   * camera, microphone, clipboard-read), the video holds the frame and draws
+   * Chrome's prompt being answered (1.5 s), once per permission.
    */
-  permissions?: Array<string>;
+  permissions?: PermissionsOption;
   /** Opening card before the recording (video mode). Off when not given. */
   intro?: VideoCard;
   /** Closing card after the recording (video mode). Off when not given. */
@@ -241,9 +246,7 @@ export function scenario(
     rec.showTransition = definition.showTransition ?? "pan";
     rec.appAudio = resolveAppAudio(definition.appAudio);
     rec.dialogs = definition.dialogs ?? "accept";
-    if (definition.permissions?.length) {
-      await page.context().grantPermissions(definition.permissions);
-    }
+    if (definition.permissions) await rec.usePermissions(definition.permissions);
     // Before the first page load, so the app starts in the layout it is recorded in.
     await rec.useFormat(resolveFormat(definition.format));
     if (definition.blur?.length) await blurOnScreen(page, definition.blur);
@@ -276,8 +279,9 @@ export function scenario(
         await step.run(ctx);
         if (step.show) await showStep(ctx, step.show);
       });
-      // Preparation steps (before REC_FROM) are not recorded: no settle.
-      if (isVideoMode && rec.isLive) await sleep(STEP_SETTLE_MS);
+      // Preparation steps (before REC_FROM) are not recorded: no settle; a
+      // scene shows no app page, so the next step (another scene) follows at once.
+      if (isVideoMode && rec.isLive && !step.scene) await sleep(STEP_SETTLE_MS);
 
       if (step.transition) {
         // A turn faster than this cannot be followed (rec.pause: video and rehearsal only).

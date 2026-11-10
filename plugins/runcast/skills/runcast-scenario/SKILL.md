@@ -112,11 +112,16 @@ shows each step separately in the Playwright report.
 - **Scenes (optional):** a row marked "Scene" becomes
   `steps.scene({ id: "order-flow", name: "order-flow", title: "How an order flows", transition: "fade" })`
   (`scene` comes from the kit: the template's `steps/index.ts` re-exports it
-  next to `hold`; add `scene` there in older projects). It plays
-  `scenes/<name>/index.html` on the stage tab, made and approved with the
-  `runcast-scene` skill; each beat becomes a step `<id>.<beat id>`, which a
-  narration segment can target, and the scene is never shortened. Test mode
-  checks that the scene loads and keeps its contract.
+  next to `hold`; add `scene` there in older projects). It shows
+  `scenes/<name>/index.html`, made and approved with the `runcast-scene`
+  skill; each beat becomes a step `<id>.<beat id>`, which a narration
+  segment can target, and the scene is never shortened. `transition` is the
+  way in, `back` the way out (default: the same). The scene is added when
+  rendering: the take only checks it and costs none of its length, so a
+  changed or swapped scene needs only `render`, not a new take. A scene
+  can open the video or follow another scene directly. `live: true` plays
+  it on the stage tab during the take instead (only when it must react to
+  the take). Test mode checks that the scene loads and keeps its contract.
 - **App sound (optional):** if the scenario text says "App sound: yes", pass
   `appAudio: { volume, duckTo }` (defaults 1 and 0.3). The app's own sound
   (always captured with the tab, never on the speakers) is mixed under the
@@ -217,6 +222,12 @@ leaves the narration out.
 a video that must show how long something takes); a short voice then leaves
 silence. `REC_COMPRESS_WAITS=0/1` overrides it when rendering.
 
+A step with many actions can stay much longer than its voice even with
+waits compressed (moves, rests and pauses are never shortened, and each
+wait keeps 0.6 s): the render warns "Long silence" and `narration plan`
+says "long silence" above 5 s. Lengthen that segment's text to its word
+budget, or trim or split the step.
+
 When writing scenarios or steps:
 
 - If you rename a step id, rename the `step` in the narration file too, or the
@@ -230,7 +241,9 @@ When writing scenarios or steps:
 
 Look before you render, and render only what changed:
 
-1. `node tests/recording/.kit/cli.ts render <name> --check`: no video, in
+1. `video <name>` ends with this check (`--render` would render the MP4
+   right away instead); for an older take run
+   `node tests/recording/.kit/cli.ts render <name> --check`: no video, in
    seconds. Read `.captures/<name>/check/sheet.png` (each step's last frame,
    numbered, as the video shows it) and the printed fit table. Open a single
    `check/NN-<id>.png` only for a step that looks wrong.
@@ -282,8 +295,19 @@ element, a wrong record, a stray window).
    (unused, it lapses with a warning). The video holds the frame 1.5 s and
    draws the dialog being answered. Prefer these over your own
    `page.on("dialog")`; if a step does listen itself, it answers and the
-   video draws its answer. Permission prompts never show:
-   `scenario({ permissions: ["geolocation"] })` grants them up front.
+   video draws its answer.
+   **Permissions** are decided up front, never clicked:
+   `scenario({ permissions: ["geolocation"] })` allows them, or
+   `{ geolocation: "allow", notifications: "block" }` picks each answer (a
+   blocked request fails as in Chrome). When the page asks (location,
+   notifications, camera, microphone, clipboard-read), the video holds the
+   frame 1.5 s and draws Chrome's prompt being answered, once per permission.
+   **Downloads:** `const file = await rec.download(button)` clicks and
+   returns the saved file's path (with the take in `.captures/<name>/downloads/`,
+   in tests under `.results/`), so the test can check what is in it; the video
+   draws Chrome's download bubble. `{ open: true }` (or `{ open: { ms } }`)
+   then shows the file on the stage (CSV table, text, JSON, picture, PDF;
+   other files as an icon) for 3 s, with `lift` both ways.
 2. **The on-screen message is the step's `note`.** `scenario()` marks each step
    and writes time and message to `steps.json` (video:
    `.captures/<name>/`, rehearsal: `.results/<test>/`). Never draw
@@ -299,23 +323,35 @@ element, a wrong record, a stray window).
    `toHaveURL()`. Mode-dependent code (`if (isTestMode)`) belongs in the kit,
    not in steps or scenarios.
    Every `rec` action first checks its target can be shown: on screen, not
-   covered, not animating, not moving (waiting up to 5 s). A step that fails
-   with "cannot be shown: it is covered by …" or "still animating" needs a
-   wait in the helper (an `expect` that the toast or dialog is gone, or that
+   covered, not animating, not moving (waiting up to 5 s). A target under a
+   sticky header or footer of its scroll box is scrolled to the middle of
+   it first; a jitter of up to a pixel does not count as moving. A step that
+   fails with "cannot be shown: it is covered by …", "still animating" or
+   "still moving: it moved N px …" needs a wait in the helper (an `expect` that the toast or dialog is gone, or that
    the screen finished opening), never a `rec.pause`. Tests run at the video's
-   page size (`REC_PAGE_SIZE`, 1440×810; with screen capture the newest
+   page size (`REC_PAGE_SIZE`, 1920×1080; with screen capture the newest
    video's), so fix such failures before recording.
 5. **Pace for the viewer:** short stops on important screens with
    `rec.pause(ms)` and `rec.hover(...)` (1–3 s). Long waits make the video
    drag (the renderer shortens them only to fit a voice-over); hasty clicks
-   cannot be followed.
+   cannot be followed. Video mode records fast: a `rec.pause` is recorded
+   for 0.3 s and the renderer holds its last frame for the rest. While
+   something moves on the page (an animation the viewer should watch, a
+   video, a canvas, an HTML scene inside the app) use `rec.watch(ms)` (or
+   `rec.pause(ms, { live: true })`): it is recorded in real time. The kit
+   also notices a page that still changes and records that pause live, with
+   a warning naming the step; turn each such warning into `rec.watch`.
+   Animated explainers belong in a kit scene (`steps.scene`).
 6. **Changing values are settings.** Names, sources, conditions come from
    `.env.local`: `const env = (name, fallback = "") => process.env[name] ?? fallback`.
    Add every new setting to `.env.example` with an example and a comment.
    Required settings go in `require: [...]` (or `requireEnv(...)`), never
    `test.skip`: a skip hides the problem.
 7. **Passwords and tokens never reach code, logs or `steps.json`.** Use
-   `rec.typeSecret` for them.
+   `rec.typeSecret` for them, with the value from `.env.local`: it is set
+   without Playwright's keyboard, blurred on screen and replaced by `•••••`
+   in failure reports (`error-context.md`, traces). Never `fill` a secret in
+   a helper: Playwright records what `fill` types.
 8. **Scenarios usually write to a real backend.** In the file's top comment,
    say what it creates and what must be deleted before running it again.
 

@@ -101,7 +101,8 @@ What changes for existing projects when they update to the version with
 tab capture:
 
 - **Video records a headless tab** (`REC_CAPTURE=tab`): the page is
-  `REC_PAGE_SIZE` (1440×810) instead of the screen's size, in tests too.
+  `REC_PAGE_SIZE` (1920×1080, drawn at `REC_SCALE` 1.5) instead of the
+  screen's size, in tests too.
   Set `REC_CAPTURE=screen` to keep recording the screen.
 - **Browser dialogs are accepted by default** in every mode (Playwright used
   to dismiss them when nothing listened). A test that relied on a dismissed
@@ -109,7 +110,17 @@ tab capture:
   `rec.onDialog({ accept: false })` before the action; a step that listens
   for dialogs itself (`page.on("dialog")`) still answers them itself.
 - **`steps.scene`**: add `scene` to the `export { hold } from "../kit.ts"`
-  line of `steps/index.ts` (new projects have it).
+  line of `steps/index.ts` (new projects have it). Scenes are now added when
+  rendering, not played during the take (`live: true` keeps playing them);
+  a take recorded before this renders as it was.
+- **Coming from 0.1.x:** since 0.2.0 every step factory takes `show` (the
+  camera's focus). A project step that has its own `show` option no longer
+  type-checks; rename it (e.g. `options: StepOptions & { browse?: string[] }`)
+  or leave the kit's out (`Omit<StepOptions, "show"> & { show?: string[] }`).
+- **Page size:** the default page is now 1920×1080 at 1.5 (a 2880×1620
+  video); set `REC_PAGE_WIDTH` / `REC_SCALE` to match an old screen, e.g.
+  `REC_PAGE_WIDTH=1800` and `REC_SCALE=1.68` (`doctor` prints the values
+  from the newest screen recording).
 
 ## Project layout
 
@@ -154,7 +165,7 @@ The CLI takes the recording folder from `--dir`, else `REC_PROJECT`, else
 
 | Mode      | Command                                      | What                                                                                    |
 | --------- | -------------------------------------------- | --------------------------------------------------------------------------------------- |
-| Video     | `node tests/recording/.kit/cli.ts video`     | Records the app's tab in a headless Chrome, then renders `videos/<scenario>.mp4`. Any OS and CI |
+| Video     | `node tests/recording/.kit/cli.ts video`     | Records the app's tab in a headless Chrome, then checks the take (`render --check`); `--render` (or `REC_RENDER=full`) renders `videos/<scenario>.mp4` right away. Any OS and CI |
 | Rehearsal | `node tests/recording/.kit/cli.ts rehearsal` | The video's pace, headless and not recorded. Measures step lengths before the first video |
 | Test      | `node tests/recording/.kit/cli.ts test`      | Headless, Playwright's own clicks, no pauses. Any OS and CI; HTML report in `.report/`  |
 
@@ -166,9 +177,10 @@ Add a scenario name to run one: `node tests/recording/.kit/cli.ts test login`.
 ## Video
 
 1. A headless Chrome runs the scenario with the page at a fixed size,
-   `REC_PAGE_SIZE` (default 1440×810; format `"vertical"`: 540×960), drawn
-   at `REC_SCALE` (default 2, so 2880×1620 video pixels for the camera to zoom
-   into). A second tab, the kit's recorder (`core/recorder.html`, a local
+   `REC_PAGE_SIZE` (default 1920×1080; format `"vertical"`: 540×960), drawn
+   at `REC_SCALE` (default 1.5, so 2880×1620 video pixels for the camera to
+   zoom into; a vertical page gives 810×1440, `REC_SCALE=2` makes it
+   1080×1920). A second tab, the kit's recorder (`core/recorder.html`, a local
    page), records the app's tab with Chrome's own tab capture at up to 30 fps
    (`.captures/<scenario>/capture/screen.mp4`, or `.webm`); nothing opens on
    screen and the real cursor is never in it. Tests and rehearsals use the
@@ -181,7 +193,10 @@ Add a scenario name to run one: `node tests/recording/.kit/cli.ts test login`.
    moves run three times faster and typing at 40 ms per character, each
    logged with its natural length, which the renderer plays them at
    (`REC_RECORD_PACE=natural` records at the viewer's pace).
-2. The renderer produces the MP4:
+2. `video` ends with `render --check` (below): one picture per step and the
+   narration fit, in seconds, so a take that needs redoing costs no render.
+   It prints the render command; `video --render` (or `REC_RENDER=full`)
+   renders right away. The renderer produces the MP4:
    - **Camera:** calm. Actions on the same page without a long pause form a
      scene, framed once and held. Clustered actions get a gentle zoom (at most
      1.5×); spread-out or short scenes stay full view. `rec.show(locator)`, or
@@ -234,12 +249,25 @@ Add a scenario name to run one: `node tests/recording/.kit/cli.ts test login`.
      video and rehearsal; tests ignore it.
    - **Voice-over:** fitted to the steps here, not while recording (see
      Voice-over).
-   - **Scenes (optional):** `steps.scene({ name, transition })` plays an
+   - **Scenes (optional):** `steps.scene({ name, transition, back })` shows an
      animation the AI designed (`scenes/<name>/index.html`, the
-     `runcast-scene` skill) on the stage tab, like the app: same frame and
-     captions, joined by `fade` (default), `slide`, `cube`, `cut` or `lift`,
-     no cursor over it; in `vertical-crop` the stage is shown whole, fitted
-     across the middle, not cropped. The page keeps a small contract
+     `runcast-scene` skill) like the app: same frame and captions, reached
+     by `transition` and left by `back` (each `fade` (default), `slide`,
+     `cube`, `cut` or `lift`; `back` defaults to `transition`), no cursor
+     over it; in `vertical-crop` it is shown whole, fitted across the
+     middle, not cropped. **Scenes are added when rendering:** the take
+     only checks the scene's contract in a page the video never shows and
+     leaves a placeholder of its length, taking no recording time.
+     `render` records the scene on its own into `.captures/scene-<name>/`
+     when that recording is missing, the scene's files changed (a hash of
+     its folder) or the page size differs, and uses the scene's current
+     length and beats; so after changing or swapping a scene you only
+     render again. A scene that opens the video, or follows another scene,
+     starts straight on it (less than 0.6 s of app between them is
+     dropped). Rehearsal counts the scene's length without playing it.
+     `scene({ name, live: true })` plays it on the stage tab during the
+     take instead (the earlier behaviour); takes recorded that way render
+     as before. The page keeps a small contract
      (`window.runcastScene = { duration, beats: [{ id, at }], start() }`,
      no autoplay with `?record`, deterministic, local files, brand from
      `--runcast-brand` / `--runcast-logo`). Each beat is a step
@@ -403,7 +431,11 @@ Steps and helpers move through `rec`, never `page.click`:
 - `rec.click`, `rec.hover`, `rec.doubleClick`, `rec.rightClick`,
   `rec.drag(from, to)`: the cursor travels there; the camera sees it.
 - `spot(locator, x, y)`: a point inside an element (0–1), e.g. on a canvas.
-- `rec.type`: clicks the field and types; `rec.typeSecret` for passwords.
+- `rec.type`: clicks the field and types; `rec.typeSecret` for passwords,
+  tokens and other secrets: set in the page (not through Playwright's
+  keyboard, whose actions traces record), blurred on screen, and kept out
+  of failure reports (`error-context.md`, traces). Secrets come from
+  `.env.local`, never from the scenario's text.
 - `rec.select(locator, label)`, `rec.pickDate(locator, "YYYY-MM-DD")`: a native
   select or date input (`datetime-local` takes `"YYYY-MM-DDTHH:MM"`; time,
   month and week inputs are refused with a message). The browser draws their lists outside the page, so
@@ -436,9 +468,36 @@ Steps and helpers move through `rec`, never `page.click`:
   them itself, and the video draws its answer.
   The video holds the frame 1.5 s and draws the dialog (message, buttons)
   with the cursor clicking the answer; dialogs off camera add nothing.
-  `scenario({ permissions: ["geolocation", ...] })` grants permissions
-  before the first page load, so their prompts never show.
-- `rec.pause(ms)`: time for the viewer to read (skipped in tests).
+- `scenario({ permissions })`: decided before the first page load, so a test
+  never waits on a prompt: `["geolocation", ...]` allows them (Playwright's
+  names), `{ geolocation: "allow", notifications: "block" }` picks each
+  answer; a blocked request fails as Chrome fails it (location error 1,
+  `"denied"`, `NotAllowedError`, `permissions.query` says `denied`). The
+  kit wraps the APIs that make Chrome ask (geolocation, Notification,
+  getUserMedia, clipboard reads; `core/permissions.ts`): the first request
+  per permission and origin holds the frame 1.5 s on camera and the video
+  draws Chrome's prompt ("<host> wants to", "Know your location", Allow
+  while visiting the site / Allow this time / Never allow, or Block /
+  Allow) with the cursor pressing the answer. Permissions the scenario does
+  not name are left to the browser. Location needs a secure page
+  (https or localhost), as in Chrome.
+- `rec.download(target, { open, timeoutMs })`: clicks `target`, waits for
+  the download (15 s) and returns the saved file's path, so the test can
+  check what is in it: `.captures/<scenario>/downloads/` with the take, else
+  the test's output folder (`.results/`, emptied by Playwright each run).
+  On camera the video shows Chrome's download bubble at the top right (file
+  icon, name, size, "Done", a tick) for about 3 s, while it goes on.
+  `open: true` (or `{ ms }`, default 3000) then shows the file on the stage
+  with `lift` both ways (`core/stage/file.html`): CSV/TSV as a table, text
+  and JSON (pretty-printed) as text, images, PDF in Chrome's viewer, other
+  files as their icon, name and size. Screen capture has no stage and skips
+  `open` with a warning; test mode ignores it.
+- `rec.pause(ms)`: time for the viewer to read (skipped in tests). Video
+  mode records it short and holds the last frame; if the page still changes
+  then (an animation, a video, a canvas) the pause is recorded in real time
+  and a warning names the step.
+- `rec.watch(ms)` (or `rec.pause(ms, { live: true })`): a pause while
+  something moves on the page, always recorded in real time.
 - `rec.show(locator, { ms, transition })`: points the camera at an element
   without touching it, until the next action (checks it is visible in tests).
 
@@ -448,7 +507,7 @@ another element (a toast, a dialog, a sticky header), not animating in and
 not moving. It waits up to 5 s for that, then fails the step naming the
 problem ("covered by div.toast"), so a test run catches what would spoil the
 video. Tests and rehearsals run at the video's page size (`REC_PAGE_SIZE`,
-default 1440×810; with screen capture, the newest landscape recording's,
+default 1920×1080; with screen capture, the newest landscape recording's,
 printed at the start), so the app lays out as it will on camera.
 
 The full rules are in the `runcast-scenario` skill (`skills/runcast-scenario/SKILL.md` in the runtime).
@@ -470,9 +529,9 @@ The full rules are in the `runcast-scenario` skill (`skills/runcast-scenario/SKI
 | `REC_END_HOLD_MS`                           | `2000`             | How long the last frame stays (video, rehearsal)               |
 | `REC_AIM_MS`                                | `400`              | Cursor rest on a target before clicking (video, rehearsal)     |
 | `REC_CAPTURE`                               | `tab`              | Video: `tab` records the app's tab in a headless Chrome; `screen` records a visible window with ffmpeg (for real OS dialogs) |
-| `REC_PAGE_SIZE`                             | `1440x810`         | Landscape page size in CSS pixels, in every mode (vertical: 540x960). Screen capture: tests take the newest landscape recording's |
+| `REC_PAGE_SIZE`                             | `1920x1080`        | Landscape page size in CSS pixels, in every mode (vertical: 540x960). Screen capture: tests take the newest landscape recording's |
 | `REC_PAGE_WIDTH`                            | —                  | Instead of `REC_PAGE_SIZE`: that width at 16:9                  |
-| `REC_SCALE`                                 | `2`                | Tab capture: video pixels per CSS pixel (2: 2880x1620 for 1440x810) |
+| `REC_SCALE`                                 | `1.5`              | Tab capture: video pixels per CSS pixel, 1 to 3 (1.5: 2880x1620 for 1920x1080; 2 for sharp vertical videos) |
 | `REC_VIDEO_FPS`, `REC_SCREEN`               | `30`, auto         | Output frame rate; screen capture: ffmpeg's screen index (macOS; Windows `ddagrab`: `0` = main screen) |
 | `REC_WIN_GRABBER`                           | auto               | Screen capture on Windows: `ddagrab` or `gdigrab`; auto tries `ddagrab` first |
 | `REC_CAPTURE_OFFSET`                        | `0,0`              | Screen capture: moves the recorded area by `x,y` screen pixels, when a window frame shifts the page |

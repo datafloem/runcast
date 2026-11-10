@@ -1,11 +1,12 @@
 import {
   test as base,
   type Dialog,
+  type Download,
   type Locator,
   type Page,
   type TestInfo,
 } from "@playwright/test";
-import { readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import path from "node:path";
 import { sleep, type Point } from "./cursor.ts";
@@ -29,9 +30,23 @@ import {
   showOptions,
 } from "./native-ui.ts";
 import { screenProblem } from "./on-screen.ts";
+import { showFile } from "./file-viewer.ts";
+import {
+  PERMISSION_BINDING,
+  permissionDecisions,
+  wrapPermissions,
+  type PermissionDecision,
+  type PermissionsOption,
+} from "./permissions.ts";
 import { captureRootFor } from "./project.ts";
 import type { ShowTransition, VideoCard } from "./scenario.ts";
-import type { Box, Capture, FocusKind, SourceSwitch } from "./capture-log.ts";
+import type {
+  Box,
+  Capture,
+  FocusKind,
+  ScenePlaceholder,
+  SourceSwitch,
+} from "./capture-log.ts";
 import { blockNetwork, sizeWindow, TabCapture } from "./tab-capture.ts";
 import { fitWindow, VideoCapture } from "./video-capture.ts";
 import { VirtualMouse } from "./virtual-mouse.ts";
@@ -42,6 +57,15 @@ const FAST_HOLD_HEAD_MS = 300;
 const FAST_AIM_HEAD_MS = 150;
 /** ...and per typed character (one frame at 30 fps, so typing stretches cleanly). */
 const FAST_TYPE_DELAY_MS = 40;
+
+/** Recording fast, the gap between the two screenshots that tell whether the page still changes. */
+const CHANGE_PROBE_MS = 150;
+
+/** How long rec.download waits for the download to start. */
+const DOWNLOAD_WAIT_MS = 15_000;
+
+/** How long rec.download({ open: true }) shows the file on the stage. */
+const OPEN_FILE_MS = 3_000;
 
 /** How long rec waits for a target to be shown and usable before failing the step. */
 const ON_SCREEN_WAIT_MS = 5_000;
@@ -149,6 +173,9 @@ export class Recorder {
     this.nextDialog = answer;
   }
 
+  /** Values typed with typeSecret: kept out of failure reports. */
+  private readonly secrets = new Set<string>();
+
   /** Nesting of rec actions (an action may use others, e.g. select → click). */
   private actionDepth = 0;
 
@@ -180,6 +207,47 @@ export class Recorder {
    */
   watchDialogs(): void {
     this.page.on("dialog", (dialog) => void this.answerDialog(dialog));
+  }
+
+  /** The scenario's answer per permission (usePermissions). */
+  private permissionAnswers: Record<string, PermissionDecision> = {};
+  /** Permissions the page already asked for, per origin: Chrome asks once. */
+  private permissionsAsked = new Set<string>();
+
+  /**
+   * Decides the page's permissions before its first load (the scenario's
+   * `permissions`): allowed ones are granted, blocked ones fail as Chrome
+   * fails them, so nothing ever waits on a prompt. The first request per
+   * permission and origin is logged on camera as a "permission" dialog,
+   * which the video draws as Chrome's prompt being answered.
+   */
+  async usePermissions(option: PermissionsOption): Promise<void> {
+    const answers = permissionDecisions(option);
+    if (Object.keys(answers).length === 0) return;
+    this.permissionAnswers = answers;
+    const allowed = Object.keys(answers).filter((name) => answers[name] === "allow");
+    if (allowed.length) await this.page.context().grantPermissions(allowed);
+    await this.page.exposeBinding(PERMISSION_BINDING, (source, names: Array<string>) => {
+      let origin = "";
+      try {
+        origin = new URL(source.frame.url()).host;
+      } catch {
+        origin = "";
+      }
+      this.permissionAsked(names, origin);
+    });
+    await this.page.addInitScript(wrapPermissions, answers);
+  }
+
+  private permissionAsked(names: Array<string>, origin: string): void {
+    const fresh = names.filter(
+      (name) => this.permissionAnswers[name] && !this.permissionsAsked.has(`${origin} ${name}`),
+    );
+    if (fresh.length === 0) return;
+    for (const name of fresh) this.permissionsAsked.add(`${origin} ${name}`);
+    if (!this.capture || !this.paced || this.suspended) return;
+    const allowed = fresh.every((name) => this.permissionAnswers[name] === "allow");
+    this.capture.dialog("permission", fresh.join(","), allowed, undefined, origin || undefined);
   }
 
   private async answerDialog(dialog: Dialog): Promise<void> {
@@ -325,7 +393,13 @@ export class Recorder {
     const stage = await this.stagePage();
     this.stageMouse ??= new VirtualMouse(stage, this.capture, app.at, this.fastRecording);
     this.stageMouse.place(app.at);
-    await options.prepare?.(stage);
+    if (options.prepare) {
+      await options.prepare(stage);
+      // In the stage's recording before the video turns to it.
+      if (this.capture instanceof TabCapture && !this.suspended) {
+        await this.capture.stageFrameAfter(Date.now());
+      }
+    }
     this.switchTo("stage", transition, options.cursor ?? true);
     try {
       return await fn(stage, this.stageMouse);
@@ -362,6 +436,39 @@ export class Recorder {
         capture.span("hold", from, to, to - from);
       }
     }
+  }
+
+  /** The recording folder of this test's scenario. */
+  get projectDir(): string {
+    return projectDirOf(this.testInfo.file);
+  }
+
+  /**
+   * A scene the renderer adds here (steps.scene, render-time): logged in the
+   * capture (video mode), its beats marked as steps `<id>.<beat id>`, and its
+   * length added to the clock without waiting (rehearsal counts it too).
+   */
+  scenePlaceholder(
+    step: { id: string; title: string },
+    placeholder: Omit<ScenePlaceholder, "t">,
+  ): void {
+    if (!this.onCamera) return;
+    const at = this.elapsedMs();
+    this.capture?.scene({ ...placeholder, step: step.id, title: step.title });
+    for (const beat of placeholder.beats) {
+      this.markAt(at + beat.at, `${step.title} › ${beat.id}`, `${step.id}.${beat.id}`);
+    }
+    this.offCameraMs -= placeholder.duration;
+  }
+
+  /** A step mark at `ms` on the recording's clock (see step). */
+  private markAt(ms: number, title: string, id: string): void {
+    const seconds = ms / 1000;
+    const at = `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(
+      Math.floor(seconds % 60),
+    ).padStart(2, "0")}`;
+    this.steps.push({ id, at, seconds: Math.round(seconds * 10) / 10, startMs: Math.round(ms), title });
+    console.log(`[${at}] ${title}`);
   }
 
   /** On camera: recording runs at a person's pace (video, rehearsal), not off camera. */
@@ -724,6 +831,68 @@ export class Recorder {
     });
   }
 
+  /**
+   * Clicks `target` and saves the file the page downloads; returns its path,
+   * so the scenario can check what is in it. Saved with the take
+   * (.captures/<scenario>/downloads/) once the video records, otherwise in
+   * the test's output folder. On camera the video shows the browser's
+   * download bubble; `open` then shows the file on the stage tab (a table,
+   * text, picture or PDF; other files as their icon, name and size) for
+   * `open.ms` (default 3 s), reached and left with "lift".
+   */
+  download(
+    target: Target,
+    options: { open?: boolean | { ms?: number }; timeoutMs?: number } = {},
+  ): Promise<string> {
+    return this.act(async () => {
+      const timeout = options.timeoutMs ?? DOWNLOAD_WAIT_MS;
+      const starts = this.page.waitForEvent("download", { timeout });
+      starts.catch(() => {});
+      await this.click(target);
+      let download: Download;
+      try {
+        download = await starts;
+      } catch {
+        const name = "in" in target ? target.in.toString() : target.toString();
+        throw new Error(`rec.download: clicking ${name} started no download within ${timeout / 1000} s.`);
+      }
+      const name = path.basename(download.suggestedFilename()) || "download";
+      const dir = this.capture
+        ? path.join(this.captureRoot(), "downloads")
+        : this.testInfo.outputPath("downloads");
+      mkdirSync(dir, { recursive: true });
+      const file = path.join(dir, name);
+      await download.saveAs(file);
+      // Playwright's own copy, kept until the browser closes otherwise.
+      await download.delete().catch(() => {});
+      if (this.capture && this.paced && !this.suspended) {
+        this.capture.download(name, statSync(file).size);
+      }
+      if (options.open) {
+        const ms = typeof options.open === "object" ? (options.open.ms ?? OPEN_FILE_MS) : OPEN_FILE_MS;
+        await this.openDownload(file, ms);
+      }
+      return file;
+    });
+  }
+
+  /** On camera, shows a downloaded file on the stage tab for `ms`. */
+  private async openDownload(file: string, ms: number): Promise<void> {
+    if (!this.liveMouse()) return;
+    if (!this.hasStage) {
+      console.warn(
+        `rec.download: { open } shows the file on the stage tab, which screen capture does not have; ${path.basename(file)} is not shown.`,
+      );
+      return;
+    }
+    // A moment for the bubble before the video turns to the file.
+    await this.pause(800);
+    await this.onStage(() => this.pause(ms), "lift", "lift", {
+      cursor: false,
+      prepare: (stage) => showFile(stage, file),
+    });
+  }
+
   /** The files as absolute paths (relative ones from the recording folder), checked. */
   private filePaths(files: Array<string>): Array<string> {
     if (files.length === 0) throw new Error("No files given.");
@@ -838,9 +1007,69 @@ export class Recorder {
   /** Same as `type`, for secrets: kept out of Playwright's step log. */
   typeSecret(target: Locator, text: string): Promise<void> {
     return this.act(async () => {
+      if (text.length >= 3) this.secrets.add(text);
       await this.click(target);
-      await target.fill(text);
+      // Set in the page, not typed or filled: Playwright's action log (and
+      // its traces) record what fill and the keyboard send. The field is
+      // marked: blurred on screen, emptied before a failure is reported.
+      await target.evaluate((el, value) => {
+        const field = el as HTMLInputElement;
+        const own = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(field), "value");
+        (own?.set ?? Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!).call(
+          field,
+          value,
+        );
+        field.setAttribute("data-rec-secret", "");
+        if (!document.getElementById("rec-secret-style")) {
+          const style = document.createElement("style");
+          style.id = "rec-secret-style";
+          style.textContent = '[data-rec-secret]:not([type="password"]) { filter: blur(6px) !important; }';
+          document.head.append(style);
+        }
+        field.dispatchEvent(new Event("input", { bubbles: true }));
+        field.dispatchEvent(new Event("change", { bubbles: true }));
+      }, text);
     });
+  }
+
+  /**
+   * Empties password fields and fields filled with typeSecret, in every
+   * frame: run before a failed test's page snapshot, screenshot and error
+   * context are written, so no secret ends up in them.
+   */
+  async forgetSecrets(): Promise<void> {
+    for (const frame of this.page.frames()) {
+      // Nothing comes back: Playwright's trace records what evaluate returns.
+      await frame
+        .evaluate(() => {
+          for (const field of Array.from(
+            document.querySelectorAll('input[type="password"], [data-rec-secret]'),
+          ) as Array<HTMLInputElement>) {
+            field.value = "";
+          }
+        })
+        .catch(() => {});
+    }
+  }
+
+  /**
+   * Replaces every secret in a failed test's errors (messages, and the page
+   * snapshot a failed expect takes) before Playwright writes them to
+   * error-context.md, the report and the trace.
+   */
+  scrubErrors(errors: Array<{ message?: string; stack?: string; errorContext?: string }>): void {
+    if (this.secrets.size === 0) return;
+    const scrub = (text: string | undefined) => {
+      if (text === undefined) return text;
+      let out = text;
+      for (const secret of this.secrets) out = out.split(secret).join("•••••");
+      return out;
+    };
+    for (const error of errors) {
+      error.message = scrub(error.message);
+      error.stack = scrub(error.stack);
+      if (error.errorContext !== undefined) error.errorContext = scrub(error.errorContext);
+    }
   }
 
   /**
@@ -906,11 +1135,56 @@ export class Recorder {
    */
   markOverrun(_ms: number): void {}
 
-  /** A pause for the viewer. Skipped in test mode: never use it to wait for the app. */
-  pause(ms = 1000): Promise<void> {
+  /**
+   * A pause for the viewer. Skipped in test mode: never use it to wait for
+   * the app. Recording fast, only its head is recorded and the renderer holds
+   * the last frame; if the page is still changing then (an animation, a
+   * video, a canvas), it is recorded in real time instead, with a warning.
+   * `live: true` is rec.watch(ms).
+   */
+  pause(ms = 1000, options: { live?: boolean } = {}): Promise<void> {
+    if (options.live) return this.watch(ms);
     return settings.pauses && this.paced
       ? this.rest("hold", ms)
       : Promise.resolve();
+  }
+
+  /**
+   * A pause for the viewer while something on the page moves (an animation,
+   * a video, a scene in the app): always recorded in real time, never held.
+   * Skipped in test mode, like rec.pause.
+   */
+  watch(ms = 1000): Promise<void> {
+    if (!(settings.pauses && this.paced) || ms <= 0) return Promise.resolve();
+    return this.realTime(() => sleep(ms));
+  }
+
+  /**
+   * What still changes on the page, or null: a running animation, a playing
+   * video or sound, or (canvas, script-driven motion) two screenshots that
+   * differ. The text caret is left out of the screenshots.
+   */
+  private async pageChange(): Promise<string | null> {
+    const reason = await this.page
+      .evaluate(() => {
+        if (document.getAnimations().some((a) => a.playState === "running")) {
+          return "an animation is running";
+        }
+        const media = Array.from(document.querySelectorAll("video, audio")) as Array<HTMLMediaElement>;
+        if (media.some((m) => !m.paused && !m.ended)) return "a video or sound is playing";
+        return null;
+      })
+      .catch(() => null);
+    if (reason) return reason;
+    try {
+      const shot = () => this.page.screenshot({ type: "jpeg", quality: 40, scale: "css", caret: "hide" });
+      const first = await shot();
+      await sleep(CHANGE_PROBE_MS);
+      const second = await shot();
+      return first.equals(second) ? null : "the picture keeps changing";
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -922,12 +1196,25 @@ export class Recorder {
   private async rest(kind: "aim" | "hold", ms: number): Promise<void> {
     if (ms <= 0) return;
     const capture = this.paced ? this.capture : null;
-    const head =
+    let head =
       capture && this.fastRecording
         ? Math.min(ms, kind === "aim" ? FAST_AIM_HEAD_MS : FAST_HOLD_HEAD_MS)
         : ms;
     const startedMs = capture?.now();
-    await sleep(head);
+    // A held frame would freeze what still moves: record the pause live.
+    if (capture && kind === "hold" && head < ms) {
+      const change = await this.pageChange();
+      if (change) {
+        head = ms;
+        const step = this.steps.at(-1)?.title ?? "before the first step";
+        console.warn(
+          `rec.pause(${ms}) in "${step}": the page is still changing (${change}), so it was recorded ` +
+            "in real time instead of held. Use rec.watch(ms) for pauses that show something moving.",
+        );
+      }
+    }
+    const spent = capture && startedMs !== undefined ? capture.now() - startedMs : 0;
+    await sleep(Math.max(0, head - spent));
     if (capture && startedMs !== undefined) {
       capture.span(kind, startedMs, capture.now(), ms);
     }
@@ -1042,12 +1329,25 @@ export class Recorder {
 
     // Lists re-render while they load (spinner -> empty state -> rows), so the
     // element found first can be replaced before we measure it. Find it again.
+    let centreNext = false;
     for (let stale = 0; ; ) {
       // Not retried: an element that never shows up fails here, once.
       await locator.waitFor({ state: "visible" });
       let problem = "it has no size";
       try {
-        await locator.scrollIntoViewIfNeeded({ timeout: 5_000 });
+        // Plain scrolling: Playwright's scrollIntoViewIfNeeded waits for a
+        // box that stays exactly put, which a sub-pixel jitter never does.
+        await locator.evaluate(
+          (el, centre) =>
+            el.scrollIntoView(
+              centre
+                ? { block: "center", inline: "center" }
+                : { block: "nearest", inline: "nearest" },
+            ),
+          centreNext,
+          { timeout: 5_000 },
+        );
+        centreNext = false;
         const box = await locator.boundingBox({ timeout: 5_000 });
         if (box) {
           const point = {
@@ -1068,7 +1368,11 @@ export class Recorder {
               this.lastBox = box;
               return point;
             }
-            problem = "it is still moving";
+            problem = again ? `it is still moving: ${describeMove(box, again)}` : "it is still moving";
+          } else if (problem.startsWith("it is covered")) {
+            // A sticky header or footer of its scroll box: bring it to the
+            // middle of its scroll container, then look again.
+            centreNext = true;
           }
         }
       } catch (error) {
@@ -1087,13 +1391,29 @@ export class Recorder {
   }
 }
 
+/**
+ * Whether two boxes are the same place, to the whole pixel: a page drawn at a
+ * fractional scale jitters below a pixel (and by one at a rounding edge).
+ */
 function sameBox(a: Box, b: Box): boolean {
   return (
-    Math.abs(a.x - b.x) < 1 &&
-    Math.abs(a.y - b.y) < 1 &&
-    Math.abs(a.width - b.width) < 1 &&
-    Math.abs(a.height - b.height) < 1
+    Math.abs(a.x - b.x) <= 1 &&
+    Math.abs(a.y - b.y) <= 1 &&
+    Math.abs(a.width - b.width) <= 1 &&
+    Math.abs(a.height - b.height) <= 1
   );
+}
+
+/** How a box moved between two frames, for the "still moving" message. */
+function describeMove(a: Box, b: Box): string {
+  const f = (n: number) => String(Math.round(n * 10) / 10);
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const size =
+    Math.abs(b.width - a.width) > 1 || Math.abs(b.height - a.height) > 1
+      ? `, size ${f(a.width)}x${f(a.height)} → ${f(b.width)}x${f(b.height)}`
+      : "";
+  return `it moved ${f(Math.hypot(dx, dy))} px in two frames (x ${f(a.x)} → ${f(b.x)}, y ${f(a.y)} → ${f(b.y)}${size})`;
 }
 
 function isStaleElementError(error: unknown): boolean {
@@ -1154,6 +1474,11 @@ export const test = base.extend<{ rec: Recorder }>({
     const rec = new Recorder(page, testInfo);
     rec.watchDialogs();
     await provide(rec);
+    // Before Playwright snapshots the failed page and writes its error context.
+    if (testInfo.status !== testInfo.expectedStatus) {
+      await rec.forgetSecrets();
+      rec.scrubErrors(testInfo.errors as Array<{ message?: string; stack?: string; errorContext?: string }>);
+    }
     await rec.finish();
   },
 });

@@ -1,7 +1,31 @@
 // The scene contract (runcast-scene skill), kept free of other kit imports:
 // the scene command (scripts/scene.ts) loads it with plain Node.
+import { createHash } from "node:crypto";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+
+/**
+ * A scene folder's content as a short hash (file names and bytes): when it
+ * changes, the scene's own capture is recorded again when rendering.
+ */
+export function sceneHash(dir: string): string {
+  const hash = createHash("sha256");
+  const walk = (folder: string): Array<string> =>
+    readdirSync(folder)
+      .sort()
+      .flatMap((name) => {
+        const file = path.join(folder, name);
+        return statSync(file).isDirectory() ? walk(file) : [file];
+      });
+  for (const file of walk(dir)) {
+    hash.update(path.relative(dir, file));
+    hash.update("\0");
+    hash.update(readFileSync(file));
+    hash.update("\0");
+  }
+  return hash.digest("hex").slice(0, 16);
+}
 
 /**
  * What is wrong with a scene's `window.runcastScene`, as sentences; empty

@@ -38,8 +38,11 @@ const capture: "tab" | "screen" = env.REC_CAPTURE === "screen" ? "screen" : "tab
 
 export const settings = {
   capture,
-  /** Tab capture: video pixels per CSS pixel (REC_SCALE, default 2; 1 to 3, as video encoders top out near 4K). */
-  scale: Math.min(3, Math.max(1, Number(env.REC_SCALE ?? 2) || 2)),
+  /**
+   * Tab capture: video pixels per CSS pixel (REC_SCALE, default 1.5: a
+   * 1920x1080 page becomes 2880x1620; 1 to 3, as video encoders top out near 4K).
+   */
+  scale: Math.min(3, Math.max(1, Number(env.REC_SCALE ?? 1.5) || 1.5)),
   /** Only screen capture needs a window on screen. */
   headless: !isVideoMode || capture === "tab",
   /**
@@ -65,7 +68,7 @@ export const settings = {
   /** Delay between typed characters. */
   typeDelay: (pacedDelayMs: number) => (paced ? pacedDelayMs : 0),
   /** Page width in CSS pixels; height at 16:9. Screen capture fills the screen instead. */
-  pageWidth: Number(env.REC_PAGE_WIDTH ?? 1440),
+  pageWidth: Number(env.REC_PAGE_WIDTH ?? 1920),
 };
 
 /** The app's sound in the video, resolved (see ScenarioDefinition.appAudio). */
@@ -96,7 +99,7 @@ export function resolveAppAudio(
  * Page size of a landscape page (tab capture, rehearsal, test). REC_PAGE_WIDTH:
  * that width at 16:9. Otherwise REC_PAGE_SIZE ("1512x860"; with screen
  * capture the Playwright config sets it from the newest video recording, so
- * tests lay the app out as the video does). Otherwise 1440x810.
+ * tests lay the app out as the video does). Otherwise 1920x1080.
  */
 const sizeSetting = /^(\d+)x(\d+)$/.exec(env.REC_PAGE_SIZE ?? "");
 export const pageSize =

@@ -63,16 +63,19 @@ your computer, only when you or your assistant run the command named.
   Playwright drives, signed in with the test account you put in
   `tests/recording/.env.local`.
 - **The kit's own local pages**, in that same browser, in video mode and
-  rehearsal (and, for scenes, `scene preview` / `scene render` and test
-  runs): the recorder (`core/recorder.html` in the runtime folder, opened as
+  rehearsal (and, for scenes, `scene preview` / `scene render`, test runs,
+  and `render` when a video's scene is new or changed): the recorder (`core/recorder.html` in the runtime folder, opened as
   a `file://` page) records the app's tab and hands the video to the kit
-  inside the browser; the stage (`core/stage/*.html`: a blank page and a
-  file manager listing the files a step uploads) is a second recorded tab,
+  inside the browser; the stage (`core/stage/*.html`: a blank page, a
+  file manager listing the files a step uploads, and a viewer showing a file
+  the app downloaded) is a second recorded tab,
   where scenes from your recording folder (`scenes/<name>/index.html`,
-  opened as `file://` pages) play too. The kit blocks every network request
-  from the stage and scene pages; the recorder loads nothing. Files a step
+  opened as `file://` pages) play too. During a take a scene is only opened
+  in an unrecorded page to read its length and beats. The kit blocks every
+  network request from the stage and scene pages; the recorder loads nothing. Files a step
   uploads are read from your recording folder and handed to your app in the
-  browser only.
+  browser only; a downloaded file the scenario opens is read from where the
+  kit saved it and handed to the viewer page in the browser only.
 - **ElevenLabs** (`api.elevenlabs.io`), only when you run
   `narration generate`. It sends each voice-over line's text, plus the lines
   just before and after it, with your `ELEVENLABS_API_KEY` from `.env.local`,
@@ -90,7 +93,17 @@ your computer, only when you or your assistant run the command named.
 - `.youtube/`: the Google OAuth client file you download and the refresh token
   that `youtube auth` writes.
 - `videos/`, `narration/`, `.results/`, `.report/`: renders, audio, test
-  output and test reports.
+  output and test reports. A failed test or rehearsal keeps a screenshot, an
+  error report (`error-context.md`) and a trace (screenshots and the action
+  log, no page snapshots); a failed video take keeps no trace. Values typed
+  with `rec.typeSecret` are never typed through Playwright's keyboard, are
+  blurred on screen, and are emptied and replaced by `•••••` before a
+  failure is written; password fields are emptied too.
+- Files your app downloads in a scenario (`rec.download`): with the video
+  recording in `.captures/<scenario>/downloads/` (replaced by the next
+  recording of that scenario), in tests and rehearsals under `.results/`
+  (emptied by Playwright on every run). The browser's own temporary copy is
+  deleted.
 - `scenes/<name>/`: the animated scenes your assistant writes for your
   videos (local files only; committed with your project if you wish).
 - `.captures/<scenario>/`: the latest video recording of each scenario (the
@@ -101,13 +114,16 @@ your computer, only when you or your assistant run the command named.
   and `--steps` write `videos/<name>.draft.mp4` and
   `videos/<name>.steps-<a>-<b>.mp4` (vertical videos:
   `videos/<name>-vertical.draft.mp4`, `videos/<name>-vertical.steps-<a>-<b>.mp4`). `scene preview <name>` records a scene
-  alone to `.captures/scene-<name>/`; `scene render` writes
+  alone to `.captures/scene-<name>/`, and so does `render` when a video
+  shows a scene that is new or changed since its last recording (with a
+  hash of the scene's files in `scene.json`); `scene render` writes
   `videos/scene-<name>.mp4` (and `.gif`).
 
 **Records**
 
 - In video mode, and when you run `scene preview` or `scene render` (a scene
-  alone): by default the app's tab (or the scene) in the headless browser,
+  alone) or `render` records a new or changed scene: by default the app's
+  tab (or the scene) in the headless browser,
   with Chrome's own tab capture (nothing else on your screen is recorded),
   picture and the tab's sound. While it records, the sound is kept off your
   speakers; before the recording starts (preparation steps) and after it
