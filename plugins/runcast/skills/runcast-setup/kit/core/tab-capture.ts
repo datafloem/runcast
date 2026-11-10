@@ -71,13 +71,15 @@ export const TAB_CAPTURE_IGNORED_ARGS: ReadonlyArray<string> = ["--mute-audio"];
  * Sizes the real browser window so the page inside it is exactly `size`
  * (CSS pixels). Tab capture records the window's surface, so there is no
  * viewport emulation (`viewport: null`); headless Chrome keeps some browser
- * UI around the page, which is measured and added. Fails naming both sizes
- * when the page never reaches it.
+ * UI around the page, which is measured and added. At a fractional scale
+ * (e.g. 1.5 on Linux) some page sizes cannot be reached: a page 1 px off is
+ * accepted (the capture measures the real page size). Returns the page size;
+ * fails naming both sizes when the page stays further off.
  */
 export async function sizeWindow(
   page: Page,
   size: { width: number; height: number },
-): Promise<void> {
+): Promise<{ width: number; height: number }> {
   const cdp = await page.context().newCDPSession(page);
   try {
     const { windowId } = await cdp.send("Browser.getWindowForTarget");
@@ -85,24 +87,50 @@ export async function sizeWindow(
       windowId,
       bounds: { windowState: "normal" },
     });
-    let inner = { width: 0, height: 0 };
-    for (let i = 0; i < SIZE_TRIES; i++) {
-      const now = await page.evaluate(() => ({
+    const measure = () =>
+      page.evaluate(() => ({
         width: window.innerWidth,
         height: window.innerHeight,
         frameWidth: window.outerWidth - window.innerWidth,
         frameHeight: window.outerHeight - window.innerHeight,
       }));
-      inner = { width: now.width, height: now.height };
-      if (now.width === size.width && now.height === size.height) return;
-      await cdp.send("Browser.setWindowBounds", {
-        windowId,
-        bounds: {
-          width: size.width + now.frameWidth,
-          height: size.height + now.frameHeight,
-        },
-      });
+    const first = await measure();
+    let inner = { width: first.width, height: first.height };
+    // First the measured frame, then the window corrected by what is left.
+    let target = {
+      width: size.width + first.frameWidth,
+      height: size.height + first.frameHeight,
+    };
+    let best: { inner: typeof inner; bounds: typeof target } | null = null;
+    for (let i = 0; i < SIZE_TRIES; i++) {
+      if (offBy(inner, size) === 0) return inner;
+      await cdp.send("Browser.setWindowBounds", { windowId, bounds: target });
       await sleep(100);
+      const now = await measure();
+      inner = { width: now.width, height: now.height };
+      if (!best || offBy(inner, size) < offBy(best.inner, size)) {
+        best = { inner, bounds: target };
+      }
+      target = {
+        width: target.width + size.width - inner.width,
+        height: target.height + size.height - inner.height,
+      };
+    }
+    if (offBy(inner, size) === 0) return inner;
+    if (best && offBy(best.inner, size) <= 1) {
+      // Back to the window size that came closest.
+      if (best.inner !== inner) {
+        await cdp.send("Browser.setWindowBounds", { windowId, bounds: best.bounds });
+        await sleep(100);
+        const now = await measure();
+        inner = { width: now.width, height: now.height };
+      }
+      if (offBy(inner, size) <= 1) {
+        console.log(
+          `Page ${inner.width}x${inner.height} instead of ${size.width}x${size.height} (the browser rounds at this scale).`,
+        );
+        return inner;
+      }
     }
     throw new Error(
       `The browser window could not be sized: the page should be ${size.width}x${size.height} ` +
@@ -111,6 +139,13 @@ export async function sizeWindow(
   } finally {
     await cdp.detach().catch(() => {});
   }
+}
+
+function offBy(
+  a: { width: number; height: number },
+  b: { width: number; height: number },
+): number {
+  return Math.max(Math.abs(a.width - b.width), Math.abs(a.height - b.height));
 }
 
 /** What the recorder page's startCapture resolves with. */
