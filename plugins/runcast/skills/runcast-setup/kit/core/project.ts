@@ -6,7 +6,7 @@
 //   export default defineProject({ dir: import.meta.dirname, name: "My app", baseURL: "..." });
 //
 // Kept free of other kit imports: the scripts load it with plain Node.
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -67,4 +67,30 @@ export async function loadProject(dir = projectDir()): Promise<ProjectConfig> {
 export function kitCommand(dir: string): string {
   const rel = path.relative(process.cwd(), dir) || ".";
   return `node ${path.join(rel, ".kit", "cli.ts")}`;
+}
+
+/**
+ * Where a scenario's video recording lives: <recording folder>/.captures/<scenario>/
+ * (capture/ with the screen recording and events.json, steps.json, and what
+ * the renderer writes next to them). Outside .results, which Playwright
+ * empties at the start of every run: a recording stays until the same
+ * scenario is recorded again.
+ */
+export function captureRootFor(dir: string, scenario: string): string {
+  return path.join(dir, ".captures", scenario);
+}
+
+/**
+ * Every capture folder (one with events.json) of a recording folder, newest
+ * first: .captures/<scenario>/capture, and .results/<test>/capture from
+ * before recordings moved there.
+ */
+export function findCaptures(dir: string): Array<string> {
+  const under = (root: string) =>
+    existsSync(root)
+      ? readdirSync(root).map((name) => path.join(root, name, "capture"))
+      : [];
+  return [...under(path.join(dir, ".captures")), ...under(path.join(dir, ".results"))]
+    .filter((capture) => existsSync(path.join(capture, "events.json")))
+    .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs);
 }

@@ -44,7 +44,7 @@ in English.
 3. **Doctor:** setup ends with `doctor` (also
    `node <recording folder>/.kit/cli.ts doctor`): Node 22.18+, ffmpeg (video,
    narration; Windows: `winget install Gyan.FFmpeg`), Xvfb on Linux without a
-   screen, Google Chrome (or
+   screen (only for `REC_CAPTURE=screen`), Google Chrome (or
    `REC_CHANNEL=chromium`), `.env.local`. Ask before installing anything
    system-wide.
 
@@ -85,7 +85,7 @@ find, it becomes `PROJECT.md`:
   tables and sidebars without breakpoints, a note that only desktop is
   supported. Write the verdict with its evidence: "yes", "partly" (which
   screens) or "no". If a scenario exists, a `REC_FORMAT=vertical` test run
-  shows whether the flow still works at 480×854.
+  shows whether the flow still works at 540×960.
 - **Brand:** the accent colour and a logo file for the title cards (look in
   `public/`, assets, the theme or CSS variables). Confirm with the user.
 - **Quirks:** pagination, lazy-loaded lists, redirects after saving, slow first
@@ -120,11 +120,11 @@ find, it becomes `PROJECT.md`:
 2. `node <recording folder>/.kit/cli.ts test --list` lists the login scenario.
 3. Ask the user to put the account in `.env.local` and to start the app,
    then run `node <recording folder>/.kit/cli.ts test login`. Fix selectors until it passes.
-4. Offer a short video check: `node <recording folder>/.kit/cli.ts video login` (macOS: the
-   terminal needs Screen Recording permission and a Chrome window opens;
-   Linux: needs ffmpeg and xvfb, and runs on a virtual display without a
-   screen; Windows: needs ffmpeg, an unlocked desktop and Chrome on the main
-   screen). On Windows, use PowerShell equivalents for shell commands (for
+4. Offer a short video check: `node <recording folder>/.kit/cli.ts video login --render`
+   (needs ffmpeg; it records a headless Chrome tab, so nothing opens and the
+   user can keep working; with `REC_CAPTURE=screen` macOS needs Screen
+   Recording permission, Linux xvfb without a screen, Windows an unlocked
+   desktop). On Windows, use PowerShell equivalents for shell commands (for
    example `Copy-Item` instead of `cp`). Look at
    a frame of `videos/login.mp4` (e.g. with ffmpeg) to check theme and brand.
 

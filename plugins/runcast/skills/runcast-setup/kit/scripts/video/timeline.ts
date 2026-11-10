@@ -1,5 +1,5 @@
 // Pure timing maths for the renderer: where the camera looks and where the
-// cursor is at any moment, from a capture's events (lib/video-capture.ts).
+// cursor is at any moment, from a capture's events (core/capture-log.ts).
 // No I/O here, so it is easy to test and to tune.
 
 export interface Box {
@@ -37,6 +37,32 @@ export type ShowTransition = "pan" | "slide" | "fade" | "cube" | "cut";
 /** How long each show transition takes (ms); "pan" uses CameraOptions.moveMs. */
 export const SHOW_TRANSITION_MS: Record<Exclude<ShowTransition, "pan">, number> =
   { slide: 600, fade: 500, cube: 900, cut: 0 };
+
+/** How the video changes tab (app ↔ stage): a show transition, or "lift" (the leaving view goes behind). */
+export type SourceTransition = "fade" | "slide" | "cube" | "cut" | "lift";
+
+/** How long each tab change takes (ms), played right after the switch. */
+export const SOURCE_TRANSITION_MS: Record<SourceTransition, number> = {
+  ...SHOW_TRANSITION_MS,
+  lift: 450,
+};
+
+/**
+ * The tab change running at video time t: which tabs, which transition and
+ * how far through it (0-1), or null.
+ */
+export function sourceTransitionAt<S extends string>(
+  switches: Array<{ at: number; from: S; to: S; transition: SourceTransition }>,
+  t: number,
+): { at: number; from: S; to: S; kind: SourceTransition; p: number } | null {
+  for (const s of switches) {
+    const ms = SOURCE_TRANSITION_MS[s.transition] ?? 0;
+    if (ms > 0 && t >= s.at && t < s.at + ms) {
+      return { at: s.at, from: s.from, to: s.to, kind: s.transition, p: (t - s.at) / ms };
+    }
+  }
+  return null;
+}
 
 export interface PointerSample {
   t: number;
@@ -447,6 +473,29 @@ export function cameraAtTime(
     };
   }
   return clampCamera(camera, viewport, view);
+}
+
+/**
+ * Actions the camera does not show when they happen: the point of each
+ * focus lies outside the camera's view at its end (when the click lands or
+ * the typing stops). Happens when a vertical crop cannot fit a scene, or a
+ * shown element leaves the actions behind.
+ */
+export function actionsOutOfFrame(
+  focus: Array<Focus>,
+  track: Array<Keyframe>,
+  viewport: Size,
+  view: Size = viewport,
+): Array<Focus> {
+  return focus.filter((f) => {
+    const camera = cameraAtTime(track, f.until, viewport, view);
+    const halfW = view.width / camera.zoom / 2;
+    const halfH = view.height / camera.zoom / 2;
+    return (
+      Math.abs(f.x - camera.cx) > halfW + 2 ||
+      Math.abs(f.y - camera.cy) > halfH + 2
+    );
+  });
 }
 
 /** Keeps the visible area inside the page. */

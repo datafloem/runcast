@@ -115,3 +115,24 @@ export function segmentLength(
     ? { ms: segment.durationMs ?? 0, measured: true }
     : { ms: estimateMs(segment.text, script.wordsPerMinute), measured: false };
 }
+
+/**
+ * What each narrated step needs when rendering: how long the step must last
+ * (the segment's measured length, else its estimate, plus the gap) and the
+ * audio to mix in (only when it was made from the current text). Title-card
+ * segments ("intro", "outro") are left out.
+ */
+export function stepVoices(
+  script: NarrationScript,
+): Map<string, { ms: number; audio: string | null }> {
+  const voices = new Map<string, { ms: number; audio: string | null }>();
+  for (const segment of script.segments) {
+    if (segment.step === "intro" || segment.step === "outro") continue;
+    const { ms, measured } = segmentLength(segment, script);
+    voices.set(segment.step, {
+      ms: ms + script.gapMs,
+      audio: measured ? (segment.audio ?? null) : null,
+    });
+  }
+  return voices;
+}

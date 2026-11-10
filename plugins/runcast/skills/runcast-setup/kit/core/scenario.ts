@@ -1,19 +1,15 @@
 import type { Page } from "@playwright/test";
 import { requireEnv } from "./env.ts";
 import { resolveFormat, type VideoFormat } from "./format.ts";
-import { isVideoMode, settings } from "./mode.ts";
+import { isVideoMode, resolveAppAudio, settings } from "./mode.ts";
 import {
   loadNarration,
   segmentLength,
   type NarrationScript,
 } from "./narration.ts";
 import { sleep } from "./cursor.ts";
-import {
-  test,
-  type Recorder,
-  type StepNarration,
-  type Ui,
-} from "./recorder.ts";
+import type { PermissionsOption } from "./permissions.ts";
+import { test, type Recorder, type Ui } from "./recorder.ts";
 
 /** What a step gets: the page, the recorder, and state shared along the scenario. */
 export interface StepContext extends Ui {
@@ -59,6 +55,8 @@ export interface Step {
    * Has no note, voice-over or caption. Tests run it as usual.
    */
   offCamera?: boolean;
+  /** A scene step (core/scene.ts): its scene's name. Narration may target `<id>.<beat id>`. */
+  scene?: string;
   /**
    * Brings a fresh page to where this step starts, when it is the first step
    * of the scenario (e.g. login opens the login page). Runs before recording.
@@ -83,6 +81,14 @@ export type StepShow = string | { target: string; transition?: ShowTransition };
 
 /** How long the page settles after an off-camera step before the video goes on. */
 const OFF_CAMERA_SETTLE_MS = 300;
+
+/**
+ * How long the page settles at the end of each recorded step (video mode):
+ * the renderer may hold a step's last frame for its narration, and right
+ * after a navigation or a click that frame can still be half drawn. App
+ * time, so the renderer can shorten it again.
+ */
+const STEP_SETTLE_MS = 300;
 
 /** The shortest a step with a transition lasts in the video, so the turn can be followed. */
 export const TRANSITION_MIN_MS = 1200;
@@ -132,6 +138,39 @@ export interface ScenarioDefinition {
    * follows scrolling and the camera.
    */
   blur?: Array<string>;
+  /**
+   * When a step runs longer than its narration, the renderer shortens the
+   * step's app waits (loading, spinners) so the voice and the screen stay
+   * together. Default true; false keeps real time and leaves silence (e.g.
+   * when the video must show how long the app takes).
+   * REC_COMPRESS_WAITS=0/1 overrides it when rendering.
+   */
+  compressWaits?: boolean;
+  /**
+   * The app's own sound in the video (games, media), mixed under the
+   * voice-over: `volume` 0-1 (default 1), `duckTo` 0-1, its level while the
+   * voice speaks (default 0.3). Off when not given; REC_APP_AUDIO=0/1
+   * overrides it. Recording then runs at the viewer's pace (sound cannot be
+   * stretched), and loading waits are cut, never sped up. Tab capture only.
+   */
+  appAudio?: { volume?: number; duckTo?: number };
+  /**
+   * How browser dialogs (alert, confirm, prompt, beforeunload) are answered:
+   * "accept" (default) or "dismiss". A step can answer the next one
+   * differently with `rec.onDialog({ accept, text })`. The video holds the
+   * frame and draws the dialog being answered (1.5 s).
+   */
+  dialogs?: "accept" | "dismiss";
+  /**
+   * Browser permissions, decided before the first page load so a test never
+   * waits on a prompt: a list of allowed ones, e.g. `["geolocation",
+   * "notifications"]` (Playwright's names), or each with its answer,
+   * `{ geolocation: "allow", notifications: "block" }`. A blocked request
+   * fails as in Chrome. When the page asks (location, notifications,
+   * camera, microphone, clipboard-read), the video holds the frame and draws
+   * Chrome's prompt being answered (1.5 s), once per permission.
+   */
+  permissions?: PermissionsOption;
   /** Opening card before the recording (video mode). Off when not given. */
   intro?: VideoCard;
   /** Closing card after the recording (video mode). Off when not given. */
@@ -162,9 +201,10 @@ export interface VideoCard {
  * recording starts (they create what the later steps need); steps after
  * REC_TO do not run. Without them the whole scenario is recorded.
  *
- * Voice-over: when scenarios/<name>.narration.json exists (record mode,
- * REC_NARRATION not 0), each recorded step lasts at least as long as its
- * segment plus the gap, so the audio placed at the step's start fits.
+ * Voice-over: scenarios/<name>.narration.json does not change the
+ * recording. The renderer fits each segment to its step (holds the step's
+ * last frame for a longer voice, shortens app waits for a shorter one), so a
+ * changed text needs new audio and a new render, never a new recording.
  */
 export function scenario(
   definition: ScenarioDefinition,
@@ -201,8 +241,12 @@ export function scenario(
     if (narration) checkNarration(narration, steps);
 
     rec.captions = definition.captions ?? false;
+    rec.compressWaits = definition.compressWaits ?? true;
     rec.cards = { intro: definition.intro, outro: definition.outro };
     rec.showTransition = definition.showTransition ?? "pan";
+    rec.appAudio = resolveAppAudio(definition.appAudio);
+    rec.dialogs = definition.dialogs ?? "accept";
+    if (definition.permissions) await rec.usePermissions(definition.permissions);
     // Before the first page load, so the app starts in the layout it is recorded in.
     await rec.useFormat(resolveFormat(definition.format));
     if (definition.blur?.length) await blurOnScreen(page, definition.blur);
@@ -225,52 +269,28 @@ export function scenario(
         continue;
       }
 
-      const voice = rec.isLive ? narrationFor(narration, step.id) : undefined;
-      const startedMs = rec.elapsedMs();
+      // On the video's clock: a fast recording is shorter than its video.
+      const startedMs = rec.videoElapsedMs();
       await rec.step(title, step.note, {
         id: step.id,
-        narration: voice,
         transition: step.transition,
       });
       await test.step(title, async () => {
         await step.run(ctx);
         if (step.show) await showStep(ctx, step.show);
       });
+      // Preparation steps (before REC_FROM) are not recorded: no settle; a
+      // scene shows no app page, so the next step (another scene) follows at once.
+      if (isVideoMode && rec.isLive && !step.scene) await sleep(STEP_SETTLE_MS);
 
       if (step.transition) {
         // A turn faster than this cannot be followed (rec.pause: video and rehearsal only).
-        const spentMs = rec.elapsedMs() - startedMs;
+        const spentMs = rec.videoElapsedMs() - startedMs;
         if (spentMs < TRANSITION_MIN_MS)
           await rec.pause(TRANSITION_MIN_MS - spentMs);
       }
-
-      if (voice && narration) {
-        // The step lasts at least its voice-over plus the gap before the next.
-        const spentMs = rec.elapsedMs() - startedMs;
-        const targetMs = voice.durationMs + narration.gapMs;
-        if (spentMs < targetMs) await sleep(targetMs - spentMs);
-        else if (spentMs > targetMs + 250) {
-          rec.markOverrun(spentMs - targetMs);
-          console.warn(
-            `${title}: the step ran ${((spentMs - targetMs) / 1000).toFixed(1)} s longer than its narration; ` +
-              "lengthen the narration or shorten the step's pauses.",
-          );
-        }
-      }
     }
   };
-}
-
-function narrationFor(
-  script: NarrationScript | null,
-  stepId: string,
-): StepNarration | undefined {
-  const segment = script?.segments.find((s) => s.step === stepId);
-  if (!script || !segment) return undefined;
-  const { ms, measured } = segmentLength(segment, script);
-  // Audio made from an older text does not fit any more: do not offer it.
-  const audio = measured ? (segment.audio ?? null) : null;
-  return { text: segment.text, audio, durationMs: ms, measured };
 }
 
 /** Warns about segments for steps that do not exist and audio that is out of date. */
@@ -279,6 +299,11 @@ function checkNarration(script: NarrationScript, steps: Array<Step>): void {
   for (const segment of script.segments) {
     // "intro" / "outro" are spoken over the title cards, not over a step.
     if (segment.step === "intro" || segment.step === "outro") continue;
+    // "<scene step id>.<beat id>": a beat of a scene step.
+    const sceneStep = steps.find(
+      (step) => step.scene && segment.step.startsWith(`${step.id}.`),
+    );
+    if (sceneStep) continue;
     if (!ids.has(segment.step)) {
       console.warn(
         `Narration: "${segment.step}" is not a step of this scenario.`,

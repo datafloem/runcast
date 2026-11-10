@@ -8,9 +8,11 @@
 //   setup                    prepare the runtime, create the recording folder, link .kit
 //   doctor                   what is installed, what is missing
 //   test [args]              headless end-to-end run (Playwright args, e.g. a scenario name)
-//   rehearsal [args]         the video's pace and timing, headless, not recorded
-//   video [args]             record and render MP4s
-//   render [scenario]        render the last capture again
+//   rehearsal [args]         the video's pace, headless, not recorded (measures step lengths)
+//   video [args]             record, then check each take (--render: also the MP4)
+//   render [scenario]        render the last capture again; --check (a picture per step),
+//                            --draft (half size, quick), --steps a-b (only those steps)
+//   scene <cmd> <name>       a scene alone (preview: draft + beats sheet; render [--gif] [--bare])
 //   narration <cmd> <name>   voice-over tools (plan, generate, measure, script, split)
 //   youtube <cmd> [name]     YouTube upload (check, auth, upload)
 //
@@ -39,6 +41,8 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
+import { parseEnv } from "node:util";
+import { pruneRuntimes, registerLink } from "./core/runtimes.ts";
 
 // The kit lives inside the runcast-setup skill (skills/runcast-setup/kit/),
 // so tools that install only a plugin's skills (Antigravity) still ship it.
@@ -81,6 +85,9 @@ switch (command) {
   case "narration":
     script(["scripts", "narration.ts"], passThrough);
     break;
+  case "scene":
+    script(["scripts", "scene.ts"], passThrough);
+    break;
   case "youtube":
     script(["scripts", "youtube.ts"], passThrough);
     break;
@@ -88,7 +95,7 @@ switch (command) {
     console.log(
       readFileSync(import.meta.filename, "utf-8")
         .split("\n")
-        .slice(0, 18)
+        .slice(0, 21)
         .join("\n"),
     );
     process.exit(command === "help" ? 0 : 1);
@@ -157,20 +164,8 @@ function ensureRuntime(): string {
     path.join(runtime, RUNTIME_MARKER),
     `${JSON.stringify({ id, builtAt: new Date().toISOString(), from: KIT }, null, 2)}\n`,
   );
-  pruneRuntimes(runtime);
+  pruneRuntimes(RUNTIME_HOME, runtime, KEEP_RUNTIMES);
   return runtime;
-}
-
-/** Keeps the newest few runtimes; older ones are no longer linked by anyone up to date. */
-function pruneRuntimes(current: string): void {
-  const all = readdirSync(RUNTIME_HOME)
-    .map((name) => path.join(RUNTIME_HOME, name))
-    .filter(
-      (dir) => dir !== current && existsSync(path.join(dir, RUNTIME_MARKER)),
-    )
-    .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs);
-  for (const old of all.slice(KEEP_RUNTIMES - 1))
-    rmSync(old, { recursive: true, force: true });
 }
 
 /** Creates the recording folder from the templates; existing files are kept. */
@@ -226,16 +221,26 @@ function link(runtime: string): void {
     );
     console.log(`  linked   ${rel(kitLink)} -> ${runtime}`);
   }
+  // Pruning (from any project's setup) keeps runtimes that are still linked.
+  registerLink(runtime, kitLink);
   const ignore = path.join(projectDir, ".gitignore");
   const lines = existsSync(ignore)
     ? readFileSync(ignore, "utf-8").split("\n")
     : [];
-  if (
-    !lines.some((line) => line.trim() === ".kit" || line.trim() === ".kit/")
-  ) {
+  // Projects set up before a line existed get it here (the template's
+  // .gitignore is never overwritten): the runtime link, and the video
+  // recordings, which are large.
+  const missing = [
+    { names: [".kit", ".kit/"], add: "# Runcast runtime link\n.kit\n" },
+    {
+      names: [".captures", ".captures/"],
+      add: "# Runcast video recordings (render reads them)\n.captures/\n",
+    },
+  ].filter(({ names }) => !lines.some((line) => names.includes(line.trim())));
+  if (missing.length > 0) {
     appendFileSync(
       ignore,
-      `${lines.length && lines.at(-1) !== "" ? "\n" : ""}# Runcast runtime link\n.kit\n`,
+      `${lines.length && lines.at(-1) !== "" ? "\n" : ""}${missing.map((m) => m.add).join("")}`,
     );
   }
 }
@@ -277,7 +282,15 @@ function doctor(): void {
     "ffmpeg (video, narration)",
     installHint("ffmpeg"),
   );
-  if (process.platform === "linux") {
+  const capture = projectSetting("REC_CAPTURE") === "screen" ? "screen" : "tab";
+  console.log(
+    capture === "tab"
+      ? "  Video records a headless Chrome tab (REC_CAPTURE=tab): the computer stays free while it records."
+      : "  Video records the screen (REC_CAPTURE=screen): leave the computer alone while it records.",
+  );
+  if (capture === "tab") pageSizeHint();
+  staleSkillNames();
+  if (capture === "screen" && process.platform === "linux") {
     check(
       Boolean(process.env.DISPLAY) || has("Xvfb", ["-help"]),
       "Display or Xvfb (video on Linux)",
@@ -297,16 +310,74 @@ function doctor(): void {
     ".env.local (account, keys)",
     `copy ${rel(path.join(projectDir, ".env.example"))} to .env.local`,
   );
-  if (process.platform === "darwin") {
+  if (capture === "screen" && process.platform === "darwin") {
     console.log(
-      "  macOS video needs Screen Recording permission for the app that runs the command (asked on first recording).",
+      "  macOS screen recording needs Screen Recording permission for the app that runs the command (asked on first recording).",
     );
   }
-  if (process.platform === "win32") {
+  if (capture === "screen" && process.platform === "win32") {
     console.log(
       "  Windows video records the screen of a signed-in desktop session: keep it unlocked and Chrome on the main screen.",
     );
   }
+}
+
+/**
+ * A project updating from screen capture: its newest screen recording had
+ * the screen's page size; tab capture records REC_PAGE_SIZE (1920x1080)
+ * unless told otherwise. Names the settings that keep the old layout.
+ */
+function pageSizeHint(): void {
+  if (projectSetting("REC_PAGE_SIZE") || projectSetting("REC_PAGE_WIDTH")) return;
+  const root = path.join(projectDir, ".captures");
+  if (!existsSync(root)) return;
+  const screen = readdirSync(root)
+    .map((name) => path.join(root, name, "capture", "events.json"))
+    .filter((file) => existsSync(file))
+    .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)
+    .map((file) => {
+      try {
+        return JSON.parse(readFileSync(file, "utf-8")) as {
+          viewport?: { width: number; height: number };
+          scale?: number;
+          video?: { file?: string };
+        };
+      } catch {
+        return null;
+      }
+    })
+    .find((events) => events?.video?.file?.endsWith(".mkv") && events.viewport);
+  if (!screen?.viewport) return;
+  const width = Math.round(screen.viewport.width);
+  const height = Math.round(screen.viewport.height);
+  if (width === 1920 && height === 1080) return;
+  const scale = Math.round((screen.scale ?? 2) * 100) / 100;
+  console.log(
+    `  Your last screen recording had a ${width}x${height} page at scale ${scale}; tab capture records 1920x1080 at 1.5. ` +
+      `To keep the old layout, add REC_PAGE_WIDTH=${width} and REC_SCALE=${Math.min(3, Math.max(1, scale))} to .env.local.`,
+  );
+}
+
+/** Project files written by an older kit that still name its old skills. */
+function staleSkillNames(): void {
+  for (const name of ["AGENTS.md", "CLAUDE.md", "README.md"]) {
+    const file = path.join(projectDir, name);
+    if (!existsSync(file)) continue;
+    if (/\brecording-(setup|scenario|scenario-plan|plan|publish)\b/.test(readFileSync(file, "utf-8"))) {
+      console.log(
+        `  ${name} still names the old skills (recording-*). They are runcast-setup, runcast-plan, ` +
+          `runcast-scenario, runcast-scene and runcast-publish now: update the file (setup keeps a project's own files).`,
+      );
+    }
+  }
+}
+
+/** A setting from the environment, else from the recording folder's .env.local. */
+function projectSetting(name: string): string | undefined {
+  if (process.env[name] !== undefined) return process.env[name];
+  const file = path.join(projectDir, ".env.local");
+  if (!existsSync(file)) return undefined;
+  return parseEnv(readFileSync(file, "utf-8"))[name];
 }
 
 // --- running -----------------------------------------------------------------------

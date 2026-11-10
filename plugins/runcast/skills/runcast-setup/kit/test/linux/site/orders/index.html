@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Sample App — New order</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font-family: sans-serif;
+        background: #0f172a;
+        color: #e2e8f0;
+      }
+      header {
+        padding: 24px 40px;
+        background: #1e293b;
+        font-size: 20px;
+      }
+      main {
+        padding: 32px 40px;
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 24px;
+        align-items: start;
+      }
+      section {
+        background: #1e293b;
+        border-radius: 16px;
+        padding: 24px;
+        display: grid;
+        gap: 14px;
+      }
+      h2 {
+        margin: 0 0 4px;
+        font-size: 20px;
+      }
+      label {
+        display: grid;
+        gap: 6px;
+        font-size: 14px;
+        color: #94a3b8;
+      }
+      input,
+      select {
+        font: inherit;
+        font-size: 16px;
+        color: #e2e8f0;
+        background: #0f172a;
+        border: 1px solid #334155;
+        border-radius: 8px;
+        padding: 10px 12px;
+        color-scheme: dark;
+      }
+      button {
+        justify-self: start;
+        font-size: 16px;
+        padding: 10px 18px;
+        border: 0;
+        border-radius: 8px;
+        background: #f97316;
+        color: #fff;
+      }
+      button.quiet {
+        background: #334155;
+      }
+      .row {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+      output {
+        min-height: 22px;
+        color: #fbbf24;
+      }
+      #zone {
+        display: grid;
+        place-items: center;
+        height: 140px;
+        border: 2px dashed #475569;
+        border-radius: 16px;
+        color: #94a3b8;
+        font-size: 18px;
+      }
+      #zone.over {
+        border-color: #f97316;
+        background: rgba(249, 115, 22, 0.08);
+        color: #e2e8f0;
+      }
+      ul {
+        margin: 0;
+        padding-left: 20px;
+      }
+    </style>
+  </head>
+  <body>
+    <header>Sample App — New order</header>
+    <main>
+      <section aria-label="Order">
+        <h2>Order</h2>
+        <label>Customer <input id="customer" value="Ada Lovelace" /></label>
+        <label
+          >Status
+          <select id="status">
+            <option>Draft</option>
+            <option>Confirmed</option>
+            <option>Shipped</option>
+            <option>Delivered</option>
+          </select>
+        </label>
+        <label>Delivery date <input id="delivery" type="date" value="2026-11-12" /></label>
+        <label>Pickup <input id="pickup" type="datetime-local" value="2026-11-12T09:00" /></label>
+      </section>
+
+      <section aria-label="Actions">
+        <h2>Actions</h2>
+        <div class="row">
+          <button id="total">Show total</button>
+          <button id="delete" class="quiet">Delete order</button>
+          <button id="archive" class="quiet">Archive order</button>
+        </div>
+        <div class="row">
+          <button id="note" class="quiet">Add a note</button>
+          <button id="store" class="quiet">Find nearest store</button>
+        </div>
+        <output id="result"></output>
+        <button id="export">Export orders</button>
+      </section>
+
+      <section aria-label="Attachments">
+        <h2>Attachments</h2>
+        <div id="zone">Drop files here</div>
+        <button id="choose" class="quiet">Choose files</button>
+        <input id="file" type="file" multiple hidden />
+        <ul id="uploaded"></ul>
+      </section>
+    </main>
+    <script>
+      const result = document.getElementById("result");
+      const say = (text) => (result.textContent = text);
+      document.getElementById("total").onclick = () => {
+        alert("Order total: € 1,240.00");
+        say("Total shown");
+      };
+      document.getElementById("delete").onclick = () =>
+        say(confirm("Delete this order?") ? "Order deleted" : "Order kept");
+      document.getElementById("archive").onclick = () =>
+        say(confirm("Archive this order?") ? "Order archived" : "Order not archived");
+      document.getElementById("note").onclick = () => {
+        const note = prompt("Note for the courier", "");
+        say(note ? `Note: ${note}` : "No note");
+      };
+      document.getElementById("store").onclick = () =>
+        navigator.geolocation.getCurrentPosition(
+          (p) => say(`Nearest store: Amsterdam Central (${p.coords.latitude.toFixed(2)}, ${p.coords.longitude.toFixed(2)})`),
+          (e) => say(`Location unavailable (${e.code})`),
+        );
+      document.getElementById("export").onclick = () => {
+        const rows = [
+          ["Order", "Customer", "Status", "Total"],
+          ["1041", "Ada Lovelace", "Confirmed", "1240.00"],
+          ["1042", "Grace Hopper", "Shipped", "380.50"],
+          ["1043", "Alan Turing", "Draft", "92.00"],
+          ["1044", "Katherine Johnson", "Delivered", "615.75"],
+        ];
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(new Blob([rows.map((r) => r.join(",")).join("\n") + "\n"], { type: "text/csv" }));
+        a.download = "orders-2026-11.csv";
+        a.click();
+      };
+
+      // A drop zone like most upload widgets: it accepts a drop only after dragover allowed it.
+      const zone = document.getElementById("zone");
+      const list = document.getElementById("uploaded");
+      const show = (files) => {
+        for (const file of files) {
+          const item = document.createElement("li");
+          item.textContent = `${file.name} (${file.size} bytes)`;
+          list.append(item);
+        }
+      };
+      zone.addEventListener("dragenter", () => zone.classList.add("over"));
+      zone.addEventListener("dragover", (event) => event.preventDefault());
+      zone.addEventListener("dragleave", () => zone.classList.remove("over"));
+      zone.addEventListener("drop", (event) => {
+        event.preventDefault();
+        zone.classList.remove("over");
+        show(event.dataTransfer.files);
+      });
+      document.getElementById("choose").addEventListener("click", () => document.getElementById("file").click());
+      document.getElementById("file").addEventListener("change", (event) => show(event.target.files));
+    </script>
+  </body>
+</html>

@@ -47,6 +47,14 @@ jobs:
       - name: Typecheck the kit
         run: node "$KIT/node_modules/typescript/bin/tsc" -p "$KIT" --noEmit
 
+      # The browser tests record a headless Chrome tab and read it back with
+      # ffmpeg / ffprobe; the audio tests run ffmpeg filters.
+      - name: Install ffmpeg
+        run: command -v ffmpeg || (sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg)
+
+      - name: Unit tests of the kit
+        run: node --test "$KIT/test/*.test.ts"
+
       - name: Check manifests, marketplaces and skills
         run: node .github/scripts/check-plugin.mjs
 

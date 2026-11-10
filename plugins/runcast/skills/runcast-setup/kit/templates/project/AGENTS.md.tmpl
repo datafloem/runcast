@@ -17,13 +17,16 @@ Read before working:
      `scenarios/<name>.md`.
    - [`runcast-scenario`](.kit/skills/runcast-scenario/SKILL.md): turn the
      text into `scenarios/<name>.spec.ts`; the rules for steps and helpers.
+   - [`runcast-scene`](.kit/skills/runcast-scene/SKILL.md): design an
+     animated scene for a video (`scenes/<name>/index.html`), previewed and
+     approved before it is used.
    - [`runcast-publish`](.kit/skills/runcast-publish/SKILL.md): upload a
      rendered video to YouTube.
 3. The kit's guide: [`.kit/README.md`](.kit/README.md).
 
 Commands: `node {{DIR}}/.kit/cli.ts <command>` from the repository root
-(`setup`, `doctor`, `test`, `rehearsal`, `video`, `render`, `narration`,
-`youtube`). If `.kit` is missing, run the plugin's `setup` again (see the
+(`setup`, `doctor`, `test`, `rehearsal`, `video`, `render`, `scene`,
+`narration`, `youtube`). If `.kit` is missing, run the plugin's `setup` again (see the
 runcast-setup skill).
 
 Most important rules:

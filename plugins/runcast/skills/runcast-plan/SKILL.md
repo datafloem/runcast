@@ -87,7 +87,7 @@ Ask (over two or three messages; at most three questions each):
 
      When the code does not settle it, say so in the evidence and recommend
      one of the desktop layouts. If the use is "both" and the layout is
-     `vertical`, say that the test also runs in the mobile layout (480×854).
+     `vertical`, say that the test also runs in the mobile layout (540×960).
      Write the decision ("Format"); the test passes
      `scenario({ format: "vertical" })` (or `"vertical-crop"` /
      `"vertical-fit"`).
@@ -122,6 +122,13 @@ Ask (over two or three messages; at most three questions each):
    the page after; the step's own clicks are not shown. Mark those steps in
    phase 4 ("Transition"). Write the decision ("Transitions"); the test passes
    `transition: "cube"` to those steps.
+10. **"Does the app make sound the video should carry?"** (default no; for
+   games, media players, alerts with sound). If yes: how loud against the
+   voice-over (`volume` 0–1, default 1) and how far it drops while the voice
+   speaks (`duckTo` 0–1 of that level, default 0.3). Say that the recording
+   then runs at the viewer's pace (sound cannot be stretched), so it takes
+   longer, and that loading waits are cut, never sped up. Write the decision
+   ("App sound"); the test passes `scenario({ appAudio: { volume, duckTo } })`.
 
 Check `scenarios/*.md` first: if a similar scenario exists, ask whether to make
 a new one or change that one. Suggest a file name (`kebab-case`, e.g.
@@ -207,6 +214,11 @@ step is boring, propose splitting it.
 
 While drafting:
 
+- Look for parts of the story the app **cannot show**: an idea, how data
+  moves between systems, what happens on the customer's side, the problem
+  before the feature. Propose a **scene** for each (an animation the AI
+  designs, played in the video like a step, joined to the app with a
+  transition) and mark the row "Scene"; phase 4b settles it.
 - Take screens and transitions from `PROJECT.md`; every step should be doable
   with existing helpers where possible. Mark the rest "New helper needed".
 - Account for the app's known behaviours (`PROJECT.md`).
@@ -226,6 +238,31 @@ Settle the steps in groups of 2–3. For each step:
 | Focus         | Where the viewer should look once the step is done: the element that carries its message (see below), and its transition if it differs |
 | Check         | What must be on screen when the step ends (a success message, a new row, a total...). The test's value |
 | Transition    | Only if chosen in phase 1: does a cube turn replace this step? Only for steps that just move elsewhere |
+| Browser UI    | Does the step open something the browser draws itself? Mark it: a select list, a date picker, a dialog (alert, confirm, prompt, leave-page), a permission prompt, a file choice or a drag-and-drop upload, a download |
+
+**Browser-drawn controls.** A recorded tab cannot show what the browser draws
+outside the page, so the kit shows its own: a select's list and a date
+input's month grid are drawn under the field and the cursor picks the entry;
+a dialog is drawn over a held frame (1.5 s) with the cursor clicking OK or
+Cancel. For each marked step agree the answer: which option or date, and
+for a dialog whether it is accepted or cancelled (the scenario's default is
+"accept"; prompts need the text). **Permission prompts** (location,
+notifications, camera, microphone, clipboard) are decided before the video
+starts, so a test never waits on them; when the page asks, the video holds
+the frame and draws Chrome's prompt with the cursor pressing the answer.
+Ask which permissions the flow uses and, for each, whether it is allowed or
+blocked (the app's "blocked" path); list them in the text ("Permissions").
+A **download** shows Chrome's download bubble (file name, size, done) at the
+top right; ask whether the viewer should then see the file itself (it opens
+on the stage: a table for CSV, text, JSON, a picture, a PDF) and for how
+long, and what the test should check in it.
+A **file upload** is staged: a file manager window appears (the video
+changes to it), the cursor picks the files — and for a drag and drop
+carries them, with their icon, back to the app's drop zone. Agree which
+files (names a viewer understands; they live in the recording folder, e.g.
+`fixtures/`), whether it is "choose" or "drag", and the transition back
+(`lift`: the file manager goes behind, the default for drops; `fade`,
+`slide`, `cube`, `cut`).
 
 **Focus decides the camera.** Work it out yourself from the goal and the
 screen, then confirm: what should the viewer see when this step ends? After
@@ -258,6 +295,29 @@ passes `scenario({ showTransition: "slide" })`, and a step's own as
 Do not ask for details the user need not know (selectors, waits); ask only for
 decisions visible on screen. Update the text, then move to the next group.
 
+### 4b. Scenes (if any)
+
+For every row marked "Scene", settle with the user, then make it with the
+`runcast-scene` skill before the test is written:
+
+| Field      | Question / decision                                                          |
+| ---------- | ---------------------------------------------------------------------------- |
+| Purpose    | What should the viewer understand from it, in one sentence                    |
+| Length     | Roughly how many seconds (usually 4–10)                                       |
+| Beats      | The moments in order, each one idea (`customer`, `order`, `invoice`)          |
+| Look       | Light or dark, the app's own look or a plain diagram; which records it shows  |
+| Transition | How the video gets to it (`transition`) and back (`back`, default the same): `fade` (default), `slide`, `cube`, `cut`, `lift` |
+
+Write the scene (`<recording folder>/scenes/<name>/index.html`), run
+`node tests/recording/.kit/cli.ts scene preview <name>`, check the contact
+sheet of its beats yourself, then show the user the sheet and the draft
+video. Change it until they approve; **do not go on before the user approves
+every scene.** Write each scene in the text ("Scenes") with its beats; a
+voice-over can later speak over single beats (`<step id>.<beat id>`).
+Scenes are added when rendering, so a scene can still change after the take:
+changing it later needs only a new render. A scene may open the video or
+follow another scene directly.
+
 ### 5. Review and approval
 
 Complete the text and summarise for the user:
@@ -273,6 +333,7 @@ Complete the text and summarise for the user:
 - Are steps needing new helpers listed?
 - Does every step that only shows something (no clicks the viewer follows)
   have a Focus? For `vertical-crop`, every such step needs one.
+- Is every scene approved by the user (phase 4b)?
 
 Then ask: "The scenario text is ready — shall I write the test?"
 
@@ -295,24 +356,29 @@ The `.md` and the `.spec.ts` stay in sync: when one changes, change the other.
 
 The narration is one audio segment per **recorded** step:
 `scenarios/<name>.narration.json` (example:
-[`narration.example.json`](narration.example.json)). A segment is mixed in when
-its step starts; while recording, the next step does not start before the
-segment and the gap after it (`gapMs`) end. So the voice always sits on its
-step. If a step runs longer than its segment, silence remains and a warning
-says so.
+[`narration.example.json`](narration.example.json)). The narration never
+changes the recording: the renderer fits each segment to its step. A segment
+starts with its step; a voice longer than its step (plus the gap after it,
+`gapMs`) holds the step's last frame until it ends; a step longer than its
+voice loses time from its loading waits (scenario `compressWaits`, default
+on), and what is left is silence. A changed text needs new audio and a new
+`render`, never a new recording.
 
 **a) Learn the steps' real lengths.** Ask the user (it writes to the backend),
-then run a timing rehearsal without narration:
-`REC_NARRATION=0 node tests/recording/.kit/cli.ts rehearsal <name>` (headless and not
-recorded, at the video's pace). If no rehearsal is possible, use the lengths
-in the flow table and say so.
+then record the video once: `node tests/recording/.kit/cli.ts video <name>`
+(it does not need the narration; it records a hidden browser tab, so the
+user can keep working meanwhile — only flows that must show real OS dialogs
+need `REC_CAPTURE=screen`, which takes over the screen). Without a video yet, a timing rehearsal
+works too: `node tests/recording/.kit/cli.ts rehearsal <name>` (headless and
+not recorded, at the video's pace). If neither is possible, use the lengths in
+the flow table and say so.
 
 **b) Write the text.** Create the file (`language`; `wordsPerMinute` — start
 low: 150 for English, 100 for Turkish and other languages with long words
-(an estimate that is too high makes segments overrun their steps); `gapMs`: 400;
+(an estimate that is too high makes steps run past their voice); `gapMs`: 400;
 `voice.modelId`: `eleven_multilingual_v2`; `voice.voiceId`: the user's voice).
 Then run `node tests/recording/.kit/cli.ts narration plan <name>`: it shows each step's own length
-and the **word budget** that fits. Write each segment to its budget:
+(from the newest video, else the rehearsal) and the **word budget** that fits. Write each segment to its budget:
 
 - **Segment = step.** `step` is the step's id. Write no segments for steps
   before `REC_FROM` (not recorded).
@@ -321,7 +387,8 @@ and the **word budget** that fits. Write each segment to its budget:
   (last). They play over the card, which stretches to the audio; no budget,
   but keep them short (1–2 sentences: what the video shows / a closing line).
 - **Fit the time.** Stay within ±15% of the budget. Under the budget means
-  silence (the viewer waits); over it stretches the step (an idle screen).
+  silence or a shortened wait; over it holds the step's last frame (an idle
+  screen).
   Do not cover a long step with one sentence or give a short step a long
   text. Suggest splitting a step if needed.
 - **Narrate what is on screen, as it happens.** A segment describes that
@@ -375,13 +442,16 @@ the measured value and adjust the remaining texts to the new budgets (`plan`
 shows estimate and real length side by side). Voices differ a lot: the same
 model spoke English at ~175 and Turkish at ~95 words per minute. A segment whose text changed needs new audio.
 
-**d) Check rehearsal.** `node tests/recording/.kit/cli.ts rehearsal <name>` (with narration).
-For each "step ran X s longer than its narration" warning, lengthen the
-segment or suggest speeding up the step. When no warnings remain, record.
-
-**e) Video.** `node tests/recording/.kit/cli.ts video <name>`: the audio is mixed into the MP4
-at the seconds its steps start; nothing is placed by hand. A vertical video
-is written to `videos/<name>-vertical.mp4`.
+**d) Check, then render.** `node tests/recording/.kit/cli.ts render <name> --check`
+(no video, seconds; without a recording yet, `video <name>` first). It prints
+a fit table (also in `.captures/<name>/render-report.json`): per step its
+natural length, the voice, the frame held, the wait shortened and the silence
+left; and draws each step's last frame into
+`.captures/<name>/check/sheet.png`. Lengthen segments with long silence;
+shorten ones that hold a frame for long. After changing a text, make its
+audio again (step c) and check again. Then
+`node tests/recording/.kit/cli.ts render <name>` for the MP4 (a vertical one
+goes to `videos/<name>-vertical.mp4`).
 
 ### 8. Publishing (optional)
 

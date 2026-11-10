@@ -1,0 +1,239 @@
+<!doctype html>
+<!--
+  Runcast's file manager for the stage tab (rec.chooseFiles, rec.dropFiles):
+  a plain, app-agnostic window listing the files a step uploads. What to
+  show comes in the URL's query as JSON (?<json>; a new query reloads the
+  page, a new hash would not): { files: [{ name, size, modified }],
+  mode: "open" | "drag", title }. "open" adds Cancel / Open (a file
+  chooser); "drag" is a folder window to drag from. Light and dark follow
+  the browser. Loads nothing from the network.
+-->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Files</title>
+    <style>
+      :root {
+        --desk: #e9ebef;
+        --window: #ffffff;
+        --bar: #f5f6f8;
+        --line: #e3e5e9;
+        --text: #1f2328;
+        --muted: #6b7280;
+        --select: #2f6feb;
+        --select-text: #ffffff;
+        --button: #eef1f4;
+        color-scheme: light dark;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --desk: #1b1c1f;
+          --window: #2b2d31;
+          --bar: #313338;
+          --line: #3c3f45;
+          --text: #e6e6e6;
+          --muted: #9aa0a6;
+          --button: #3a3d43;
+        }
+      }
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: var(--desk);
+        font: 14px/1.2 -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+        color: var(--text);
+        user-select: none;
+        cursor: default;
+      }
+      body {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .window {
+        width: min(760px, 76vw);
+        height: min(480px, 74vh);
+        display: flex;
+        flex-direction: column;
+        background: var(--window);
+        border-radius: 12px;
+        box-shadow:
+          0 24px 64px rgba(0, 0, 0, 0.28),
+          0 0 0 1px rgba(0, 0, 0, 0.08);
+        overflow: hidden;
+      }
+      .bar {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        height: 48px;
+        padding: 0 16px;
+        background: var(--bar);
+        border-bottom: 1px solid var(--line);
+        font-weight: 600;
+      }
+      .dots {
+        display: flex;
+        gap: 7px;
+      }
+      .dots i {
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        background: var(--line);
+      }
+      .head,
+      .row {
+        display: grid;
+        grid-template-columns: 1fr 110px 170px;
+        align-items: center;
+        padding: 0 16px;
+      }
+      .head {
+        height: 32px;
+        color: var(--muted);
+        font-size: 12px;
+        border-bottom: 1px solid var(--line);
+      }
+      .list {
+        flex: 1;
+        overflow: hidden;
+        padding: 6px 8px;
+      }
+      .row {
+        height: 40px;
+        border-radius: 7px;
+        padding: 0 8px;
+      }
+      .row[aria-selected="true"] {
+        background: var(--select);
+        color: var(--select-text);
+      }
+      .row[aria-selected="true"] .meta {
+        color: var(--select-text);
+      }
+      .name {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+      }
+      .icon {
+        flex: none;
+        width: 24px;
+        height: 30px;
+        border-radius: 3px 8px 3px 3px;
+        background: var(--badge, #8b95a5);
+        color: #fff;
+        font-size: 8px;
+        font-weight: 700;
+        display: flex;
+        align-items: flex-end;
+        justify-content: center;
+        padding-bottom: 4px;
+        box-sizing: border-box;
+      }
+      .meta {
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .foot {
+        display: flex;
+        justify-content: flex-end;
+        gap: 10px;
+        padding: 12px 16px;
+        border-top: 1px solid var(--line);
+        background: var(--bar);
+      }
+      button {
+        font: inherit;
+        min-width: 92px;
+        height: 32px;
+        border: 0;
+        border-radius: 8px;
+        background: var(--button);
+        color: var(--text);
+      }
+      button.primary {
+        background: var(--select);
+        color: #fff;
+      }
+      button:disabled {
+        opacity: 0.5;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="window" role="dialog">
+      <div class="bar"><span class="dots"><i></i><i></i><i></i></span><span id="title"></span></div>
+      <div class="head"><span>Name</span><span>Size</span><span>Modified</span></div>
+      <div class="list" id="list" role="listbox" aria-multiselectable="true"></div>
+      <div class="foot" id="foot">
+        <button data-action="cancel">Cancel</button>
+        <button class="primary" data-action="open" disabled>Open</button>
+      </div>
+    </div>
+    <script>
+      const spec = JSON.parse(decodeURIComponent(location.search.slice(1) || "{}"));
+      const files = spec.files ?? [];
+      document.getElementById("title").textContent = spec.title ?? "Documents";
+      if (spec.mode === "drag") document.getElementById("foot").remove();
+      const colours = {
+        pdf: "#d93f3f", csv: "#1e9e5a", xlsx: "#1e9e5a", xls: "#1e9e5a",
+        png: "#7c4dff", jpg: "#7c4dff", jpeg: "#7c4dff", gif: "#7c4dff", webp: "#7c4dff", svg: "#7c4dff",
+        doc: "#2f6feb", docx: "#2f6feb", txt: "#6b7280", md: "#6b7280", json: "#c98a00",
+        zip: "#8a6d3b", mp4: "#e0457b", mov: "#e0457b", mp3: "#e0457b",
+      };
+      const size = (bytes) =>
+        bytes < 1024 ? `${bytes} bytes` : bytes < 1048576 ? `${Math.round(bytes / 1024)} KB` : `${(bytes / 1048576).toFixed(1)} MB`;
+      const list = document.getElementById("list");
+      const open = document.querySelector('[data-action="open"]');
+      let anchor = -1;
+      files.forEach((file, i) => {
+        const ext = (file.name.split(".").pop() || "").toLowerCase();
+        const row = document.createElement("div");
+        row.className = "row";
+        row.setAttribute("role", "option");
+        row.setAttribute("aria-selected", "false");
+        row.dataset.file = file.name;
+        const name = document.createElement("span");
+        name.className = "name";
+        const icon = document.createElement("span");
+        icon.className = "icon";
+        icon.style.setProperty("--badge", colours[ext] ?? "#8b95a5");
+        icon.textContent = ext.slice(0, 4).toUpperCase();
+        const label = document.createElement("span");
+        label.textContent = file.name;
+        name.append(icon, label);
+        const bytes = document.createElement("span");
+        bytes.className = "meta";
+        bytes.textContent = typeof file.size === "number" ? size(file.size) : "";
+        const when = document.createElement("span");
+        when.className = "meta";
+        when.textContent = file.modified
+          ? new Date(file.modified).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })
+          : "";
+        row.append(name, bytes, when);
+        // Click selects; Shift extends from the last click; Ctrl/Cmd adds.
+        row.addEventListener("mousedown", (event) => {
+          const rows = [...list.children];
+          if (event.shiftKey && anchor >= 0) {
+            const [a, b] = [Math.min(anchor, i), Math.max(anchor, i)];
+            rows.forEach((r, j) => r.setAttribute("aria-selected", String(j >= a && j <= b)));
+          } else if (event.metaKey || event.ctrlKey) {
+            row.setAttribute("aria-selected", String(row.getAttribute("aria-selected") !== "true"));
+            anchor = i;
+          } else {
+            rows.forEach((r) => r.setAttribute("aria-selected", String(r === row)));
+            anchor = i;
+          }
+          if (open) open.disabled = !rows.some((r) => r.getAttribute("aria-selected") === "true");
+        });
+        list.append(row);
+      });
+    </script>
+  </body>
+</html>

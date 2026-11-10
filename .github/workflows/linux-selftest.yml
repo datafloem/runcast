@@ -8,6 +8,8 @@ on:
     paths:
       - plugins/runcast/skills/runcast-setup/kit/core/xvfb.ts
       - plugins/runcast/skills/runcast-setup/kit/core/video-capture.ts
+      - plugins/runcast/skills/runcast-setup/kit/core/tab-capture.ts
+      - plugins/runcast/skills/runcast-setup/kit/core/recorder.html
       - plugins/runcast/skills/runcast-setup/kit/test/linux/**
       - .github/workflows/linux-selftest.yml
 

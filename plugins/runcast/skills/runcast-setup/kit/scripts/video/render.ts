@@ -2,8 +2,13 @@
 // with a camera that zooms to the action, a drawn cursor with click ripples,
 // and the scenario's voice-over clips placed at their steps.
 //
-//   node <recording folder>/.kit/cli.ts render [<scenario or capture folder>]
+//   node <recording folder>/.kit/cli.ts render [<scenario or capture folder>] [--check | --draft] [--steps <a>-<b>]
 //
+// --check draws each step's last frame into .captures/<scenario>/check/ (one
+// contact sheet: sheet.png) and prints the narration fit, without a video.
+// --draft renders half size and quickly to videos/<name>.draft.mp4.
+// --steps renders only steps a to b (1-based, recorded steps), to
+// videos/<name>.steps-a-b.mp4 unless --draft.
 // Without an argument it renders the newest capture. Runs with plain Node.
 import {
   createCanvas,
@@ -13,16 +18,17 @@ import {
   type Image,
   type SKRSContext2D,
 } from "@napi-rs/canvas";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
-  readdirSync,
   readFileSync,
-  statSync,
+  rmSync,
+  writeFileSync,
 } from "node:fs";
 import path from "node:path";
 import {
+  actionsOutOfFrame,
   baseView,
   buildCameraTrack,
   cameraAtTime,
@@ -31,6 +37,7 @@ import {
   clicksAtTime,
   cursorAtTime,
   easeInOutCubic,
+  sourceTransitionAt,
   transitionAtTime,
   type Camera,
   type Focus,
@@ -38,20 +45,52 @@ import {
   type Size,
 } from "./timeline.ts";
 import { resolveFormat, type VideoFormat } from "../../core/format.ts";
-import { loadNarration, segmentLength } from "../../core/narration.ts";
-import { kitCommand, loadProject } from "../../core/project.ts";
+import {
+  loadNarration,
+  segmentLength,
+  stepVoices,
+} from "../../core/narration.ts";
+import {
+  audioPlan,
+  fitNarration,
+  naturalMap,
+  retimeCapture,
+  stepStartMs,
+  type Source,
+  type AudioPiece,
+  type Span,
+  type StepFit,
+} from "./timemap.ts";
+import { appAudioFilter, shiftPlan } from "./audio.ts";
+import { readFrameAt, readFrames } from "./frames.ts";
+import { progressText } from "./progress.ts";
+import { applyScenes, type PlaceholderLog, type SceneNow } from "./scenes.ts";
+import {
+  readSceneCapture,
+  recordSceneCapture,
+  sceneCaptureFresh,
+  sceneCaptureRoot,
+} from "./scene-capture.ts";
+import {
+  findCaptures as findProjectCaptures,
+  kitCommand,
+  loadProject,
+} from "../../core/project.ts";
 
 const project = await loadProject();
 const RECORDING_DIR = project.dir;
 const KIT_CMD = kitCommand(RECORDING_DIR);
-const RESULTS_DIR = path.join(RECORDING_DIR, ".results");
 const VIDEOS_DIR = path.join(RECORDING_DIR, "videos");
 
 const FPS = Number(process.env.REC_VIDEO_FPS ?? 30);
 const FONT = '"Helvetica Neue", Helvetica, Arial, sans-serif';
+/** How long the download bubble stays after a download (with its fades). */
+const DOWNLOAD_BUBBLE_MS = 3_400;
 const BRAND = hexToRgb(project.brand?.color ?? "#f97316");
 const FADE_IN_MS = 400;
 const CROSSFADE_MS = 500;
+/** Further ahead than this, the frame stream restarts at its target. */
+const RESEEK_FRAMES = 2 * FPS;
 /** Cross-fade where an off-camera step was cut out. */
 const CUT_FADE_MS = 300;
 /** The app's logo on the title cards (recording.config.ts > brand.logo). */
@@ -68,8 +107,52 @@ interface CaptureFile {
   pointer: Array<PointerSample>;
   focus: Array<Focus>;
   navigations?: Array<number>;
-  /** Off-camera time cut out of the screen recording (core/video-capture.ts). */
+  /** What each stretch of the recording was (core/capture-log.ts); older captures have none. */
+  spans?: Array<Span>;
+  /** Older captures: off-camera time cut out of the screen recording. */
   cuts?: Array<{ at: number; ms: number }>;
+  /** Tab capture: the app's sound (a file with an audio track) and when it starts. */
+  audio?: { file: string; startMs: number };
+  /** Browser dialogs the kit answered; each has a "dialog" span. */
+  dialogs?: Array<CaptureDialog>;
+  /** Tab capture: the stage tab's recording and when it starts. */
+  stage?: { file: string; startMs: number };
+  /** Switches between the app's tab and the stage. */
+  sources?: Array<{
+    t: number;
+    source: "app" | "stage";
+    transition: SourceTransition;
+    /** false: no cursor until the next switch (a scene). */
+    cursor?: boolean;
+  }>;
+  /** Files the cursor carried (drag and drop). */
+  carries?: Array<{ from: number; to: number; label: string }>;
+  /** Scenes added at render time (steps.scene); each also has a "scene" span. */
+  scenes?: Array<PlaceholderLog>;
+  /** Files downloaded on camera (rec.download): the browser's download bubble. */
+  downloads?: Array<{ t: number; name: string; size: number }>;
+}
+
+/** A frame source: the app's tab, the stage tab, or a scene added at render time. */
+type SourceName = Source;
+type SourceTransition = "fade" | "slide" | "cube" | "cut" | "lift";
+
+interface CaptureDialog {
+  t: number;
+  type: string;
+  message: string;
+  accepted: boolean;
+  text?: string;
+  origin?: string;
+}
+
+/** The app's sound in the video: the recording's audio, where it plays, its levels. */
+interface AppAudioMix {
+  file: string;
+  /** Pieces on the audio file's clock, placed on the video clock (intro included). */
+  plan: Array<AudioPiece>;
+  volume: number;
+  duckTo: number;
 }
 
 interface Card {
@@ -81,41 +164,122 @@ interface Card {
 interface StepsFile {
   scenario: string;
   captions?: boolean;
+  /** Whether app waits may be shortened to fit narration (default true). */
+  compressWaits?: boolean;
   /** The scenario's video format (core/format.ts). */
   format?: string;
+  /** The app's sound in the video, when the scenario asked for it. */
+  appAudio?: { volume: number; duckTo: number };
   intro?: Card;
   outro?: Card;
   steps: Array<{
+    id?: string;
     seconds: number;
+    /** Exact start (ms, capture clock); older files have only seconds. */
+    startMs?: number;
     title: string;
     note?: string;
-    narration?: { audio: string | null };
     /** "cube": a cube turn over this step, from the frame before to the one after. */
     transition?: string;
   }>;
 }
 
 export function findCaptures(): Array<string> {
-  if (!existsSync(RESULTS_DIR)) return [];
-  return readdirSync(RESULTS_DIR)
-    .map((dir) => path.join(RESULTS_DIR, dir, "capture"))
-    .filter((dir) => existsSync(path.join(dir, "events.json")))
-    .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs);
+  return findProjectCaptures(RECORDING_DIR);
 }
 
-/** Renders one capture folder; returns the MP4 path. */
-export async function render(captureDir: string): Promise<string> {
-  const capture = JSON.parse(
+/** Where `drawAt` gets the recording's frames from (fills the source canvases). */
+interface FrameSource {
+  /** Puts tab `source`'s recording (default the app's) at file time `fileMs` into its canvas. */
+  at(fileMs: number, source?: SourceName): Promise<void>;
+  close(): Promise<void>;
+}
+
+/** Everything a capture renders from, and how to draw any frame of it. */
+interface Prepared {
+  scenario: string;
+  /** The final video's path. */
+  out: string;
+  layout: Layout;
+  introMs: number;
+  sceneMs: number;
+  totalMs: number;
+  /** Recorded steps on the video clock (intro included). */
+  steps: Array<{ id?: string; title: string; startMs: number }>;
+  report: Array<StepFit>;
+  /** Voice-over clips: file, start and length (ms, intro included). */
+  clips: Array<{ file: string; at: number; ms: number }>;
+  /** The app's sound, or null. */
+  appAudio: AppAudioMix | null;
+  canvas: Canvas;
+  ctx: SKRSContext2D;
+  /** Decodes the recording in order from file time `fromFileMs` (rendering). */
+  streamFrames(fromFileMs?: number): FrameSource;
+  /** Decodes single frames on demand (check). */
+  seekFrames(): FrameSource;
+  /**
+   * Draws the video at time t (ms, intro included) into `canvas`.
+   * `fadeCuts`: cross-fade after cuts (needs every frame drawn in order).
+   */
+  drawAt(
+    t: number,
+    frames: FrameSource,
+    options?: { fadeCuts?: boolean },
+  ): Promise<void>;
+  /**
+   * What the frame at t shows, as a key: two frames with the same key look
+   * the same. Null while something animates (fades, transitions, ripples).
+   */
+  frameKey(t: number): string | null;
+  /** Screen-file time shown at video time t (ms, intro included). */
+  toRec(t: number): number;
+}
+
+/** Reads a capture folder and builds its time map, camera and drawing. */
+async function prepare(
+  captureDir: string,
+  /** bare: the page alone, filling the frame (no background, no rounded frame). */
+  options: { bare?: boolean } = {},
+): Promise<Prepared> {
+  const loaded = JSON.parse(
     readFileSync(path.join(captureDir, "events.json"), "utf-8"),
   ) as CaptureFile;
-  const videoFile = path.join(captureDir, capture.video.file);
+  const videoFile = path.join(captureDir, loaded.video.file);
   if (!existsSync(videoFile))
     throw new Error(`${captureDir}: no screen recording`);
   const stepsFile = path.join(captureDir, "..", "steps.json");
   const stepsData = existsSync(stepsFile)
     ? (JSON.parse(readFileSync(stepsFile, "utf-8")) as StepsFile)
     : null;
-  const steps = stepsData?.steps ?? [];
+
+  // Scenes added at render time: each from its own capture, recorded now
+  // when missing, changed or of another page size; the take gets their
+  // current lengths and beats.
+  const sceneTabs: Record<string, { file: string; startMs: number }> = {};
+  let take = { capture: loaded, steps: stepsData?.steps ?? [] };
+  if (loaded.scenes?.length) {
+    const current = new Map<string, SceneNow>();
+    for (const name of new Set(loaded.scenes.map((s) => s.name))) {
+      if (!sceneCaptureFresh(RECORDING_DIR, name, loaded.viewport, loaded.scale)) {
+        console.log(`Recording scene ${name} (new or changed)...`);
+        await recordSceneCapture(project, name, { viewport: loaded.viewport, scale: loaded.scale });
+      }
+      const info = readSceneCapture(RECORDING_DIR, name)!;
+      const sceneDir = path.join(sceneCaptureRoot(RECORDING_DIR, name), "capture");
+      const sceneEvents = JSON.parse(
+        readFileSync(path.join(sceneDir, "events.json"), "utf-8"),
+      ) as { video: { file: string; startMs: number } };
+      current.set(name, { duration: info.duration, beats: info.beats, startMs: info.startMs });
+      sceneTabs[`scene:${name}`] = {
+        file: path.join(sceneDir, sceneEvents.video.file),
+        startMs: sceneEvents.video.startMs,
+      };
+    }
+    take = applyScenes(loaded, take.steps, current);
+  }
+  const capture = take.capture;
+  /** Steps on the capture clock (steps.json, scene beats as the scenes are now). */
+  const recSteps = take.steps;
   // The scenario decides (captions: true); REC_CAPTIONS=1/0 overrides it here.
   const showCaptions =
     process.env.REC_CAPTIONS !== undefined
@@ -126,7 +290,14 @@ export async function render(captureDir: string): Promise<string> {
   // vertical video from a landscape capture.
   const format = resolveFormat(stepsData?.format);
   const { viewport, scale } = capture;
-  const layout = layoutFor(format, viewport);
+  const framed = layoutFor(format, viewport);
+  const layout: Layout = options.bare
+    ? {
+        ...framed,
+        content: { x: 0, y: 0, w: framed.width, h: framed.height },
+        radius: 0,
+      }
+    : framed;
   const { width: OUT_WIDTH, height: OUT_HEIGHT } = layout;
 
   mkdirSync(VIDEOS_DIR, { recursive: true });
@@ -135,7 +306,9 @@ export async function render(captureDir: string): Promise<string> {
 
   // Title cards. A narration segment "intro" / "outro" is spoken over its
   // card, which then lasts at least as long as the audio.
-  const cardAudio = narrationForCards(capture.scenario);
+  // REC_NARRATION=0 leaves the whole narration file out, card voices included.
+  const cardAudio =
+    process.env.REC_NARRATION === "0" ? {} : narrationForCards(capture.scenario);
   const introMs = stepsData?.intro
     ? Math.max(
         stepsData.intro.durationMs ?? 3000,
@@ -148,22 +321,94 @@ export async function render(captureDir: string): Promise<string> {
         (cardAudio.outro?.ms ?? 0) + 800,
       )
     : 0;
-  const sceneMs = capture.durationMs;
 
-  const clips = steps.flatMap((step) =>
-    step.narration?.audio
+  // The video's clock: the recording at a person's pace (spans), each step
+  // then fitted to its narration, read now so new audio needs no new
+  // recording. Everything logged moves onto this clock.
+  const script =
+    process.env.REC_NARRATION === "0"
+      ? null
+      : loadNarration(specFor(capture.scenario));
+  const voices = script ? stepVoices(script) : new Map<string, never>();
+  const compressWaits =
+    process.env.REC_COMPRESS_WAITS !== undefined
+      ? process.env.REC_COMPRESS_WAITS !== "0"
+      : (stepsData?.compressWaits ?? true);
+  // The app's sound: when the scenario asked for it (REC_APP_AUDIO=0/1
+  // overrides) and the capture has it. Sound cannot be sped up, so long
+  // waits are then cut instead.
+  const appLevels =
+    process.env.REC_APP_AUDIO === "0"
+      ? null
+      : (stepsData?.appAudio ??
+        (process.env.REC_APP_AUDIO === "1" ? { volume: 1, duckTo: 0.3 } : null));
+  const appSound =
+    appLevels && capture.audio && existsSync(path.join(captureDir, capture.audio.file))
+      ? { ...capture.audio, ...appLevels }
+      : null;
+  const { map, report } = fitNarration(
+    naturalMap(capture.spans ?? [], capture.durationMs, capture.cuts, capture.sources),
+    recSteps.map((step) => ({ id: step.id, startMs: stepStartMs(step) })),
+    new Map([...voices].map(([id, voice]) => [id, voice.ms])),
+    { compressWaits, speedUpWaits: !appSound },
+  );
+  const events = retimeCapture(map, {
+    pointer: capture.pointer,
+    focus: capture.focus,
+    navigations: capture.navigations ?? [],
+  });
+  const steps = recSteps.map((step) => ({
+    ...step,
+    seconds: map.toOut(stepStartMs(step)) / 1000,
+  }));
+  const sceneMs = map.outMs;
+
+  const gapMs = script?.gapMs ?? 0;
+  const clips = steps.flatMap((step) => {
+    const voice = step.id ? voices.get(step.id) : undefined;
+    return voice?.audio
       ? [
           {
-            file: path.join(RECORDING_DIR, step.narration.audio),
+            file: path.join(RECORDING_DIR, voice.audio),
             at: introMs + step.seconds * 1000,
+            ms: Math.max(0, voice.ms - gapMs),
           },
         ]
-      : [],
-  );
+      : [];
+  });
   if (stepsData?.intro && cardAudio.intro)
-    clips.push({ file: cardAudio.intro.file, at: 300 });
+    clips.push({ file: cardAudio.intro.file, at: 300, ms: cardAudio.intro.ms });
   if (stepsData?.outro && cardAudio.outro) {
-    clips.push({ file: cardAudio.outro.file, at: introMs + sceneMs + 300 });
+    clips.push({
+      file: cardAudio.outro.file,
+      at: introMs + sceneMs + 300,
+      ms: cardAudio.outro.ms,
+    });
+  }
+  // Plan times are on the recording clock (ms since it started, off camera
+  // included). The audio filter counts from the audio's first sample, which
+  // is recording time audio.startMs, moved by where the audio stream starts
+  // against the file's start (ffmpeg seeks the picture from the file's start).
+  const audioShift = appSound
+    ? -appSound.startMs - audioLeadMs(path.join(captureDir, appSound.file))
+    : 0;
+  const appAudio: AppAudioMix | null = appSound
+    ? {
+        file: path.join(captureDir, appSound.file),
+        plan: audioPlan(map).map((piece) => ({
+          ...piece,
+          fileFrom: piece.fileFrom + audioShift,
+          fileTo: piece.fileTo + audioShift,
+          outFrom: piece.outFrom + introMs,
+        })),
+        volume: appSound.volume,
+        duckTo: appSound.duckTo,
+      }
+    : null;
+  if (appAudio) {
+    console.log(
+      `App audio: on (volume ${appAudio.volume}, ${appAudio.duckTo} under the voice-over).`,
+    );
   }
 
   const { x: contentX, y: contentY, w: contentW, h: contentH } =
@@ -177,55 +422,202 @@ export async function render(captureDir: string): Promise<string> {
   const background = drawBackground(layout);
   const logo = await loadLogo();
   const track = buildCameraTrack(
-    capture.focus,
+    events.focus,
     viewport,
     undefined,
-    capture.navigations ?? [],
+    events.navigations,
     view,
-    (capture.cuts ?? []).map((cut) => cut.at),
+    map.cutsOut,
+  );
+  writeReport(
+    captureDir,
+    recSteps,
+    report,
+    appAudio !== null,
+    steps.map((step) => introMs + step.seconds * 1000),
+    actionsOutOfFrame(events.focus, track, viewport, view).map((f) => ({
+      kind: f.kind,
+      atMs: introMs + f.until,
+    })),
   );
 
-  // The recording, decoded by ffmpeg into raw frames at the output rate,
-  // aligned so frame i shows the page at i / FPS seconds after the start.
-  const { width: videoW, height: videoH } = capture.video;
-  const cuts = capture.cuts ?? [];
-  const frames = readFrames(
-    videoFile,
-    capture.video.startMs,
-    videoW,
-    videoH,
-    cuts,
-  );
+  // Browser dialogs over their held frames (video ms), with where they start.
+  const dialogs = map.segments.flatMap((segment) => {
+    if (segment.kind !== "dialog") return [];
+    const dialog = (capture.dialogs ?? []).find(
+      (d) => Math.abs(d.t - segment.recFrom) <= 1,
+    );
+    return dialog ? [{ from: segment.outFrom, to: segment.outTo, dialog }] : [];
+  });
+  const dialogAt = (t: number) =>
+    dialogs.find((d) => t >= d.from && t < d.to);
+
   // The frame shown just before a cut, faded out over the first frames after it.
   const beforeCut = createCanvas(OUT_WIDTH, OUT_HEIGHT);
   let cutFadeFrom = -Infinity;
-  const source = createCanvas(videoW, videoH);
-  const sourceCtx = source.getContext("2d");
-  let hasFrame = false;
-  /** The first frame was read early, for the intro's cross-fade. */
-  let firstFrameReady = false;
-  const nextFrame = async () => {
-    const next = await frames.next();
-    if (next.done) return;
+  const { width: videoW, height: videoH } = capture.video;
+  // Each recorded tab: its file, its start, and the canvas its frame goes to.
+  const stageFile = capture.stage ? path.join(captureDir, capture.stage.file) : null;
+  const tabs: Record<string, { file: string; startMs: number } | null> = {
+    app: { file: videoFile, startMs: capture.video.startMs },
+    stage:
+      capture.stage && stageFile && existsSync(stageFile)
+        ? { file: stageFile, startMs: capture.stage.startMs }
+        : null,
+    ...sceneTabs,
+  };
+  const canvases = new Map<string, Canvas>();
+  const canvasOf = (which: SourceName) => {
+    let canvas = canvases.get(which);
+    if (!canvas) {
+      canvas = createCanvas(videoW, videoH);
+      canvases.set(which, canvas);
+    }
+    return canvas;
+  };
+  const hasFrame = new Set<string>();
+  const putFrame = (frame: Buffer, which: SourceName) => {
     const pixels = new Uint8ClampedArray(
-      next.value.buffer,
-      next.value.byteOffset,
-      next.value.byteLength,
+      frame.buffer,
+      frame.byteOffset,
+      frame.byteLength,
     );
-    sourceCtx.putImageData(new ImageData(pixels, videoW, videoH), 0, 0);
-    hasFrame = true;
+    canvasOf(which)
+      .getContext("2d")
+      .putImageData(new ImageData(pixels, videoW, videoH), 0, 0);
+    hasFrame.add(which);
   };
 
-  /** The recording at time t (ms since it started), drawn over the background. */
-  /** The recording at time t through `camera`, drawn over the background. */
-  const drawView = (t: number, camera: Camera, captions: boolean) => {
-    const visibleW = view.width / camera.zoom;
-    const visibleH = view.height / camera.zoom;
-    const x0 = camera.cx - visibleW / 2;
-    const y0 = camera.cy - visibleH / 2;
+  // A tab's recording, decoded by ffmpeg into raw frames at the output rate,
+  // aligned so frame i shows the file at i / FPS seconds after the
+  // recording's start (off-camera time included: the time map skips it).
+  const streamTab = (which: SourceName, fromFileMs: number) => {
+    const tab = tabs[which]!;
+    const open = (index: number) =>
+      readFrames(tab.file, tab.startMs, videoW, videoH, (index * 1000) / FPS, FPS);
+    const first = Math.max(0, Math.floor((fromFileMs * FPS) / 1000));
+    let frames = open(first);
+    /** Index of the decoded frame in its canvas (first - 1: none yet). */
+    let frameIndex = first - 1;
+    let decoded = false;
+    return {
+      // Forward only: a held or stretched frame is reused, skipped frames are
+      // read past, and a long jump (an off-camera step, a cut wait) starts
+      // the decoder again at the target instead of decoding what it skips.
+      // Asked for a frame before where it started, with nothing decoded yet
+      // (a --steps range that starts on a cube step), it starts again there.
+      async at(fileMs: number) {
+        const target = Math.max(0, Math.floor((fileMs * FPS) / 1000 + 1e-6));
+        if (target - frameIndex > RESEEK_FRAMES || (!decoded && target <= frameIndex)) {
+          await frames.return(undefined);
+          frames = open(target);
+          frameIndex = target - 1;
+        }
+        let latest: Buffer | undefined;
+        while (frameIndex < target) {
+          const next = await frames.next();
+          if (next.done) break;
+          latest = next.value;
+          frameIndex++;
+        }
+        if (latest) {
+          putFrame(latest, which);
+          decoded = true;
+        }
+      },
+      async close() {
+        await frames.return(undefined); // stops the decoder
+      },
+    };
+  };
+  // One forward-only decoder per tab, the stage's opened when first shown.
+  const streamFrames = (fromFileMs = 0): FrameSource => {
+    const streams: Partial<Record<SourceName, ReturnType<typeof streamTab>>> = {
+      app: streamTab("app", fromFileMs),
+    };
+    return {
+      async at(fileMs, which = "app") {
+        if (!tabs[which]) return;
+        const stream = (streams[which] ??= streamTab(which, fileMs));
+        await stream!.at(fileMs);
+      },
+      async close() {
+        for (const stream of Object.values(streams)) await stream!.close();
+      },
+    };
+  };
+  const seekFrames = (): FrameSource => ({
+    async at(fileMs, which = "app") {
+      const tab = tabs[which];
+      if (!tab) return;
+      const frame = await readFrameAt(
+        tab.file,
+        Math.max(0, fileMs - tab.startMs),
+        videoW,
+        videoH,
+      );
+      if (frame) putFrame(frame, which);
+    },
+    async close() {},
+  });
+  // The stage is shown whole: the camera stays at its base view.
+  const stageCamera = clampCamera(
+    { zoom: 1, cx: viewport.width / 2, cy: viewport.height / 2 },
+    viewport,
+    view,
+  );
+  // The stage and scenes are shown whole: the camera follows the app only.
+  const cameraFor = (which: SourceName, t: number) =>
+    which === "app" ? cameraAtTime(track, t, viewport, view) : stageCamera;
+  // Files the cursor carries, on the video clock.
+  const carries = (capture.carries ?? []).map((carry) => ({
+    from: map.toOut(carry.from),
+    to: map.toOut(carry.to),
+    label: carry.label,
+  }));
+  const carryAt = (t: number) => carries.find((c) => t >= c.from && t < c.to);
+  // Download bubbles (video ms): the latest download shown, for a while.
+  const downloads = (capture.downloads ?? []).map((d) => ({ ...d, from: map.toOut(d.t) }));
+  const downloadAt = (t: number) =>
+    downloads.filter((d) => t >= d.from && t < d.from + DOWNLOAD_BUBBLE_MS).at(-1);
+  // Stretches without a cursor (scenes), on the video clock.
+  const switches = capture.sources ?? [];
+  const noCursor = switches.flatMap((s, i) =>
+    s.cursor === false
+      ? [{ from: map.toOut(s.t), to: i + 1 < switches.length ? map.toOut(switches[i + 1]!.t) : Infinity }]
+      : [],
+  );
+  const cursorHidden = (t: number) =>
+    noCursor.some((r) => t >= r.from && t < r.to) || map.sourceAt(t).startsWith("scene:");
+
+  /** Tab `which`'s recording at time t through `camera`, drawn over the background. */
+  const drawView = (
+    t: number,
+    camera: Camera,
+    captions: boolean,
+    which: SourceName = "app",
+  ) => {
+    // The stage in a crop layout (vertical-crop) is shown whole, fitted into
+    // the frame: a scene or a file manager is laid out for the full page.
+    const fitStage =
+      which !== "app" &&
+      (view.width < viewport.width - 0.5 || view.height < viewport.height - 0.5);
+    const visibleW = fitStage ? viewport.width : view.width / camera.zoom;
+    const visibleH = fitStage ? viewport.height : view.height / camera.zoom;
+    const x0 = fitStage ? 0 : camera.cx - visibleW / 2;
+    const y0 = fitStage ? 0 : camera.cy - visibleH / 2;
+    const fit = Math.min(contentW / viewport.width, contentH / viewport.height);
+    const dest = fitStage
+      ? {
+          w: viewport.width * fit,
+          h: viewport.height * fit,
+          x: contentX + (contentW - viewport.width * fit) / 2,
+          y: contentY + (contentH - viewport.height * fit) / 2,
+        }
+      : { x: contentX, y: contentY, w: contentW, h: contentH };
     const toOut = (p: { x: number; y: number }) => ({
-      x: contentX + ((p.x - x0) / visibleW) * contentW,
-      y: contentY + ((p.y - y0) / visibleH) * contentH,
+      x: dest.x + ((p.x - x0) / visibleW) * dest.w,
+      y: dest.y + ((p.y - y0) / visibleH) * dest.h,
     });
 
     ctx.drawImage(background, 0, 0);
@@ -236,37 +628,65 @@ export async function render(captureDir: string): Promise<string> {
     ctx.shadowBlur = 60;
     ctx.shadowOffsetY = 24;
     roundedRect(ctx, contentX, contentY, contentW, contentH, layout.radius);
-    ctx.fillStyle = "#ffffff";
+    // A fitted stage sits on a dark band, like a landscape clip on a phone.
+    ctx.fillStyle = fitStage ? "#111318" : "#ffffff";
     ctx.fill();
     ctx.restore();
 
     ctx.save();
     roundedRect(ctx, contentX, contentY, contentW, contentH, layout.radius);
     ctx.clip();
-    if (hasFrame) {
+    if (hasFrame.has(which)) {
       ctx.drawImage(
-        source,
+        canvasOf(which),
         x0 * scale,
         y0 * scale,
         visibleW * scale,
         visibleH * scale,
-        contentX,
-        contentY,
-        contentW,
-        contentH,
+        dest.x,
+        dest.y,
+        dest.w,
+        dest.h,
       );
     }
     // Cursor size follows the zoom a little, so it stays readable.
     const cursorScale = 1.5 * (1 + (camera.zoom - 1) * 0.45);
-    for (const click of clicksAtTime(capture.pointer, t)) {
+    const cursor = cursorHidden(t) ? null : cursorAtTime(events.pointer, t);
+    const open = dialogAt(t);
+    if (open) {
+      // A browser dialog: drawn over the held frame, the cursor answering it.
+      (open.dialog.type === "permission" ? drawPermissionPrompt : drawDialog)(
+        ctx,
+        open.dialog,
+        (t - open.from) / Math.max(1, open.to - open.from),
+        { x: contentX, y: contentY, w: contentW, h: contentH, unit: contentW / view.width },
+        cursor ? toOut(cursor) : null,
+        cursorScale,
+      );
+      ctx.restore();
+      if (captions) drawCaptionAt(t);
+      return;
+    }
+    const bubble = which === "app" ? downloadAt(t) : undefined;
+    if (bubble) {
+      drawDownloadBubble(ctx, bubble, t - bubble.from, {
+        x: contentX,
+        y: contentY,
+        w: contentW,
+        h: contentH,
+        unit: contentW / view.width,
+      });
+    }
+    for (const click of clicksAtTime(events.pointer, t)) {
       drawRipple(ctx, toOut(click), click.age, cursorScale);
     }
-    const cursor = cursorAtTime(capture.pointer, t);
     if (cursor) {
-      const pressed = capture.pointer.some(
+      const pressed = events.pointer.some(
         (s) => s.kind === "down" && t >= s.t && t - s.t < 140,
       );
       drawCursor(ctx, toOut(cursor), cursorScale * (pressed ? 0.85 : 1));
+      const carry = carryAt(t);
+      if (carry) drawGhost(ctx, toOut(cursor), carry.label, cursorScale);
     }
     ctx.restore();
 
@@ -284,7 +704,11 @@ export async function render(captureDir: string): Promise<string> {
    * transition runs, the view the camera leaves and the one it reaches are
    * both drawn from the current frame and joined as a slide, fade or cube.
    */
-  const drawScene = (t: number) => {
+  const drawScene = (t: number, which: SourceName = "app") => {
+    if (which !== "app") {
+      drawView(t, stageCamera, true, which);
+      return;
+    }
     const turn = transitionAtTime(track, t);
     if (!turn) {
       drawView(t, cameraAtTime(track, t, viewport, view), true);
@@ -294,11 +718,38 @@ export async function render(captureDir: string): Promise<string> {
     grabContent(faceA);
     drawView(t, cameraAtTime(track, t, viewport, view), false);
     grabContent(faceB);
-    const p = easeInOutCubic(turn.p);
+    composeTurn(turn.kind, turn.p);
+    drawCaptionAt(t);
+  };
+
+  /**
+   * A tab change (app ↔ stage) right after the switch: the last frame of the
+   * tab left behind and the live frame of the tab reached, joined by the
+   * switch's transition. Both tabs' frames must be in their canvases.
+   */
+  const drawSourceTurn = (
+    t: number,
+    turn: { at: number; from: SourceName; to: SourceName; kind: SourceTransition; p: number },
+  ) => {
+    drawView(t, cameraFor(turn.from, turn.at - 1), false, turn.from);
+    grabContent(faceA);
+    drawView(t, cameraFor(turn.to, t), false, turn.to);
+    grabContent(faceB);
+    composeTurn(turn.kind, turn.p);
+    drawCaptionAt(t);
+  };
+
+  /**
+   * Joins faceA (the view left) and faceB (the view reached), `p` (0-1)
+   * through: a cube turn, a slide, a fade, or a lift (A shrinks and fades
+   * back over B, like a window going behind).
+   */
+  const composeTurn = (kind: string, rawP: number) => {
+    const p = easeInOutCubic(rawP);
     const box = { x: contentX, y: contentY, w: contentW, h: contentH };
     ctx.drawImage(background, 0, 0);
-    if (turn.kind === "cube") {
-      drawCubeTurn(ctx, faceA, faceB, turn.p, box);
+    if (kind === "cube") {
+      drawCubeTurn(ctx, faceA, faceB, rawP, box);
     } else {
       ctx.save();
       ctx.shadowColor = "rgba(0, 0, 0, 0.45)";
@@ -311,10 +762,21 @@ export async function render(captureDir: string): Promise<string> {
       ctx.save();
       roundedRect(ctx, contentX, contentY, contentW, contentH, layout.radius);
       ctx.clip();
-      if (turn.kind === "slide") {
+      if (kind === "slide") {
         const offset = p * contentW;
         ctx.drawImage(faceA, contentX - offset, contentY);
         ctx.drawImage(faceB, contentX + contentW - offset, contentY);
+      } else if (kind === "lift") {
+        ctx.drawImage(faceB, contentX, contentY);
+        const scale = 1 - 0.08 * p;
+        const w = contentW * scale;
+        const h = contentH * scale;
+        ctx.globalAlpha = 1 - p;
+        ctx.shadowColor = "rgba(0, 0, 0, 0.4)";
+        ctx.shadowBlur = 40;
+        ctx.drawImage(faceA, contentX + (contentW - w) / 2, contentY + (contentH - h) / 2, w, h);
+      } else if (kind === "cut") {
+        ctx.drawImage(faceB, contentX, contentY);
       } else {
         ctx.drawImage(faceA, contentX, contentY);
         ctx.globalAlpha = p;
@@ -322,10 +784,23 @@ export async function render(captureDir: string): Promise<string> {
       }
       ctx.restore();
     }
-    drawCaptionAt(t);
   };
 
-  // Steps marked with a transition: over their time (recording ms) the video
+  /** Fetches the frames scene time t needs and draws it (tab changes included). */
+  const drawSceneAt = async (sceneT: number, frames: FrameSource) => {
+    const turn = sourceTransitionAt(map.switchesOut, sceneT);
+    if (turn) {
+      await frames.at(map.toRec(turn.at - 0.5), turn.from);
+      await frames.at(map.toRec(sceneT), turn.to);
+      drawSourceTurn(sceneT, turn);
+      return;
+    }
+    const which = map.sourceAt(sceneT);
+    await frames.at(map.toRec(sceneT), which);
+    drawScene(sceneT, which);
+  };
+
+  // Steps marked with a transition: over their time (video ms) the video
   // shows a cube turn from the frame where the step starts to the frame where
   // the next one starts, instead of what the page did meanwhile.
   const transitions = steps.flatMap((step, i) =>
@@ -357,120 +832,232 @@ export async function render(captureDir: string): Promise<string> {
   };
 
   const totalMs = introMs + sceneMs + outroMs;
-  const totalFrames = Math.ceil((totalMs / 1000) * FPS);
-  const ffmpeg = startEncoder(out, clips, layout);
-  const emit = async (i: number, t: number) => {
-    const pixels = ctx.getImageData(0, 0, OUT_WIDTH, OUT_HEIGHT).data;
-    await write(
-      ffmpeg.stdin,
-      Buffer.from(pixels.buffer, pixels.byteOffset, pixels.byteLength),
-    );
-    if (i % FPS === 0) {
-      process.stdout.write(
-        `\r${capture.scenario}: ${(t / 1000).toFixed(0)} / ${(totalMs / 1000).toFixed(0)} s`,
-      );
+  const frameMs = 1000 / FPS;
+  const box = { x: contentX, y: contentY, w: contentW, h: contentH };
+  // A cube step's two faces, made once when the turn starts.
+  const cubeA = createCanvas(contentW, contentH);
+  const cubeB = createCanvas(contentW, contentH);
+  let cubeFor: { from: number; to: number } | null = null;
+  const drawAt = async (
+    t: number,
+    frames: FrameSource,
+    { fadeCuts = true }: { fadeCuts?: boolean } = {},
+  ) => {
+    const sceneT = t - introMs;
+
+    // Steps marked "cube": a turn from the page as the step starts to the
+    // page as the next one starts, instead of what the page did meanwhile.
+    const turn =
+      t >= introMs
+        ? transitions.find((tr) => sceneT >= tr.from && sceneT < tr.to)
+        : undefined;
+    if (turn) {
+      if (cubeFor !== turn) {
+        await drawSceneAt(turn.from, frames);
+        grabContent(cubeA);
+        await drawSceneAt(turn.to, frames);
+        grabContent(cubeB);
+        cubeFor = turn;
+      }
+      ctx.drawImage(background, 0, 0);
+      const p = (sceneT - turn.from) / Math.max(1, turn.to - turn.from);
+      drawCubeTurn(ctx, cubeA, cubeB, p, box);
+      return;
+    }
+
+    if (t < introMs && stepsData?.intro) {
+      // Intro: the card fades in; in its last half second the recording's
+      // first frame shows through it.
+      const crossFrom = introMs - CROSSFADE_MS;
+      if (t >= crossFrom) {
+        await drawSceneAt(0, frames);
+        drawCard(
+          ctx,
+          background,
+          logo,
+          stepsData.intro,
+          1 - (t - crossFrom) / CROSSFADE_MS,
+          layout,
+        );
+      } else {
+        ctx.drawImage(background, 0, 0);
+        drawCard(
+          ctx,
+          background,
+          logo,
+          stepsData.intro,
+          Math.min(1, t / FADE_IN_MS),
+          layout,
+        );
+      }
+    } else if (t < introMs + sceneMs) {
+      const prevT = sceneT - frameMs;
+      if (!fadeCuts) cutFadeFrom = -Infinity;
+      else if (map.cutsOut.some((at) => at > prevT && at <= sceneT)) {
+        // The canvas still holds the last frame before the cut.
+        beforeCut.getContext("2d").drawImage(canvas, 0, 0);
+        cutFadeFrom = sceneT;
+      }
+      await drawSceneAt(sceneT, frames);
+      const fade = (sceneT - cutFadeFrom) / CUT_FADE_MS;
+      if (fade >= 0 && fade < 1) {
+        ctx.save();
+        ctx.globalAlpha = 1 - fade;
+        ctx.drawImage(beforeCut, 0, 0);
+        ctx.restore();
+      }
+    } else {
+      // Outro: the card comes in over the last frame of the recording.
+      await drawSceneAt(sceneMs, frames);
+      if (stepsData?.outro) {
+        const shown = t - introMs - sceneMs;
+        drawCard(
+          ctx,
+          background,
+          logo,
+          stepsData.outro,
+          Math.min(1, shown / CROSSFADE_MS),
+          layout,
+        );
+      }
     }
   };
-  try {
-    for (let i = 0; i < totalFrames; i++) {
-      const t = (i * 1000) / FPS;
 
-      const turn = transitions.find(
-        (tr) => t - introMs >= tr.from && t - introMs < tr.to,
+  // Exact enough that a moving camera or cursor always changes the key;
+  // held frames repeat the very same values.
+  const exact = (n: number) => n.toFixed(3);
+  const frameKey = (t: number): string | null => {
+    const sceneT = t - introMs;
+    if (t < introMs) {
+      // The intro card holds still between its fade-in and the cross-fade.
+      return stepsData?.intro &&
+        t >= FADE_IN_MS &&
+        t < introMs - CROSSFADE_MS
+        ? "intro"
+        : null;
+    }
+    if (sceneT >= sceneMs) {
+      if (!stepsData?.outro) return `end`;
+      return sceneT - sceneMs >= CROSSFADE_MS ? "outro" : null;
+    }
+    if (transitions.some((tr) => sceneT >= tr.from && sceneT < tr.to))
+      return null;
+    if (transitionAtTime(track, sceneT)) return null;
+    if (map.cutsOut.some((at) => sceneT >= at && sceneT < at + CUT_FADE_MS + frameMs))
+      return null;
+    if (clicksAtTime(events.pointer, sceneT).length > 0) return null;
+    if (dialogAt(sceneT)) return null;
+    if (sourceTransitionAt(map.switchesOut, sceneT)) return null;
+    if (carryAt(sceneT)) return null;
+    const which = map.sourceAt(sceneT);
+    const source = `${which}:${Math.floor((map.toRec(sceneT) * FPS) / 1000 + 1e-6)}`;
+    const camera = cameraFor(which, sceneT);
+    const cursor = cursorHidden(sceneT) ? null : cursorAtTime(events.pointer, sceneT);
+    const pressed = events.pointer.some(
+      (p) => p.kind === "down" && sceneT >= p.t && sceneT - p.t < 140,
+    );
+    const caption = showCaptions ? captionAtTime(steps, sceneT, sceneMs) : null;
+    return [
+      source,
+      exact(camera.zoom),
+      exact(camera.cx),
+      exact(camera.cy),
+      cursor ? `${exact(cursor.x)},${exact(cursor.y)}` : "-",
+      pressed,
+      caption ? `${caption.text}@${exact(caption.alpha)}` : "-",
+    ].join("|");
+  };
+
+  return {
+    scenario: capture.scenario,
+    out,
+    layout,
+    introMs,
+    sceneMs,
+    totalMs,
+    steps: steps.map((step) => ({
+      id: step.id,
+      title: step.title,
+      startMs: introMs + step.seconds * 1000,
+    })),
+    report,
+    clips,
+    appAudio,
+    canvas,
+    ctx,
+    streamFrames,
+    seekFrames,
+    drawAt,
+    frameKey,
+    toRec: (t: number) => map.toRec(t - introMs),
+  };
+}
+
+/**
+ * Renders one capture folder; returns the MP4 path. `draft`: half size,
+ * quick encode, to videos/<name>.draft.mp4. `steps` [a, b] (1-based, recorded
+ * steps): only from step a's start to step b's end, no cards, to
+ * videos/<name>.steps-a-b.mp4 (or the draft file).
+ */
+export async function render(
+  captureDir: string,
+  options: { draft?: boolean; steps?: [number, number]; bare?: boolean } = {},
+): Promise<string> {
+  const job = await prepare(captureDir, { bare: options.bare });
+  const { width, height } = job.layout;
+  let fromMs = 0;
+  let toMs = job.totalMs;
+  let out = job.out;
+  if (options.steps) {
+    const [a, b] = options.steps;
+    if (!(a >= 1 && b >= a && b <= job.steps.length)) {
+      throw new Error(
+        `--steps ${a}-${b}: the recording has steps 1-${job.steps.length}.`,
       );
-      if (turn && t >= introMs) {
-        // Face A: the page as the step starts; face B: as the next one starts,
-        // read ahead through the frames the turn replaces.
-        if (firstFrameReady) firstFrameReady = false;
-        else await nextFrame();
-        drawScene(t - introMs);
-        grabContent(faceA);
-        const end = Math.min(
-          totalFrames,
-          Math.ceil(((introMs + turn.to) / 1000) * FPS),
+    }
+    fromMs = job.steps[a - 1]!.startMs;
+    toMs = job.steps[b]?.startMs ?? job.introMs + job.sceneMs;
+    out = out.replace(/\.mp4$/, `.steps-${a}-${b}.mp4`);
+  }
+  if (options.draft) out = out.replace(/(\.steps-\d+-\d+)?\.mp4$/, ".draft.mp4");
+  const firstFrame = Math.ceil((fromMs / 1000) * FPS);
+  const endFrame = Math.ceil((toMs / 1000) * FPS);
+  const startMs = (firstFrame * 1000) / FPS;
+  const clips = job.clips
+    .map((clip) => ({ ...clip, at: clip.at - startMs }))
+    .filter((clip) => clip.at < toMs - startMs);
+  const appAudio = job.appAudio
+    ? { ...job.appAudio, plan: shiftPlan(job.appAudio.plan, startMs) }
+    : null;
+  const frames = job.streamFrames(job.toRec(startMs));
+  const ffmpeg = startEncoder(out, clips, job.layout, {
+    draft: options.draft,
+    durationMs: options.steps ? toMs - startMs : undefined,
+    appAudio,
+  });
+  try {
+    // A frame that looks like the previous one (held, stretched, a still
+    // screen) is sent again without drawing it.
+    let lastKey: string | null = null;
+    let lastFrame: Buffer | null = null;
+    for (let i = firstFrame; i < endFrame; i++) {
+      const t = (i * 1000) / FPS;
+      const key = job.frameKey(t);
+      if (key === null || key !== lastKey || !lastFrame) {
+        await job.drawAt(t, frames);
+        const pixels = job.ctx.getImageData(0, 0, width, height).data;
+        lastFrame = Buffer.from(
+          pixels.buffer,
+          pixels.byteOffset,
+          pixels.byteLength,
         );
-        for (let j = i + 1; j < end; j++) await nextFrame();
-        drawScene(turn.to);
-        grabContent(faceB);
-        for (let j = i; j < end; j++) {
-          ctx.drawImage(background, 0, 0);
-          drawCubeTurn(ctx, faceA, faceB, (j - i) / Math.max(1, end - i), {
-            x: contentX,
-            y: contentY,
-            w: contentW,
-            h: contentH,
-          });
-          await emit(j, (j * 1000) / FPS);
-        }
-        turn.to = -1; // done
-        i = end - 1;
-        continue;
       }
-
-      if (t < introMs && stepsData?.intro) {
-        // Intro: the card fades in; in its last half second the recording's
-        // first frame shows through it.
-        const crossFrom = introMs - CROSSFADE_MS;
-        if (t >= crossFrom) {
-          if (!firstFrameReady) {
-            await nextFrame();
-            firstFrameReady = true;
-          }
-          drawScene(0);
-          drawCard(
-            ctx,
-            background,
-            logo,
-            stepsData.intro,
-            1 - (t - crossFrom) / CROSSFADE_MS,
-            layout,
-          );
-        } else {
-          ctx.drawImage(background, 0, 0);
-          drawCard(
-            ctx,
-            background,
-            logo,
-            stepsData.intro,
-            Math.min(1, t / FADE_IN_MS),
-            layout,
-          );
-        }
-      } else if (t < introMs + sceneMs) {
-        const sceneT = t - introMs;
-        const prevT = sceneT - 1000 / FPS;
-        if (cuts.some((cut) => cut.at > prevT && cut.at <= sceneT && i > 0)) {
-          // The canvas still holds the last frame before the cut.
-          beforeCut.getContext("2d").drawImage(canvas, 0, 0);
-          cutFadeFrom = sceneT;
-        }
-        if (firstFrameReady) firstFrameReady = false;
-        else await nextFrame();
-        drawScene(sceneT);
-        const fade = (sceneT - cutFadeFrom) / CUT_FADE_MS;
-        if (fade >= 0 && fade < 1) {
-          ctx.save();
-          ctx.globalAlpha = 1 - fade;
-          ctx.drawImage(beforeCut, 0, 0);
-          ctx.restore();
-        }
-      } else {
-        // Outro: the card comes in over the last frame of the recording.
-        drawScene(sceneMs);
-        if (stepsData?.outro) {
-          const shown = t - introMs - sceneMs;
-          drawCard(
-            ctx,
-            background,
-            logo,
-            stepsData.outro,
-            Math.min(1, shown / CROSSFADE_MS),
-            layout,
-          );
-        }
+      lastKey = key;
+      await write(ffmpeg.stdin, lastFrame);
+      if (i % FPS === 0) {
+        const line = progressText(Boolean(process.stdout.isTTY), job.scenario, t, job.totalMs);
+        if (line) process.stdout.write(line);
       }
-
-      await emit(i, t);
     }
   } catch (error) {
     // Close the encoder's input: it ends the video at the frames so far and
@@ -479,7 +1066,7 @@ export async function render(captureDir: string): Promise<string> {
     ffmpeg.stdin.end();
     throw error;
   } finally {
-    await frames.return(undefined); // stops the decoder
+    await frames.close();
   }
   ffmpeg.stdin.end();
   await new Promise<void>((resolve, reject) => {
@@ -487,8 +1074,162 @@ export async function render(captureDir: string): Promise<string> {
       code === 0 ? resolve() : reject(new Error(`ffmpeg exited with ${code}`)),
     );
   });
-  process.stdout.write("\n");
+  if (process.stdout.isTTY) process.stdout.write("\n");
   return out;
+}
+
+/** Silence after a step's voice longer than this is flagged (render and check). */
+const LONG_SILENCE_MS = 5000;
+
+/** Width of each step's check frame. */
+const CHECK_WIDTH = 960;
+/** Contact sheet: columns and tile width. */
+const SHEET_COLUMNS = 3;
+const SHEET_TILE = 640;
+
+/**
+ * A quick look without a video: each recorded step's last frame (just
+ * before the next step starts), drawn exactly as the video shows it, saved
+ * to .captures/<scenario>/check/NN-<id>.png and joined into check/sheet.png.
+ * Prints the narration fit. Returns the sheet's path.
+ */
+export async function check(captureDir: string): Promise<string> {
+  const job = await prepare(captureDir);
+  const dir = path.join(captureDir, "..", "check");
+  rmSync(dir, { recursive: true, force: true });
+  mkdirSync(dir, { recursive: true });
+  const { width, height } = job.layout;
+  const frames = job.seekFrames();
+  const tiles: Array<{ label: string; image: Canvas }> = [];
+  const lastFrame = (ms: number) =>
+    Math.max(0, (Math.ceil((ms / 1000) * FPS) - 1) * (1000 / FPS));
+  for (const [i, step] of job.steps.entries()) {
+    const end = job.steps[i + 1]?.startMs ?? job.introMs + job.sceneMs;
+    await job.drawAt(lastFrame(end), frames, { fadeCuts: false });
+    const scaled = createCanvas(CHECK_WIDTH, Math.round((height * CHECK_WIDTH) / width));
+    scaled.getContext("2d").drawImage(job.canvas, 0, 0, scaled.width, scaled.height);
+    const label = `${String(i + 1).padStart(2, "0")} ${step.id ?? step.title}`;
+    const name = `${label.replace(/[^\w-]+/g, "-")}.png`;
+    writeFileSync(path.join(dir, name), await scaled.encode("png"));
+    tiles.push({ label, image: scaled });
+  }
+  await frames.close();
+
+  const tileH = Math.round((height * SHEET_TILE) / width);
+  const columns = Math.min(SHEET_COLUMNS, Math.max(1, tiles.length));
+  const rows = Math.max(1, Math.ceil(tiles.length / columns));
+  const sheet = createCanvas(columns * SHEET_TILE, rows * tileH);
+  const sheetCtx = sheet.getContext("2d");
+  sheetCtx.fillStyle = "#000000";
+  sheetCtx.fillRect(0, 0, sheet.width, sheet.height);
+  tiles.forEach(({ label, image }, i) => {
+    const x = (i % columns) * SHEET_TILE;
+    const y = Math.floor(i / columns) * tileH;
+    sheetCtx.drawImage(image, x, y, SHEET_TILE, tileH);
+    sheetCtx.fillStyle = "rgba(0, 0, 0, 0.7)";
+    sheetCtx.fillRect(x, y, SHEET_TILE, 30);
+    sheetCtx.fillStyle = "#ffffff";
+    sheetCtx.font = `bold 18px ${FONT}`;
+    sheetCtx.textBaseline = "middle";
+    sheetCtx.fillText(label, x + 10, y + 15);
+  });
+  const file = path.join(dir, "sheet.png");
+  writeFileSync(file, await sheet.encode("png"));
+  return file;
+}
+
+/**
+ * How much later the file's audio stream starts than the file itself (ms):
+ * the picture is read from the file's start, the sound from its own first
+ * sample. 0 when it cannot be read.
+ */
+function audioLeadMs(file: string): number {
+  try {
+    const starts = execFileSync(
+      "ffprobe",
+      ["-v", "error", "-show_entries", "stream=codec_type,start_time", "-of", "csv=p=0", file],
+      { encoding: "utf-8" },
+    )
+      .split("\n")
+      .map((line) => line.trim().split(","))
+      .filter((parts) => parts.length >= 2 && !Number.isNaN(Number(parts[1])));
+    const audio = starts.find((parts) => parts[0] === "audio");
+    if (!audio) return 0;
+    const first = Math.min(...starts.map((parts) => Number(parts[1])));
+    return (Number(audio[1]) - first) * 1000;
+  } catch {
+    return 0;
+  }
+}
+
+/** scenarios/<name>.spec.ts of a capture's scenario (its narration file sits next to it). */
+function specFor(scenario: string): string {
+  return path.join(RECORDING_DIR, "scenarios", `${scenario}.spec.ts`);
+}
+
+/**
+ * How each step was fitted to its narration, and where it starts in the
+ * video (chapters): printed when the scenario has narration, and written to
+ * render-report.json next to steps.json.
+ */
+function writeReport(
+  captureDir: string,
+  steps: Array<{ id?: string; title: string }>,
+  report: Array<StepFit>,
+  /** Whether the app's own sound is mixed in (noted on every row). */
+  appAudio: boolean,
+  /** Where each step starts in the video (ms, opening card included). */
+  videoStartMs: Array<number>,
+  /** Actions the camera does not show (video ms, opening card included). */
+  outOfFrame: Array<{ kind: string; atMs: number }>,
+): void {
+  const stepAt = (ms: number) =>
+    Math.max(0, videoStartMs.findLastIndex((start) => start <= ms));
+  const rows = report.map((fit) => ({
+    step: steps[fit.index]?.title ?? String(fit.index + 1),
+    videoStartMs: Math.round(videoStartMs[fit.index] ?? 0),
+    ...fit,
+    appAudio,
+    outOfFrame: outOfFrame
+      .filter((action) => stepAt(action.atMs) === fit.index)
+      .map((action) => ({ kind: action.kind, atMs: Math.round(action.atMs) })),
+  }));
+  writeFileSync(
+    path.join(captureDir, "..", "render-report.json"),
+    `${JSON.stringify(rows, null, 2)}\n`,
+  );
+  for (const row of rows) {
+    for (const action of row.outOfFrame) {
+      console.warn(
+        `Out of frame: ${row.step}, ${action.kind} at ${(action.atMs / 1000).toFixed(1)} s. ` +
+          "The camera cannot show it (e.g. a vertical crop too narrow for the scene): " +
+          "split the scene, show the area first, or use another format.",
+      );
+    }
+  }
+  for (const row of rows) {
+    if (row.voiceMs !== null && row.silenceMs > LONG_SILENCE_MS) {
+      console.warn(
+        `Long silence: ${row.step} leaves ${(row.silenceMs / 1000).toFixed(1)} s of silence after its voice. ` +
+          "Its cursor moves, rests and pauses are never shortened, and waits keep at least 0.6 s each: " +
+          "lengthen its narration (narration plan shows the word budget), or trim or split the step.",
+      );
+    }
+  }
+  if (!report.some((fit) => fit.voiceMs !== null)) return;
+  const s = (ms: number | null) =>
+    ms === null ? "—" : ms === 0 ? "" : `${(ms / 1000).toFixed(1)} s`;
+  console.log("Narration fit (render-report.json):");
+  console.table(
+    rows.map((row) => ({
+      Step: row.step,
+      Natural: s(row.naturalMs),
+      Voice: s(row.voiceMs),
+      Freeze: s(row.freezeMs),
+      Shortened: s(row.shortenedMs),
+      Silence: s(row.silenceMs),
+    })),
+  );
 }
 
 /** Audio for the title cards: narration segments "intro" / "outro" with audio. */
@@ -496,9 +1237,7 @@ function narrationForCards(scenario: string): {
   intro?: { file: string; ms: number };
   outro?: { file: string; ms: number };
 } {
-  const script = loadNarration(
-    path.join(RECORDING_DIR, "scenarios", `${scenario}.spec.ts`),
-  );
+  const script = loadNarration(specFor(scenario));
   if (!script) return {};
   const find = (id: string) => {
     const segment = script.segments.find((s) => s.step === id);
@@ -597,6 +1336,446 @@ function wrapText(
   return lines;
 }
 
+/**
+ * The file a cursor carries (drag and drop): a page icon with its name,
+ * just below and right of the cursor tip, slightly see-through.
+ */
+function drawGhost(
+  ctx: SKRSContext2D,
+  at: { x: number; y: number },
+  label: string,
+  scale: number,
+) {
+  const s = scale;
+  const x = at.x + 14 * s;
+  const y = at.y + 16 * s;
+  const w = 22 * s;
+  const h = 28 * s;
+  const fold = 7 * s;
+  ctx.save();
+  ctx.globalAlpha = 0.92;
+  ctx.shadowColor = "rgba(0, 0, 0, 0.35)";
+  ctx.shadowBlur = 10 * s;
+  ctx.shadowOffsetY = 3 * s;
+  ctx.beginPath();
+  ctx.moveTo(x, y);
+  ctx.lineTo(x + w - fold, y);
+  ctx.lineTo(x + w, y + fold);
+  ctx.lineTo(x + w, y + h);
+  ctx.lineTo(x, y + h);
+  ctx.closePath();
+  ctx.fillStyle = "#ffffff";
+  ctx.fill();
+  ctx.shadowColor = "transparent";
+  ctx.strokeStyle = "rgba(0, 0, 0, 0.25)";
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.fillStyle = `rgb(${BRAND.r}, ${BRAND.g}, ${BRAND.b})`;
+  ctx.fillRect(x + 4 * s, y + h - 9 * s, w - 8 * s, 4 * s);
+  ctx.font = `600 ${8 * s}px ${FONT}`;
+  const textW = ctx.measureText(label).width;
+  const pillX = x + w + 6 * s;
+  const pillY = y + h / 2 - 8 * s;
+  roundedRect(ctx, pillX, pillY, textW + 12 * s, 16 * s, 8 * s);
+  ctx.fillStyle = "rgba(20, 24, 33, 0.85)";
+  ctx.fill();
+  ctx.fillStyle = "#ffffff";
+  ctx.textBaseline = "middle";
+  ctx.fillText(label, pillX + 6 * s, pillY + 8 * s);
+  ctx.restore();
+}
+
+/**
+ * A browser dialog (alert, confirm, prompt, beforeunload) over the content
+ * area, `p` (0-1) through its held frame: it fades in, the cursor moves to
+ * the chosen button and clicks it, the dialog fades out. Sizes are CSS
+ * pixels times `area.unit`, independent of the camera.
+ */
+function drawDialog(
+  ctx: SKRSContext2D,
+  dialog: CaptureDialog,
+  p: number,
+  area: { x: number; y: number; w: number; h: number; unit: number },
+  cursorFrom: { x: number; y: number } | null,
+  cursorScale: number,
+) {
+  const u = area.unit;
+  const alpha = p < 0.12 ? p / 0.12 : p > 0.85 ? Math.max(0, (1 - p) / 0.15) : 1;
+  const width = Math.min(448 * u, area.w * 0.92);
+  const pad = 24 * u;
+  const leave = dialog.type === "beforeunload";
+  const title = leave ? "Leave site?" : dialog.origin ? `${dialog.origin} says` : "";
+  const message = leave
+    ? "Changes that you made may not be saved."
+    : dialog.message;
+  ctx.save();
+  ctx.font = `${15 * u}px ${FONT}`;
+  const lines = wrapText(ctx, message, width - 2 * pad).slice(0, 8);
+  const lineH = 21 * u;
+  const titleH = title ? 30 * u : 0;
+  const inputH = dialog.type === "prompt" ? 44 * u : 0;
+  const buttonH = 32 * u;
+  const height = pad + titleH + lines.length * lineH + inputH + 20 * u + buttonH + pad;
+  const x = area.x + (area.w - width) / 2;
+  const y = area.y + Math.min(area.h * 0.12, 64 * u);
+
+  // The page dims a little behind it.
+  ctx.globalAlpha = alpha;
+  ctx.fillStyle = "rgba(0, 0, 0, 0.18)";
+  ctx.fillRect(area.x, area.y, area.w, area.h);
+  ctx.shadowColor = "rgba(0, 0, 0, 0.35)";
+  ctx.shadowBlur = 30 * u;
+  ctx.shadowOffsetY = 8 * u;
+  roundedRect(ctx, x, y, width, height, 12 * u);
+  ctx.fillStyle = "#ffffff";
+  ctx.fill();
+  ctx.shadowColor = "transparent";
+
+  let cy = y + pad;
+  ctx.textBaseline = "top";
+  if (title) {
+    ctx.font = `600 ${16 * u}px ${FONT}`;
+    ctx.fillStyle = "#1f2328";
+    ctx.fillText(title, x + pad, cy);
+    cy += titleH;
+  }
+  ctx.font = `${15 * u}px ${FONT}`;
+  ctx.fillStyle = "#3d4248";
+  for (const line of lines) {
+    ctx.fillText(line, x + pad, cy);
+    cy += lineH;
+  }
+  if (inputH) {
+    cy += 8 * u;
+    roundedRect(ctx, x + pad, cy, width - 2 * pad, 30 * u, 6 * u);
+    ctx.strokeStyle = "#2f6feb";
+    ctx.lineWidth = 2 * u;
+    ctx.stroke();
+    ctx.fillStyle = "#1f2328";
+    ctx.textBaseline = "middle";
+    ctx.fillText(dialog.text ?? "", x + pad + 10 * u, cy + 15 * u);
+    ctx.textBaseline = "top";
+    cy += inputH - 8 * u;
+  }
+
+  // Buttons, right-aligned: [Cancel] [OK] (an alert has OK only).
+  const labels =
+    dialog.type === "alert" ? ["OK"] : leave ? ["Cancel", "Leave"] : ["Cancel", "OK"];
+  const buttonW = 84 * u;
+  const gap = 8 * u;
+  const by = y + height - pad - buttonH;
+  const pressed = p >= 0.6 && p < 0.72;
+  const chosen = dialog.accepted ? labels.length - 1 : 0;
+  const centres: Array<{ x: number; y: number }> = [];
+  labels.forEach((label, i) => {
+    const bx = x + width - pad - (labels.length - i) * buttonW - (labels.length - 1 - i) * gap;
+    const primary = i === labels.length - 1;
+    roundedRect(ctx, bx, by, buttonW, buttonH, 8 * u);
+    ctx.fillStyle = primary
+      ? pressed && i === chosen ? "#1f56c4" : "#2f6feb"
+      : pressed && i === chosen ? "#d9dde3" : "#eef1f4";
+    ctx.fill();
+    ctx.fillStyle = primary ? "#ffffff" : "#1f2328";
+    ctx.font = `500 ${14 * u}px ${FONT}`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(label, bx + buttonW / 2, by + buttonH / 2);
+    ctx.textAlign = "left";
+    centres.push({ x: bx + buttonW / 2, y: by + buttonH / 2 });
+  });
+  ctx.restore();
+
+  // The cursor: from where it was to the chosen button, a click, then it stays.
+  const target = centres[chosen]!;
+  const from = cursorFrom ?? { x: target.x, y: target.y + 80 * u };
+  const move = easeInOutCubic(Math.min(1, Math.max(0, (p - 0.12) / 0.43)));
+  const at = {
+    x: from.x + (target.x - from.x) * move,
+    y: from.y + (target.y - from.y) * move,
+  };
+  if (p >= 0.6 && p < 0.6 + 500 / 1500) {
+    drawRipple(ctx, at, ((p - 0.6) * 1500) % 500, cursorScale);
+  }
+  drawCursor(ctx, at, cursorScale * (pressed ? 0.85 : 1));
+}
+
+/** What Chrome's permission prompt says for each permission. */
+const PERMISSION_TEXT: Record<string, string> = {
+  geolocation: "Know your location",
+  notifications: "Show notifications",
+  camera: "Use your camera",
+  microphone: "Use your microphone",
+  "clipboard-read": "See text and images copied to the clipboard",
+};
+
+/** A small line icon for a permission row, centred on (x, y), `r` its half size. */
+function drawPermissionIcon(ctx: SKRSContext2D, name: string, x: number, y: number, r: number) {
+  ctx.save();
+  ctx.strokeStyle = "#444746";
+  ctx.fillStyle = "#444746";
+  ctx.lineWidth = r * 0.18;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.beginPath();
+  if (name === "geolocation") {
+    // A pin: a circle drawn to a point below.
+    ctx.arc(x, y - r * 0.25, r * 0.6, Math.PI * 0.8, Math.PI * 2.2);
+    ctx.lineTo(x, y + r);
+    ctx.closePath();
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(x, y - r * 0.25, r * 0.2, 0, Math.PI * 2);
+    ctx.fill();
+  } else if (name === "notifications") {
+    // A bell.
+    ctx.moveTo(x - r * 0.7, y + r * 0.45);
+    ctx.quadraticCurveTo(x - r * 0.5, y + r * 0.2, x - r * 0.5, y - r * 0.2);
+    ctx.arc(x, y - r * 0.2, r * 0.5, Math.PI, 0);
+    ctx.quadraticCurveTo(x + r * 0.5, y + r * 0.2, x + r * 0.7, y + r * 0.45);
+    ctx.closePath();
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(x, y + r * 0.7, r * 0.15, 0, Math.PI * 2);
+    ctx.fill();
+  } else if (name === "camera") {
+    roundedRect(ctx, x - r * 0.9, y - r * 0.5, r * 1.2, r, r * 0.15);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(x + r * 0.35, y - r * 0.15);
+    ctx.lineTo(x + r * 0.9, y - r * 0.45);
+    ctx.lineTo(x + r * 0.9, y + r * 0.45);
+    ctx.lineTo(x + r * 0.35, y + r * 0.15);
+    ctx.stroke();
+  } else if (name === "microphone") {
+    roundedRect(ctx, x - r * 0.3, y - r * 0.9, r * 0.6, r * 1.1, r * 0.3);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(x, y - r * 0.15, r * 0.6, 0.1 * Math.PI, 0.9 * Math.PI);
+    ctx.moveTo(x, y + r * 0.45);
+    ctx.lineTo(x, y + r * 0.9);
+    ctx.stroke();
+  } else {
+    // A clipboard.
+    roundedRect(ctx, x - r * 0.65, y - r * 0.75, r * 1.3, r * 1.65, r * 0.15);
+    ctx.stroke();
+    ctx.beginPath();
+    roundedRect(ctx, x - r * 0.3, y - r * 0.95, r * 0.6, r * 0.35, r * 0.1);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+/**
+ * Chrome's permission prompt at the top left of the page area (under where
+ * the address bar would be), `p` (0-1) through its held frame: "<host>
+ * wants to", a row per permission and its buttons; the cursor presses allow
+ * or block. Unlike a dialog the page is not dimmed. Sizes are CSS pixels
+ * times `area.unit`, independent of the camera.
+ */
+function drawPermissionPrompt(
+  ctx: SKRSContext2D,
+  dialog: CaptureDialog,
+  p: number,
+  area: { x: number; y: number; w: number; h: number; unit: number },
+  cursorFrom: { x: number; y: number } | null,
+  cursorScale: number,
+) {
+  const u = area.unit;
+  const alpha = p < 0.12 ? p / 0.12 : p > 0.85 ? Math.max(0, (1 - p) / 0.15) : 1;
+  const names = dialog.message.split(",").filter(Boolean);
+  // Location, camera and microphone ask with three stacked choices; the others with Block / Allow.
+  const stacked = names.some((n) => ["geolocation", "camera", "microphone"].includes(n));
+  const labels = stacked
+    ? ["Allow while visiting the site", "Allow this time", "Never allow"]
+    : ["Block", "Allow"];
+  const chosen = stacked ? (dialog.accepted ? 0 : 2) : dialog.accepted ? 1 : 0;
+  const width = Math.min(340 * u, area.w * 0.9);
+  const pad = 20 * u;
+  const rowH = 34 * u;
+  const buttonH = 36 * u;
+  const gap = 8 * u;
+  const buttonsH = stacked ? labels.length * buttonH + (labels.length - 1) * gap : 32 * u;
+  const height = pad + 26 * u + names.length * rowH + 14 * u + buttonsH + pad;
+  const x = area.x + 16 * u;
+  const y = area.y + 8 * u;
+
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.shadowColor = "rgba(0, 0, 0, 0.3)";
+  ctx.shadowBlur = 26 * u;
+  ctx.shadowOffsetY = 6 * u;
+  roundedRect(ctx, x, y, width, height, 14 * u);
+  ctx.fillStyle = "#ffffff";
+  ctx.fill();
+  ctx.shadowColor = "transparent";
+
+  // "<host> wants to" and the close cross.
+  ctx.textBaseline = "middle";
+  ctx.font = `500 ${15 * u}px ${FONT}`;
+  ctx.fillStyle = "#1f1f1f";
+  ctx.fillText(`${dialog.origin ?? "This site"} wants to`, x + pad, y + pad + 10 * u);
+  const cx = x + width - pad - 5 * u;
+  const cy = y + pad + 10 * u;
+  ctx.strokeStyle = "#5f6368";
+  ctx.lineWidth = 1.6 * u;
+  ctx.beginPath();
+  ctx.moveTo(cx - 5 * u, cy - 5 * u);
+  ctx.lineTo(cx + 5 * u, cy + 5 * u);
+  ctx.moveTo(cx + 5 * u, cy - 5 * u);
+  ctx.lineTo(cx - 5 * u, cy + 5 * u);
+  ctx.stroke();
+
+  let ry = y + pad + 26 * u;
+  ctx.font = `${14 * u}px ${FONT}`;
+  for (const name of names) {
+    drawPermissionIcon(ctx, name, x + pad + 9 * u, ry + rowH / 2, 9 * u);
+    ctx.fillStyle = "#1f1f1f";
+    ctx.fillText(PERMISSION_TEXT[name] ?? name, x + pad + 30 * u, ry + rowH / 2);
+    ry += rowH;
+  }
+
+  const by = ry + 14 * u;
+  const pressed = p >= 0.6 && p < 0.72;
+  const centres: Array<{ x: number; y: number }> = [];
+  ctx.font = `500 ${14 * u}px ${FONT}`;
+  ctx.textAlign = "center";
+  labels.forEach((label, i) => {
+    let bx: number;
+    let bw: number;
+    let top: number;
+    let bh: number;
+    if (stacked) {
+      bx = x + pad;
+      bw = width - 2 * pad;
+      top = by + i * (buttonH + gap);
+      bh = buttonH;
+    } else {
+      bw = 84 * u;
+      bx = x + width - pad - (labels.length - i) * bw - (labels.length - 1 - i) * gap;
+      top = by;
+      bh = 32 * u;
+    }
+    roundedRect(ctx, bx, top, bw, bh, bh / 2);
+    ctx.fillStyle = pressed && i === chosen ? "#c2d4f5" : "#e9eef6";
+    ctx.fill();
+    ctx.fillStyle = "#0b57d0";
+    ctx.fillText(label, bx + bw / 2, top + bh / 2);
+    centres.push({ x: bx + bw / 2, y: top + bh / 2 });
+  });
+  ctx.textAlign = "left";
+  ctx.restore();
+
+  // The cursor: from where it was to the chosen button, a click, then it stays.
+  const target = centres[chosen]!;
+  const from = cursorFrom ?? { x: target.x + 60 * u, y: target.y + 80 * u };
+  const move = easeInOutCubic(Math.min(1, Math.max(0, (p - 0.12) / 0.43)));
+  const at = { x: from.x + (target.x - from.x) * move, y: from.y + (target.y - from.y) * move };
+  if (p >= 0.6 && p < 0.6 + 500 / 1500) {
+    drawRipple(ctx, at, ((p - 0.6) * 1500) % 500, cursorScale);
+  }
+  drawCursor(ctx, at, cursorScale * (pressed ? 0.85 : 1));
+}
+
+/** A size as Chrome names it: 512 B, 2.0 KB, 150 KB, 1.2 MB. */
+export function chromeSize(bytes: number): string {
+  const units = ["B", "KB", "MB", "GB"];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return unit === 0 ? `${bytes} B` : `${value < 100 ? value.toFixed(1) : Math.round(value)} ${units[unit]}`;
+}
+
+/**
+ * Chrome's download bubble at the top right of the page area, `age` ms
+ * after the file finished: file icon, name, "<size> • Done" and a green
+ * tick. It fades in, stays, and fades out; the video does not stop for it.
+ * Sizes are CSS pixels times `area.unit`, independent of the camera.
+ */
+function drawDownloadBubble(
+  ctx: SKRSContext2D,
+  download: { name: string; size: number },
+  age: number,
+  area: { x: number; y: number; w: number; h: number; unit: number },
+) {
+  const u = area.unit;
+  const alpha = Math.min(1, age / 180, Math.max(0, (DOWNLOAD_BUBBLE_MS - age) / 320));
+  if (alpha <= 0) return;
+  const width = Math.min(360 * u, area.w * 0.6);
+  const height = 64 * u;
+  const x = area.x + area.w - width - 12 * u;
+  // It drops in a little as it appears.
+  const y = area.y + 8 * u - (1 - Math.min(1, age / 180)) * 8 * u;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.shadowColor = "rgba(0, 0, 0, 0.28)";
+  ctx.shadowBlur = 24 * u;
+  ctx.shadowOffsetY = 6 * u;
+  roundedRect(ctx, x, y, width, height, 10 * u);
+  ctx.fillStyle = "#ffffff";
+  ctx.fill();
+  ctx.shadowColor = "transparent";
+
+  // The file: a page with its corner folded, the extension under it.
+  const ext = (download.name.split(".").pop() ?? "").slice(0, 4).toUpperCase();
+  const ix = x + 16 * u;
+  const iy = y + 14 * u;
+  const iw = 28 * u;
+  const ih = 36 * u;
+  ctx.beginPath();
+  ctx.moveTo(ix, iy);
+  ctx.lineTo(ix + iw - 9 * u, iy);
+  ctx.lineTo(ix + iw, iy + 9 * u);
+  ctx.lineTo(ix + iw, iy + ih);
+  ctx.lineTo(ix, iy + ih);
+  ctx.closePath();
+  ctx.fillStyle = "#e8eaed";
+  ctx.fill();
+  ctx.fillStyle = "#5f6368";
+  ctx.font = `700 ${8 * u}px ${FONT}`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "alphabetic";
+  ctx.fillText(ext, ix + iw / 2, iy + ih - 6 * u);
+  ctx.textAlign = "left";
+
+  // Name and status.
+  const tx = ix + iw + 14 * u;
+  const tickR = 11 * u;
+  const maxText = x + width - tx - 2 * tickR - 28 * u;
+  ctx.font = `500 ${14 * u}px ${FONT}`;
+  ctx.fillStyle = "#1f1f1f";
+  let name = download.name;
+  if (ctx.measureText(name).width > maxText) {
+    while (name.length > 4 && ctx.measureText(`${name}…`).width > maxText) name = name.slice(0, -1);
+    name = `${name}…`;
+  }
+  ctx.textBaseline = "middle";
+  ctx.fillText(name, tx, y + 24 * u);
+  ctx.font = `${12.5 * u}px ${FONT}`;
+  ctx.fillStyle = "#5f6368";
+  ctx.fillText(`${chromeSize(download.size)} • Done`, tx, y + 43 * u);
+
+  // The tick.
+  const cx = x + width - 18 * u - tickR;
+  const cy = y + height / 2;
+  ctx.beginPath();
+  ctx.arc(cx, cy, tickR, 0, Math.PI * 2);
+  ctx.fillStyle = "#1e8e3e";
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(cx - 5 * u, cy);
+  ctx.lineTo(cx - 1.5 * u, cy + 3.8 * u);
+  ctx.lineTo(cx + 5.5 * u, cy - 4 * u);
+  ctx.strokeStyle = "#ffffff";
+  ctx.lineWidth = 2.2 * u;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.stroke();
+  ctx.restore();
+}
+
 /** Where everything goes in the output frame, per video format. */
 interface Layout {
   width: number;
@@ -688,83 +1867,20 @@ function fitBox(
   };
 }
 
+
 /**
- * Raw RGBA frames of the recording at FPS, starting at recording time 0. The
- * screen recording usually starts a little before that (startMs < 0): skip
- * ahead. If it started later, repeat its first frame until then. Off-camera
- * time (`cuts`) is dropped, so the frames follow the recording's clock.
+ * ffmpeg reading raw RGBA frames from stdin, mixing in the app's sound
+ * (ducked under the voice) and the voice-over clips.
  */
-async function* readFrames(
-  file: string,
-  startMs: number,
-  width: number,
-  height: number,
-  cuts: Array<{ at: number; ms: number }> = [],
-): AsyncGenerator<Buffer> {
-  const args = ["-v", "error"];
-  if (startMs < 0) args.push("-ss", (-startMs / 1000).toFixed(3));
-  args.push("-i", file);
-  const filters: Array<string> = [];
-  if (cuts.length > 0) {
-    // In the decoder's time (0 at recording time 0 after the seek above, or
-    // at the video's own start when it began late), each cut sits after the
-    // ones before it.
-    const offset = startMs < 0 ? 0 : -startMs / 1000;
-    let before = 0;
-    const spans = cuts.map((cut) => {
-      const from = (cut.at + before) / 1000 + offset;
-      before += cut.ms;
-      return { from, to: from + cut.ms / 1000, ms: cut.ms };
-    });
-    const inCut = spans
-      .map((c) => `between(t,${c.from.toFixed(3)},${c.to.toFixed(3)})`)
-      .join("+");
-    const shift = spans
-      .map((c) => `gte(T,${c.to.toFixed(3)})*${(c.ms / 1000).toFixed(3)}`)
-      .join("+");
-    filters.push(`select='not(${inCut})'`, `setpts='PTS-(${shift})/TB'`);
-  }
-  if (startMs > 0) {
-    filters.push(
-      `tpad=start_duration=${(startMs / 1000).toFixed(3)}:start_mode=clone`,
-    );
-  }
-  if (filters.length > 0) args.push("-vf", filters.join(","));
-  args.push("-r", String(FPS), "-f", "rawvideo", "-pix_fmt", "rgba", "pipe:1");
-  const decoder = spawn("ffmpeg", args, {
-    stdio: ["ignore", "pipe", "ignore"],
-  });
-
-  const frameSize = width * height * 4;
-  // Collect pieces and join them once per frame: joining on every piece
-  // copies the growing buffer again and again.
-  const pieces: Array<Buffer> = [];
-  let size = 0;
-  try {
-    for await (const chunk of decoder.stdout as AsyncIterable<Buffer>) {
-      pieces.push(chunk);
-      size += chunk.length;
-      while (size >= frameSize) {
-        const joined = Buffer.concat(pieces, size);
-        yield joined.subarray(0, frameSize);
-        const rest = joined.subarray(frameSize);
-        pieces.length = 0;
-        if (rest.length > 0) pieces.push(rest);
-        size = rest.length;
-      }
-    }
-  } finally {
-    // The video may be longer than needed: stop the decoder quietly.
-    decoder.stdout.destroy();
-    decoder.kill();
-  }
-}
-
-/** ffmpeg reading raw RGBA frames from stdin, mixing in the voice-over clips. */
 function startEncoder(
   out: string,
-  clips: Array<{ file: string; at: number }>,
+  clips: Array<{ file: string; at: number; ms: number }>,
   size: { width: number; height: number },
+  options: {
+    draft?: boolean;
+    durationMs?: number;
+    appAudio?: AppAudioMix | null;
+  } = {},
 ) {
   const args = [
     "-y",
@@ -781,21 +1897,41 @@ function startEncoder(
     "-i",
     "pipe:0",
   ];
+  // The app's sound is input 1 (before the clips), when mixed.
+  const app = options.appAudio ?? null;
+  if (app) args.push("-i", app.file);
+  const first = app ? 2 : 1;
   const existing = clips.filter((clip) => existsSync(clip.file));
   for (const clip of existing) args.push("-i", clip.file);
-  if (existing.length > 0) {
-    const delays = existing
-      .map(
-        (clip, i) => `[${i + 1}:a]adelay=${Math.round(clip.at)}:all=1[a${i}]`,
-      )
-      .join(";");
-    const mix =
-      existing.length === 1
-        ? "[a0]anull[aout]"
-        : `${existing.map((_, i) => `[a${i}]`).join("")}amix=inputs=${existing.length}:normalize=0[aout]`;
+  // A clip that started before the video (a --steps range) is trimmed instead.
+  const place = (clip: { at: number }, i: number) =>
+    clip.at >= 0
+      ? `[${i + first}:a]adelay=${Math.round(clip.at)}:all=1[a${i}]`
+      : `[${i + first}:a]atrim=start=${(-clip.at / 1000).toFixed(3)},asetpts=PTS-STARTPTS[a${i}]`;
+  const sources = [
+    ...(app ? ["[app]"] : []),
+    ...existing.map((_, i) => `[a${i}]`),
+  ];
+  if (sources.length > 0) {
+    const graph = [
+      ...(app
+        ? [
+            appAudioFilter(app.plan, existing, {
+              volume: app.volume,
+              duckTo: app.duckTo,
+              inputIndex: 1,
+              outLabel: "app",
+            }),
+          ]
+        : []),
+      ...existing.map(place),
+      sources.length === 1
+        ? `${sources[0]}anull[aout]`
+        : `${sources.join("")}amix=inputs=${sources.length}:normalize=0[aout]`,
+    ];
     args.push(
       "-filter_complex",
-      `${delays};${mix}`,
+      graph.join(";"),
       "-map",
       "0:v",
       "-map",
@@ -807,15 +1943,19 @@ function startEncoder(
     "-c:v",
     "libx264",
     "-preset",
-    "medium",
+    options.draft ? "ultrafast" : "medium",
     "-crf",
-    "18",
+    options.draft ? "30" : "18",
     "-pix_fmt",
     "yuv420p",
     "-movflags",
     "+faststart",
-    out,
   );
+  // Draft: half the size (drawing stays full size), quick to encode.
+  if (options.draft) args.push("-vf", "scale=iw/2:-2");
+  if (options.durationMs !== undefined)
+    args.push("-t", (options.durationMs / 1000).toFixed(3));
+  args.push(out);
   return spawn("ffmpeg", args, { stdio: ["pipe", "inherit", "inherit"] });
 }
 
@@ -1069,11 +2209,27 @@ function hexToRgb(hex: string): { r: number; g: number; b: number } {
 // --- CLI ---------------------------------------------------------------------
 
 if (import.meta.main) {
-  const [command, target] = process.argv.slice(2);
-  if (command !== "render") {
-    console.error(`Usage: ${KIT_CMD} render [<scenario or capture folder>]`);
+  const [command, ...rest] = process.argv.slice(2);
+  const flags = new Set<string>();
+  let target: string | undefined;
+  let stepsArg: string | undefined;
+  for (let i = 0; i < rest.length; i++) {
+    const arg = rest[i]!;
+    if (arg === "--steps") stepsArg = rest[++i];
+    else if (arg.startsWith("--steps=")) stepsArg = arg.slice("--steps=".length);
+    else if (arg.startsWith("--")) flags.add(arg);
+    else target ??= arg;
+  }
+  const range = stepsArg?.match(/^(\d+)(?:-(\d+))?$/);
+  if (command !== "render" || (stepsArg !== undefined && !range)) {
+    console.error(
+      `Usage: ${KIT_CMD} render [<scenario or capture folder>] [--check | --draft] [--steps <a>-<b>]`,
+    );
     process.exit(1);
   }
+  const steps: [number, number] | undefined = range
+    ? [Number(range[1]), Number(range[2] ?? range[1])]
+    : undefined;
   const captures = findCaptures();
   const dir = !target
     ? captures[0]
@@ -1095,8 +2251,13 @@ if (import.meta.main) {
   }
   // Errors set the exit code instead of escaping: see the end of run.ts.
   try {
-    const out = await render(dir);
-    console.log(`Video: ${path.relative(process.cwd(), out)}`);
+    if (flags.has("--check")) {
+      const sheet = await check(dir);
+      console.log(`Check: ${path.relative(process.cwd(), sheet)}`);
+    } else {
+      const out = await render(dir, { draft: flags.has("--draft"), steps });
+      console.log(`Video: ${path.relative(process.cwd(), out)}`);
+    }
   } catch (error) {
     console.error(error);
     process.exitCode = 1;

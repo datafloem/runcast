@@ -1,13 +1,13 @@
 ---
 name: runcast-scenario
-description: Writes or fixes a recording scenario with Runcast — a Playwright flow through a web app that runs as a fast end-to-end test or is recorded into a finished demo video (screen capture, virtual cursor, calm camera, captions, title cards, voice-over). Use when asked to add, change or debug a recording scenario, a demo video flow, a step or helper, or anything in the project's recording folder (default tests/recording/).
+description: Writes or fixes a recording scenario with Runcast — a Playwright flow through a web app that runs as a fast end-to-end test or is recorded into a finished demo video (headless tab capture, virtual cursor, calm camera, captions, title cards, voice-over). Use when asked to add, change or debug a recording scenario, a demo video flow, a step or helper, or anything in the project's recording folder (default tests/recording/).
 ---
 
 # Writing a recording scenario
 
 A scenario walks through one flow of the app from start to finish, either as a
-test (headless, fast) or as a demo video (a visible Chrome is screen-recorded
-and the kit renders a finished MP4 with camera moves, a drawn cursor, optional
+test (headless, fast) or as a demo video (the app's tab in a headless Chrome is
+recorded and the kit renders a finished MP4 with camera moves, a drawn cursor, optional
 captions, title cards and voice-over). The goal is a video that looks hand-made
 and, from the same code, a reliable end-to-end test.
 
@@ -109,6 +109,26 @@ shows each step separately in the Playwright report.
   `show: { target: "<selector>", transition: "cube" }`. Unlike a step's
   `transition: "cube"`, which hides the step, these only change how the view
   changes between two shown areas; the page keeps playing.
+- **Scenes (optional):** a row marked "Scene" becomes
+  `steps.scene({ id: "order-flow", name: "order-flow", title: "How an order flows", transition: "fade" })`
+  (`scene` comes from the kit: the template's `steps/index.ts` re-exports it
+  next to `hold`; add `scene` there in older projects). It shows
+  `scenes/<name>/index.html`, made and approved with the `runcast-scene`
+  skill; each beat becomes a step `<id>.<beat id>`, which a narration
+  segment can target, and the scene is never shortened. `transition` is the
+  way in, `back` the way out (default: the same). The scene is added when
+  rendering: the take only checks it and costs none of its length, so a
+  changed or swapped scene needs only `render`, not a new take. A scene
+  can open the video or follow another scene directly. `live: true` plays
+  it on the stage tab during the take instead (only when it must react to
+  the take). Test mode checks that the scene loads and keeps its contract.
+- **App sound (optional):** if the scenario text says "App sound: yes", pass
+  `appAudio: { volume, duckTo }` (defaults 1 and 0.3). The app's own sound
+  (always captured with the tab, kept off the speakers while recording) is mixed under the
+  voice-over, lowered to `duckTo` while it speaks, and silent where the video
+  holds a frame. The recording runs at the viewer's pace and loading waits
+  are cut, never sped up. Try without it: `REC_APP_AUDIO=0 node tests/recording/.kit/cli.ts render <name>`.
+  Sound the app plays without a click (autoplay) is allowed in video mode.
 - **Captions (optional):** if the scenario text says "Captions: yes", pass
   `captions: true`; the renderer shows each step's `note` at the bottom while
   the step lasts. Try without re-recording:
@@ -117,7 +137,7 @@ shows each step separately in the Playwright report.
   landscape, pass `format: "vertical" | "vertical-crop" | "vertical-fit"`.
   The video is then 1080×1920 (`videos/<name>-vertical.mp4`).
   - `"vertical"` makes the page 9:16 before the first page load, in every mode
-    (480×854 in test and rehearsal), so the app runs in its **mobile layout**:
+    (540×960), so the app runs in its **mobile layout**:
     navigation may sit behind a menu button, tables may become cards, some
     controls may be hidden. Write and check the helpers against that layout
     (run `test <name>` and look at the failure screenshots); if a helper must
@@ -154,7 +174,7 @@ shows each step separately in the Playwright report.
 
 | Mode      | Command                                             | Notes                                                                                                                     |
 | --------- | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| video     | `node tests/recording/.kit/cli.ts video <name>`     | Visible Chrome, ffmpeg screen capture, then the MP4. macOS (Screen Recording permission), Linux (Xvfb without a screen) or Windows (unlocked desktop) |
+| video     | `node tests/recording/.kit/cli.ts video <name>`     | Headless Chrome, the app's tab recorded by the kit's recorder tab, then a picture per step and the voice-over fit (`--render`: also the MP4). Any OS and CI; the user can keep working. `REC_CAPTURE=screen` records a visible window with ffmpeg instead (only for real OS dialogs; macOS needs Screen Recording permission, Linux Xvfb without a screen, Windows an unlocked desktop) |
 | rehearsal | `node tests/recording/.kit/cli.ts rehearsal <name>` | The video's pace and timing, headless and not recorded. For measuring step lengths                                        |
 | test      | `node tests/recording/.kit/cli.ts test <name>`      | Headless end-to-end, no pauses (the default mode)                                                                         |
 
@@ -182,23 +202,64 @@ In video mode the camera follows what `rec` logs:
 
 ## Narration and timing
 
-If `scenarios/<name>.narration.json` exists (plan skill, phase 7), in video and
-rehearsal mode `scenario()` makes each recorded step last **at least** its
-segment + `gapMs`: a step that ends early waits; one that runs late warns and
-is marked in `steps.json` (`overrunMs`). The renderer mixes each segment's audio
-in at the second its step starts. A segment's length is the measured audio
-(`durationMs`) when present, else an estimate from the word count. Test mode
-and `REC_NARRATION=0` ignore narration.
+Recording and narration are independent. Video mode records **fast** (viewer
+pauses and cursor rests cut short, cursor moves three times faster, typing at
+40 ms per character) and logs each of them with its natural length; the
+renderer plays them back at a person's pace. `REC_RECORD_PACE=natural`
+records at the viewer's pace, for apps that react differently to a fast
+cursor (hover menus that open after a delay, debounced inputs).
+
+If `scenarios/<name>.narration.json` exists (plan skill, phase 7), the
+renderer fits it: each segment starts with its step; a voice longer than its
+step + `gapMs` holds the step's last frame; a step longer than its voice loses
+time from its loading waits, never from pauses, cursor moves or typing. The
+render prints a fit table (`.captures/<name>/render-report.json`). A segment's
+length is the measured audio (`durationMs`) when it is up to date, else an
+estimate from the word count (then no audio is mixed in). `REC_NARRATION=0`
+leaves the narration out.
+
+`scenario({ compressWaits: false })` keeps the app's real waiting time (for
+a video that must show how long something takes); a short voice then leaves
+silence. `REC_COMPRESS_WAITS=0/1` overrides it when rendering.
+
+A step with many actions can stay much longer than its voice even with
+waits compressed (moves, rests and pauses are never shortened, and each
+wait keeps 0.6 s): the render warns "Long silence" and `narration plan`
+says "long silence" above 5 s. Lengthen that segment's text to its word
+budget, or trim or split the step.
 
 When writing scenarios or steps:
 
 - If you rename a step id, rename the `step` in the narration file too, or the
   segment no longer matches (a warning says so at run time).
-- Adding `rec.pause` to a step or slowing it lengthens narrated scenarios;
-  steps are shared, so rerun the rehearsal of scenarios that use it.
-- Timing rehearsal: `node tests/recording/.kit/cli.ts rehearsal <name>`; with
-  `REC_NARRATION=0` it gives each step's own length, which
-  `node tests/recording/.kit/cli.ts narration plan <name>` reads.
+- A changed narration text needs new audio and `render <name>`, not a new
+  recording. Record again only when what the page shows must change.
+- `node tests/recording/.kit/cli.ts narration plan <name>` reads each step's
+  own length from the newest video (else the newest rehearsal).
+
+## Checking a video
+
+Look before you render, and render only what changed:
+
+1. `video <name>` ends with this check (`--render` would render the MP4
+   right away instead); for an older take run
+   `node tests/recording/.kit/cli.ts render <name> --check`: no video, in
+   seconds. Read `.captures/<name>/check/sheet.png` (each step's last frame,
+   numbered, as the video shows it) and the printed fit table. Open a single
+   `check/NN-<id>.png` only for a step that looks wrong.
+2. Something looks wrong in one step: fix it, then
+   `node tests/recording/.kit/cli.ts render <name> --draft --steps N` (half
+   size, that step only, with its voice).
+3. All good: `node tests/recording/.kit/cli.ts render <name>` for the final MP4.
+
+"Out of frame" warnings name actions the camera cannot show (a vertical crop
+too narrow for the scene): split the scene, `show` the area first, or pick
+another format; this needs a render, not a new recording, unless the steps
+change.
+
+Narration text changed → `narration generate` (or `measure`) → `--check` →
+`render`. Record again only when the page itself was wrong (a missing
+element, a wrong record, a stray window).
 
 ## Core rules
 
@@ -209,11 +270,47 @@ When writing scenarios or steps:
    repeats another's work, merge them.
 1. **Every interaction goes through `rec`:** `rec.click`, `rec.doubleClick`,
    `rec.rightClick`, `rec.hover`, `rec.drag(from, to)`, `rec.type`,
-   `rec.typeSecret` (and `rec.show` to point the camera without touching). Never `page.click`, `locator.click` or `locator.fill`: the
+   `rec.typeSecret`, `rec.select`, `rec.pickDate` (and `rec.show` to point the camera without touching). Never `page.click`, `locator.click` or `locator.fill`: the
    cursor would not go there, the camera would not see it and the pace breaks.
    Exception: the keyboard (`page.keyboard.type/press`).
+   **Never click a native `<select>` or a date input's picker:** the browser
+   draws their lists outside the page, where the recording cannot see them.
+   Use `rec.select(locator, "Germany")` (by the option's label) and
+   `rec.pickDate(locator, "2026-03-14")`: the kit draws its own list or month
+   grid under the field and the cursor picks the entry (test mode sets the
+   value directly). Custom dropdowns built from page elements are clicked
+   with `rec.click` as usual.
+   **File uploads:** never `setInputFiles` and never click an upload button
+   expecting a dialog: `rec.chooseFiles(button, ["fixtures/orders.csv"])`
+   (the app's file chooser) or `rec.dropFiles(zone, [...])` (drag and drop).
+   On camera the kit shows a file manager on the stage tab, the cursor picks
+   or carries the files, and the video returns to the app (`{ transition }`:
+   `fade`, `slide`, `cube`, `cut`, `lift`; drops default to `lift`). Keep the
+   files in the recording folder (e.g. `fixtures/`) and name them as a viewer
+   would expect.
+   **Dialogs** (`alert`, `confirm`, `prompt`, leave-page) are answered by the
+   kit: `scenario({ dialogs: "accept" | "dismiss" })` (default "accept");
+   `rec.onDialog({ accept: false })` (or `{ accept: true, text: "…" }` for a
+   prompt) right before the `rec` action answers a dialog that action opens
+   (unused, it lapses with a warning). The video holds the frame 1.5 s and
+   draws the dialog being answered. Prefer these over your own
+   `page.on("dialog")`; if a step does listen itself, it answers and the
+   video draws its answer.
+   **Permissions** are decided up front, never clicked:
+   `scenario({ permissions: ["geolocation"] })` allows them, or
+   `{ geolocation: "allow", notifications: "block" }` picks each answer (a
+   blocked request fails as in Chrome). When the page asks (location,
+   notifications, camera, microphone, clipboard-read), the video holds the
+   frame 1.5 s and draws Chrome's prompt being answered, once per permission.
+   **Downloads:** `const file = await rec.download(button)` clicks and
+   returns the saved file's path (with the take in `.captures/<name>/downloads/`,
+   in tests under `.results/`), so the test can check what is in it; the video
+   draws Chrome's download bubble. `{ open: true }` (or `{ open: { ms } }`)
+   then shows the file on the stage (CSV table, text, JSON, picture, PDF;
+   other files as an icon) for 3 s, with `lift` both ways.
 2. **The on-screen message is the step's `note`.** `scenario()` marks each step
-   and writes time and message to `.results/<test>/steps.json`. Never draw
+   and writes time and message to `steps.json` (video:
+   `.captures/<name>/`, rehearsal: `.results/<test>/`). Never draw
    captions, cards or overlays in the page; everything added to the video is
    the renderer's job. Never call `rec.step` or `rec.start` inside steps.
 3. **A step checks what it did.** End every step with `expect` on the result
@@ -225,16 +322,36 @@ When writing scenarios or steps:
    for the app. Wait with `expect(...).toBeVisible()` / `toHaveCount()` /
    `toHaveURL()`. Mode-dependent code (`if (isTestMode)`) belongs in the kit,
    not in steps or scenarios.
+   Every `rec` action first checks its target can be shown: on screen, not
+   covered, not animating, not moving (waiting up to 5 s). A target under a
+   sticky header or footer of its scroll box is scrolled to the middle of
+   it first; a jitter of up to a pixel does not count as moving. A step that
+   fails with "cannot be shown: it is covered by …", "still animating" or
+   "still moving: it moved N px …" needs a wait in the helper (an `expect` that the toast or dialog is gone, or that
+   the screen finished opening), never a `rec.pause`. Tests run at the video's
+   page size (`REC_PAGE_SIZE`, 1920×1080; with screen capture the newest
+   video's), so fix such failures before recording.
 5. **Pace for the viewer:** short stops on important screens with
    `rec.pause(ms)` and `rec.hover(...)` (1–3 s). Long waits make the video
-   drag (there is no editing step afterwards); hasty clicks cannot be followed.
+   drag (the renderer shortens them only to fit a voice-over); hasty clicks
+   cannot be followed. Video mode records fast: a `rec.pause` is recorded
+   for 0.3 s and the renderer holds its last frame for the rest. While
+   something moves on the page (an animation the viewer should watch, a
+   video, a canvas, an HTML scene inside the app) use `rec.watch(ms)` (or
+   `rec.pause(ms, { live: true })`): it is recorded in real time. The kit
+   also notices a page that still changes and records that pause live, with
+   a warning naming the step; turn each such warning into `rec.watch`.
+   Animated explainers belong in a kit scene (`steps.scene`).
 6. **Changing values are settings.** Names, sources, conditions come from
    `.env.local`: `const env = (name, fallback = "") => process.env[name] ?? fallback`.
    Add every new setting to `.env.example` with an example and a comment.
    Required settings go in `require: [...]` (or `requireEnv(...)`), never
    `test.skip`: a skip hides the problem.
 7. **Passwords and tokens never reach code, logs or `steps.json`.** Use
-   `rec.typeSecret` for them.
+   `rec.typeSecret` for them, with the value from `.env.local`: it is set
+   without Playwright's keyboard, blurred on screen and replaced by `•••••`
+   in failure reports (`error-context.md`, traces). Never `fill` a secret in
+   a helper: Playwright records what `fill` types.
 8. **Scenarios usually write to a real backend.** In the file's top comment,
    say what it creates and what must be deleted before running it again.
 

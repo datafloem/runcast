@@ -8,11 +8,13 @@ You describe the video to your AI assistant (Claude Code, Codex, Antigravity
 or another tool). The assistant writes a short script that drives a real
 Chrome browser through your app. The kit then records it with a smooth cursor
 and a calm, zooming camera, and renders an MP4. If you want them, you also get
-captions, opening and closing title cards, blurred private fields and a
-voice-over. The kit can upload the result to YouTube too.
+captions, opening and closing title cards, blurred private fields, the
+app's own sound, animated scenes the assistant designs (for what the app
+itself cannot show) and a voice-over. The kit can upload the result to YouTube too.
 
 You need no video editing and no screen-recording app. You don't click through
-the app yourself.
+the app yourself, and you can keep using your computer while it records:
+the browser runs hidden, in the background.
 
 ---
 
@@ -53,6 +55,10 @@ the app yourself.
     step is on screen;
   - a 3D cube turn when the video moves to another part of the app, in place
     of the wait while the page loads;
+  - what the browser draws outside the page, shown in the video: select
+    lists, date pickers, dialogs, permission prompts, file uploads (a file
+    manager the cursor picks from), and downloads (Chrome's download bubble,
+    and the downloaded file itself if you like);
   - steps that run off camera: a long import or repeated work still runs,
     but the video skips it and goes on from the next step.
 - **An end-to-end test** made from the same script. It runs headless (no
@@ -62,7 +68,7 @@ the app yourself.
 
 ## How it works
 
-You mostly talk to your AI assistant. The plugin gives it four **skills**:
+You mostly talk to your AI assistant. The plugin gives it five **skills**:
 instructions it follows for each job.
 
 | You say                            | Skill              | What the assistant does                                                                                                           |
@@ -70,6 +76,7 @@ instructions it follows for each job.
 | "Set up recordings for this app"   | `runcast-setup`    | Installs the kit, reads your app's code (pages, forms, sign-in, brand) and writes the project's recording files and a login test  |
 | "Plan a new demo video"            | `runcast-plan`     | Interviews you a few questions at a time (goal, audience, length, which screens, which data) and writes the agreed plan as a text |
 | "Write the test for that scenario" | `runcast-scenario` | Turns the approved plan into a Playwright script and checks that it passes                                                        |
+| "Add a scene that explains the order flow" | `runcast-scene` | Designs a short animation for what the app cannot show, shows you a preview of each moment and changes it until you approve |
 | "Upload the video to YouTube"      | `runcast-publish`  | Guides you through Google's one-time setup, drafts the title and description, and uploads after your yes                          |
 
 Under the hood:
@@ -81,9 +88,10 @@ Under the hood:
 2. **The same scenario runs in three modes:**
    - **test:** headless and as fast as possible, to check that the app works;
    - **rehearsal:** headless at video pace, to measure how long each step
-     takes;
-   - **video:** a visible Chrome window that is screen-recorded with ffmpeg
-     and then rendered into the final MP4.
+     takes before the first video;
+   - **video:** a hidden (headless) Chrome whose app tab is recorded by a
+     second tab of the kit, then rendered into the final MP4. Nothing opens
+     on your screen.
 3. **The kit is installed once per computer**, not into each project. The
    first setup builds a shared **runtime** in `~/.cache/runcast/`: the
    kit plus Playwright, a few hundred MB. Each project gets only a small
@@ -97,22 +105,23 @@ Under the hood:
 | --------------------- | -------------------------------------------- | --------------------------------------------------------------------------------------------------- |
 | **Node.js 22.18+**    | Runs the kit (TypeScript runs directly)      | `node --version`; install from [nodejs.org](https://nodejs.org)                                     |
 | **Google Chrome**     | The browser that is driven and recorded      | Install from [google.com/chrome](https://www.google.com/chrome/). On ARM Linux, see Troubleshooting |
-| **ffmpeg**            | Screen capture, rendering and voice-over     | macOS: `brew install ffmpeg` · Debian/Ubuntu: `sudo apt install ffmpeg` · Windows: `winget install Gyan.FFmpeg` |
-| **Xvfb** (Linux only) | A virtual screen on machines with no display | `sudo apt install xvfb`                                                                             |
+| **ffmpeg**            | Rendering and voice-over                     | macOS: `brew install ffmpeg` · Debian/Ubuntu: `sudo apt install ffmpeg` · Windows: `winget install Gyan.FFmpeg` |
+| **Xvfb** (Linux, screen capture only) | A virtual screen for `REC_CAPTURE=screen` on machines with no display | `sudo apt install xvfb`                                              |
 | **Your app running**  | The kit opens it in the browser              | Start your dev server as usual (for example `npm run dev`)                                          |
 | **A test account**    | For the sign-in step                         | A user name and password for your app. They go in a local file, never in the chat                   |
 
 Platforms:
 
-- **macOS:** everything works. The first video asks for **Screen Recording**
-  permission for the app that runs the command (your terminal or AI app):
-  System Settings > Privacy & Security > Screen Recording.
-- **Linux:** everything works. Without a screen (servers, CI, containers) the
-  kit starts a virtual display by itself.
-- **Windows 10/11:** everything works. Video records the screen of your
-  signed-in desktop, so keep it unlocked and Chrome on the main screen while
-  it records. Windows video support is new: if the picture is shifted or
-  black, see Troubleshooting and tell us in an issue.
+- **macOS, Linux, Windows 10/11 and CI:** everything works the same way.
+  Video records a hidden browser tab, so it needs no permission and no
+  screen.
+- **Screen capture** (`REC_CAPTURE=screen` in `.env.local`) is the older way,
+  only for flows that must show real operating-system dialogs: a visible
+  Chrome window is recorded with ffmpeg. macOS then asks for **Screen
+  Recording** permission for the app that runs the command (System Settings >
+  Privacy & Security > Screen Recording); Linux without a screen uses a
+  virtual display (Xvfb); Windows needs the desktop unlocked and Chrome on the
+  main screen. Don't touch the computer while it records.
 
 After setup you can always run `node tests/recording/.kit/cli.ts doctor`. It
 lists what is installed and what is missing.
@@ -170,7 +179,7 @@ folder and run setup by hand:
    node tools/runcast/skills/runcast-setup/kit/cli.ts setup --skills .claude/skills,.agents/skills
    ```
 
-   `--skills` copies the four skills into the folders where most AI tools
+   `--skills` copies the five skills into the folders where most AI tools
    look for them. Then continue with step 1 below. Setup is already done, so
    the assistant only studies the app.
 
@@ -266,13 +275,21 @@ your app's data.
 node tests/recording/.kit/cli.ts video <name>
 ```
 
-A Chrome window opens and runs through the flow by itself. **Don't touch the
-mouse and keep other windows off it** while it records. Then the kit renders
-the result:
+A hidden Chrome runs through the flow by itself; nothing opens on your
+screen, so you can keep working. Then the kit checks the take in seconds:
+one picture per step in `tests/recording/.captures/<name>/check/sheet.png`
+and how the voice-over fits each step. If it looks right, render the video
+(a few minutes):
+
+```bash
+node tests/recording/.kit/cli.ts render <name>
+```
 
 ```text
 tests/recording/videos/<name>.mp4
 ```
+
+`video <name> --render` records and renders in one go.
 
 A vertical video goes to `videos/<name>-vertical.mp4`. To get a vertical
 version of a landscape recording without recording again:
@@ -287,6 +304,10 @@ To change captions, title cards or the camera without recording again:
 node tests/recording/.kit/cli.ts render <name>
 ```
 
+Animated scenes are added at this step too: change a scene (or swap it for a
+longer one) and just render again. The kit records the changed scene on its
+own; the app's flow is not recorded again.
+
 ### 7. Add a voice-over (optional)
 
 If you chose a voice-over in step 4, the assistant writes one sentence or two
@@ -299,8 +320,10 @@ in one of three ways:
 - **as a single take** in the ElevenLabs website, which the kit then cuts
   into steps.
 
-Record the video again (step 6) and the voice is mixed in at the right
-moments.
+Render again (`node tests/recording/.kit/cli.ts render <name>`); there is no
+need to record again. The kit fits each sentence to its step: a longer
+sentence holds the step's last frame, a shorter one shortens loading waits.
+Change a sentence later and you only make its audio and render again.
 
 ### 8. Publish to YouTube (optional)
 
@@ -324,9 +347,11 @@ Run these from your project's root folder. If your recording folder is not
 | `node tests/recording/.kit/cli.ts doctor`                | Shows what is installed and what is missing                    |
 | `node tests/recording/.kit/cli.ts test`                  | Runs every scenario as a fast headless test                    |
 | `node tests/recording/.kit/cli.ts test <name>`           | Runs one scenario as a test                                    |
-| `node tests/recording/.kit/cli.ts rehearsal <name>`      | Runs at video pace without recording, to check timing          |
-| `node tests/recording/.kit/cli.ts video <name>`          | Records and renders `videos/<name>.mp4`                        |
+| `node tests/recording/.kit/cli.ts rehearsal <name>`      | Runs at video pace without recording, to measure step lengths  |
+| `node tests/recording/.kit/cli.ts video <name>`          | Records, then shows one picture per step and the voice-over fit (`--render`: also renders the MP4) |
 | `node tests/recording/.kit/cli.ts render <name>`         | Renders the last recording again (new captions, cards, camera) |
+| `node tests/recording/.kit/cli.ts render <name> --check` | One picture per step and the voice-over fit, in seconds        |
+| `node tests/recording/.kit/cli.ts render <name> --draft --steps 3-5` | A quick half-size video of steps 3 to 5 only       |
 | `node tests/recording/.kit/cli.ts narration plan <name>` | Shows how many words of voice-over fit each step               |
 | `node tests/recording/.kit/cli.ts youtube check`         | Shows what is missing for YouTube uploads                      |
 
@@ -337,6 +362,18 @@ Earlier steps still run, quickly and off camera:
 REC_FROM=3 node tests/recording/.kit/cli.ts video <name>
 REC_FROM=3 REC_TO=3 node tests/recording/.kit/cli.ts test <name>
 ```
+
+A few settings you may want, in `tests/recording/.env.local`:
+
+- `REC_CAPTURE=screen`: record a visible Chrome window instead of a hidden
+  tab (only for flows that must show real operating-system dialogs).
+- `REC_SCALE=1`: record at the page's own size instead of 1.5 times as
+  sharp (smaller files, less detail when the camera zooms); 1 to 3, default
+  1.5 (the default page is 1920x1080, so the video is 2880x1620).
+- `REC_PAGE_WIDTH=1800` (with `REC_SCALE`): another page size, e.g. to keep
+  the layout of an old screen recording (`doctor` suggests the values).
+- `REC_APP_AUDIO=1` / `0`: put the app's own sound in the video or leave it
+  out, whatever the scenario says.
 
 All settings are listed in `tests/recording/.env.example` and in the
 [kit guide](plugins/runcast/skills/runcast-setup/kit/README.md#settings-envlocal).
@@ -357,6 +394,7 @@ tests/recording/
   .env.example          every setting, with comments (commit this)
   .env.local            your account and keys (git-ignored)
   .kit                  link to the shared runtime (git-ignored, made by setup)
+  .captures/            the latest video recording of each scenario (git-ignored)
   videos/ narration/ .results/   output (git-ignored)
 ```
 
@@ -370,7 +408,8 @@ plugin's `cli.ts setup` again.
 **Update:** update the plugin in your AI tool, then ask the assistant to set
 up recordings again (or run setup again). It builds the new runtime, re-links
 `.kit`, and never overwrites your project's own files. The newest three
-runtimes are kept and older ones are deleted.
+runtimes are kept, and so is any runtime another project still uses; older
+ones are deleted.
 
 **Remove from a project:** delete the recording folder.
 
@@ -383,12 +422,14 @@ the plugin in your AI tool. In Claude Code that is
 | Problem                                                | What to do                                                                                                                                                           |
 | ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `.kit` is missing, or "is not set up: run setup first" | Run setup again (ask the assistant to set up recordings). This is normal after a fresh clone or a kit update                                                         |
-| The video is black or shows the wrong screen           | macOS: allow Screen Recording for the app that runs the command, then restart that app. With several screens, set `REC_SCREEN` in `.env.local`                       |
-| Windows: the video is black, or the picture is shifted | Keep the desktop unlocked and Chrome on the main screen. Try `REC_WIN_GRABBER=gdigrab` in `.env.local`. If the page is cut off by a few pixels, set `REC_CAPTURE_OFFSET=x,y` (screen pixels) |
+| "Chrome could not record the app's tab"                | Update Google Chrome. If it still fails, record the screen instead: `REC_CAPTURE=screen` in `.env.local`                                                             |
+| Screen capture: the video is black or shows the wrong screen | macOS: allow Screen Recording for the app that runs the command, then restart that app. With several screens, set `REC_SCREEN` in `.env.local`                 |
+| Screen capture on Windows: the video is black, or the picture is shifted | Keep the desktop unlocked and Chrome on the main screen. Try `REC_WIN_GRABBER=gdigrab` in `.env.local`. If the page is cut off by a few pixels, set `REC_CAPTURE_OFFSET=x,y` (screen pixels) |
 | "Google Chrome not found"                              | Install Chrome. On ARM Linux (no Chrome build): set `REC_CHANNEL=chromium` and run `node tests/recording/.kit/node_modules/@playwright/test/cli.js install chromium` |
 | A test fails to find a button or field                 | Tell the assistant; it reads `.results/<test>/error-context.md` and the screenshot, then fixes the helper                                                            |
+| "cannot be shown: it is covered by …" or "still animating" | Something sits over the target or it is still opening. The kit checks this in every mode, before recording; the assistant adds a wait to the helper           |
 | The first page load times out                          | Your dev server may still be compiling. Open the app once in a browser, or ask the assistant to raise that timeout in the helper                                     |
-| The voice-over and the screen drift apart              | Run `rehearsal <name>`: it warns for each step that runs longer than its sentence. The assistant shortens the text or the step                                       |
+| The voice-over leaves silences or holds a frame long   | Run `render <name>` and read its fit table (`render-report.json`): the assistant lengthens sentences with long silence and shortens ones that hold a frame. No new recording |
 | A scenario created data you don't want                 | Scenarios write to your real app. Each scenario's plan lists what it creates and what to delete before recording again                                               |
 
 ## Glossary
@@ -423,6 +464,7 @@ plugins/runcast/
                                     project templates, Linux self-test
     runcast-plan/                   the planning interview
     runcast-scenario/               the rules for writing scenarios
+    runcast-scene/                  designing animated scenes, with an example
     runcast-publish/                the YouTube upload
 ```
 
