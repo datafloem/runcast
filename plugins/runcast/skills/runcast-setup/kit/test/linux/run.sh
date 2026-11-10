@@ -64,8 +64,16 @@ step "Video mode, tab capture (headless Chrome, no display needed)"
 REC_CAPTURE=tab $REC video selftest --render
 step "Check the tab-capture video"
 check_video tab
-# The tab is recorded at REC_SCALE (1.5): 2880x1620 for the 1920x1080 page.
-node -e 'const e=require(process.argv[1]); if(e.video.width!==2880||e.video.height!==1620) throw new Error(`tab capture is ${e.video.width}x${e.video.height}`)' "$PWD/tests/recording/.captures/selftest/capture/events.json"
+# The tab is recorded at REC_SCALE (1.5): about 2880x1620 for the 1920x1080
+# page. At 1.5 the browser may round the page 1 px (e.g. 1920x1081 → 2880x1622).
+node -e '
+const e = require(process.argv[1]);
+const v = e.viewport, s = 1.5;
+if (Math.abs(v.width - 1920) > 1 || Math.abs(v.height - 1080) > 1)
+  throw new Error(`page is ${v.width}x${v.height}, not 1920x1080`);
+if (e.video.width !== Math.round(v.width * s) || e.video.height !== Math.round(v.height * s))
+  throw new Error(`tab capture is ${e.video.width}x${e.video.height} for a ${v.width}x${v.height} page`);
+' "$PWD/tests/recording/.captures/selftest/capture/events.json"
 
 cp -r tests/recording/videos "$OUT/"
 cp -r tests/recording/.results "$OUT/results"
