@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "runcast",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Turn Playwright flows through your web app into finished demo videos and end-to-end tests: planning interviews, scenario writing, headless tab recording with a calm camera, captions, title cards, AI-designed scenes, app sound, ElevenLabs voice-over and YouTube upload.",
   "author": {
     "name": "Datafloem"
