@@ -7,14 +7,17 @@ import { defineConfig, type ReporterDescription } from "@playwright/test";
 import path from "node:path";
 import { readFileSync } from "node:fs";
 import { findCaptures, type ProjectConfig } from "./project.ts";
+import { TAB_CAPTURE_ARGS } from "./tab-capture.ts";
 import { ensureDisplay } from "./xvfb.ts";
 
 export async function definePlaywrightConfig(project: ProjectConfig) {
   // Workers and the scripts find the project through this.
   process.env.REC_PROJECT = project.dir;
-  // Tests and rehearsals lay the page out at the size the video records it
-  // (the screen's), taken from the newest landscape recording.
+  // Screen capture: tests and rehearsals lay the page out at the size the
+  // video records it (the screen's), taken from the newest landscape
+  // recording. Tab capture records the same fixed page size tests use.
   if (
+    process.env.REC_CAPTURE === "screen" &&
     process.env.REC_MODE !== "video" &&
     process.env.REC_PAGE_WIDTH === undefined &&
     process.env.REC_PAGE_SIZE === undefined
@@ -31,9 +34,11 @@ export async function definePlaywrightConfig(project: ProjectConfig) {
   const { isTestMode, isVideoMode, pageSize, settings } = await import(
     "./mode.ts"
   );
-  // Linux without a screen: Chrome and ffmpeg use an Xvfb display.
+  const tabCapture = isVideoMode && settings.capture === "tab";
+  const screenCapture = isVideoMode && settings.capture === "screen";
+  // Screen capture on Linux without a screen: Chrome and ffmpeg use an Xvfb display.
   const xvfbScale =
-    isVideoMode && process.platform === "linux" ? await ensureDisplay() : null;
+    screenCapture && process.platform === "linux" ? await ensureDisplay() : null;
   // "chrome" (default) needs Google Chrome; "chromium" uses Playwright's own
   // build (e.g. Linux on ARM, where there is no Chrome).
   const channel = process.env.REC_CHANNEL ?? "chrome";
@@ -74,10 +79,20 @@ export async function definePlaywrightConfig(project: ProjectConfig) {
       colorScheme: project.colorScheme,
       storageState: { cookies: [], origins: [{ origin, localStorage }] },
       headless: settings.headless,
-      // Video mode: null = the page fills the window, which the recorder sizes
-      // to the screen. Headless modes: a fixed 16:9 viewport.
+      // Video mode: null = the page fills the real window, which the recorder
+      // sizes (tab capture records the window's surface, so it must not be
+      // emulated). Test and rehearsal: a fixed viewport.
       viewport: isVideoMode ? null : pageSize,
-      launchOptions: isVideoMode
+      launchOptions: tabCapture
+        ? {
+            args: [
+              // The recorder tab picks the app's tab by a title marker.
+              ...TAB_CAPTURE_ARGS,
+              // Video pixels per CSS pixel (REC_SCALE): 2880x1620 for 1440x810.
+              `--force-device-scale-factor=${settings.scale}`,
+            ],
+          }
+        : screenCapture
         ? {
             args: [
               "--window-position=0,0",

@@ -39,6 +39,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
+import { parseEnv } from "node:util";
 
 // The kit lives inside the runcast-setup skill (skills/runcast-setup/kit/),
 // so tools that install only a plugin's skills (Antigravity) still ship it.
@@ -285,7 +286,13 @@ function doctor(): void {
     "ffmpeg (video, narration)",
     installHint("ffmpeg"),
   );
-  if (process.platform === "linux") {
+  const capture = projectSetting("REC_CAPTURE") === "screen" ? "screen" : "tab";
+  console.log(
+    capture === "tab"
+      ? "  Video records a headless Chrome tab (REC_CAPTURE=tab): the computer stays free while it records."
+      : "  Video records the screen (REC_CAPTURE=screen): leave the computer alone while it records.",
+  );
+  if (capture === "screen" && process.platform === "linux") {
     check(
       Boolean(process.env.DISPLAY) || has("Xvfb", ["-help"]),
       "Display or Xvfb (video on Linux)",
@@ -305,16 +312,24 @@ function doctor(): void {
     ".env.local (account, keys)",
     `copy ${rel(path.join(projectDir, ".env.example"))} to .env.local`,
   );
-  if (process.platform === "darwin") {
+  if (capture === "screen" && process.platform === "darwin") {
     console.log(
-      "  macOS video needs Screen Recording permission for the app that runs the command (asked on first recording).",
+      "  macOS screen recording needs Screen Recording permission for the app that runs the command (asked on first recording).",
     );
   }
-  if (process.platform === "win32") {
+  if (capture === "screen" && process.platform === "win32") {
     console.log(
       "  Windows video records the screen of a signed-in desktop session: keep it unlocked and Chrome on the main screen.",
     );
   }
+}
+
+/** A setting from the environment, else from the recording folder's .env.local. */
+function projectSetting(name: string): string | undefined {
+  if (process.env[name] !== undefined) return process.env[name];
+  const file = path.join(projectDir, ".env.local");
+  if (!existsSync(file)) return undefined;
+  return parseEnv(readFileSync(file, "utf-8"))[name];
 }
 
 // --- running -----------------------------------------------------------------------

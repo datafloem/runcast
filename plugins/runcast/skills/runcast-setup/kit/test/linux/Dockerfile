@@ -1,5 +1,6 @@
 # Linux self-test of Runcast: sets up a sample project with the kit's
-# CLI, records it on an Xvfb display, renders the video, and splits a
+# CLI, records it twice (a headless tab, and the screen of an Xvfb display),
+# renders the videos, and splits a
 # narration with ffmpeg. From the repository root:
 #
 #   docker build -f plugins/runcast/skills/runcast-setup/kit/test/linux/Dockerfile -t runcast-linux plugins/runcast

@@ -305,7 +305,9 @@ on), and what is left is silence. A changed text needs new audio and a new
 
 **a) Learn the steps' real lengths.** Ask the user (it writes to the backend),
 then record the video once: `node tests/recording/.kit/cli.ts video <name>`
-(it does not need the narration). Without a video yet, a timing rehearsal
+(it does not need the narration; it records a hidden browser tab, so the
+user can keep working meanwhile — only flows that must show real OS dialogs
+need `REC_CAPTURE=screen`, which takes over the screen). Without a video yet, a timing rehearsal
 works too: `node tests/recording/.kit/cli.ts rehearsal <name>` (headless and
 not recorded, at the video's pace). If neither is possible, use the lengths in
 the flow table and say so.

@@ -12,7 +12,8 @@ captions, opening and closing title cards, blurred private fields and a
 voice-over. The kit can upload the result to YouTube too.
 
 You need no video editing and no screen-recording app. You don't click through
-the app yourself.
+the app yourself, and you can keep using your computer while it records:
+the browser runs hidden, in the background.
 
 ---
 
@@ -82,8 +83,9 @@ Under the hood:
    - **test:** headless and as fast as possible, to check that the app works;
    - **rehearsal:** headless at video pace, to measure how long each step
      takes before the first video;
-   - **video:** a visible Chrome window that is screen-recorded with ffmpeg
-     and then rendered into the final MP4.
+   - **video:** a hidden (headless) Chrome whose app tab is recorded by a
+     second tab of the kit, then rendered into the final MP4. Nothing opens
+     on your screen.
 3. **The kit is installed once per computer**, not into each project. The
    first setup builds a shared **runtime** in `~/.cache/runcast/`: the
    kit plus Playwright, a few hundred MB. Each project gets only a small
@@ -97,22 +99,23 @@ Under the hood:
 | --------------------- | -------------------------------------------- | --------------------------------------------------------------------------------------------------- |
 | **Node.js 22.18+**    | Runs the kit (TypeScript runs directly)      | `node --version`; install from [nodejs.org](https://nodejs.org)                                     |
 | **Google Chrome**     | The browser that is driven and recorded      | Install from [google.com/chrome](https://www.google.com/chrome/). On ARM Linux, see Troubleshooting |
-| **ffmpeg**            | Screen capture, rendering and voice-over     | macOS: `brew install ffmpeg` · Debian/Ubuntu: `sudo apt install ffmpeg` · Windows: `winget install Gyan.FFmpeg` |
-| **Xvfb** (Linux only) | A virtual screen on machines with no display | `sudo apt install xvfb`                                                                             |
+| **ffmpeg**            | Rendering and voice-over                     | macOS: `brew install ffmpeg` · Debian/Ubuntu: `sudo apt install ffmpeg` · Windows: `winget install Gyan.FFmpeg` |
+| **Xvfb** (Linux, screen capture only) | A virtual screen for `REC_CAPTURE=screen` on machines with no display | `sudo apt install xvfb`                                              |
 | **Your app running**  | The kit opens it in the browser              | Start your dev server as usual (for example `npm run dev`)                                          |
 | **A test account**    | For the sign-in step                         | A user name and password for your app. They go in a local file, never in the chat                   |
 
 Platforms:
 
-- **macOS:** everything works. The first video asks for **Screen Recording**
-  permission for the app that runs the command (your terminal or AI app):
-  System Settings > Privacy & Security > Screen Recording.
-- **Linux:** everything works. Without a screen (servers, CI, containers) the
-  kit starts a virtual display by itself.
-- **Windows 10/11:** everything works. Video records the screen of your
-  signed-in desktop, so keep it unlocked and Chrome on the main screen while
-  it records. Windows video support is new: if the picture is shifted or
-  black, see Troubleshooting and tell us in an issue.
+- **macOS, Linux, Windows 10/11 and CI:** everything works the same way.
+  Video records a hidden browser tab, so it needs no permission and no
+  screen.
+- **Screen capture** (`REC_CAPTURE=screen` in `.env.local`) is the older way,
+  only for flows that must show real operating-system dialogs: a visible
+  Chrome window is recorded with ffmpeg. macOS then asks for **Screen
+  Recording** permission for the app that runs the command (System Settings >
+  Privacy & Security > Screen Recording); Linux without a screen uses a
+  virtual display (Xvfb); Windows needs the desktop unlocked and Chrome on the
+  main screen. Don't touch the computer while it records.
 
 After setup you can always run `node tests/recording/.kit/cli.ts doctor`. It
 lists what is installed and what is missing.
@@ -266,9 +269,8 @@ your app's data.
 node tests/recording/.kit/cli.ts video <name>
 ```
 
-A Chrome window opens and runs through the flow by itself. **Don't touch the
-mouse and keep other windows off it** while it records. Then the kit renders
-the result:
+A hidden Chrome runs through the flow by itself; nothing opens on your
+screen, so you can keep working. Then the kit renders the result:
 
 ```text
 tests/recording/videos/<name>.mp4
@@ -388,8 +390,9 @@ the plugin in your AI tool. In Claude Code that is
 | Problem                                                | What to do                                                                                                                                                           |
 | ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `.kit` is missing, or "is not set up: run setup first" | Run setup again (ask the assistant to set up recordings). This is normal after a fresh clone or a kit update                                                         |
-| The video is black or shows the wrong screen           | macOS: allow Screen Recording for the app that runs the command, then restart that app. With several screens, set `REC_SCREEN` in `.env.local`                       |
-| Windows: the video is black, or the picture is shifted | Keep the desktop unlocked and Chrome on the main screen. Try `REC_WIN_GRABBER=gdigrab` in `.env.local`. If the page is cut off by a few pixels, set `REC_CAPTURE_OFFSET=x,y` (screen pixels) |
+| "Chrome could not record the app's tab"                | Update Google Chrome. If it still fails, record the screen instead: `REC_CAPTURE=screen` in `.env.local`                                                             |
+| Screen capture: the video is black or shows the wrong screen | macOS: allow Screen Recording for the app that runs the command, then restart that app. With several screens, set `REC_SCREEN` in `.env.local`                 |
+| Screen capture on Windows: the video is black, or the picture is shifted | Keep the desktop unlocked and Chrome on the main screen. Try `REC_WIN_GRABBER=gdigrab` in `.env.local`. If the page is cut off by a few pixels, set `REC_CAPTURE_OFFSET=x,y` (screen pixels) |
 | "Google Chrome not found"                              | Install Chrome. On ARM Linux (no Chrome build): set `REC_CHANNEL=chromium` and run `node tests/recording/.kit/node_modules/@playwright/test/cli.js install chromium` |
 | A test fails to find a button or field                 | Tell the assistant; it reads `.results/<test>/error-context.md` and the screenshot, then fixes the helper                                                            |
 | "cannot be shown: it is covered by …" or "still animating" | Something sits over the target or it is still opening. The kit checks this in every mode, before recording; the assistant adds a wait to the helper           |

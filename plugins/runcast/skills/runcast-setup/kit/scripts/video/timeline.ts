@@ -1,5 +1,5 @@
 // Pure timing maths for the renderer: where the camera looks and where the
-// cursor is at any moment, from a capture's events (lib/video-capture.ts).
+// cursor is at any moment, from a capture's events (core/capture-log.ts).
 // No I/O here, so it is easy to test and to tune.
 
 export interface Box {

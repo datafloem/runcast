@@ -3,9 +3,9 @@
 
 /**
  * - "landscape" (default): 16:9, 1920x1080, for YouTube, websites, slides.
- * - "vertical": 9:16, 1080x1920. The page itself is 9:16 (a narrow window in
- *   video mode, 480x854 in test and rehearsal), so the app shows its mobile
- *   layout. For apps that have one.
+ * - "vertical": 9:16, 1080x1920. The page itself is 9:16 (a
+ *   540x960 page; a narrow window with screen capture), so the app shows its
+ *   mobile layout. For apps that have one.
  * - "vertical-crop": 9:16 from a landscape recording: the camera shows a 9:16
  *   slice of the desktop page and follows the action.
  * - "vertical-fit": 9:16 with the whole landscape recording across the middle,
@@ -27,8 +27,8 @@ export const VIDEO_FORMATS: ReadonlyArray<VideoFormat> = [
   "vertical-fit",
 ];
 
-/** Page size of a "vertical" scenario in test and rehearsal (CSS pixels, 9:16). */
-export const VERTICAL_PAGE = { width: 480, height: 854 };
+/** Page size of a "vertical" scenario (CSS pixels, 9:16); screen capture fits the screen instead. */
+export const VERTICAL_PAGE = { width: 540, height: 960 };
 
 export function isVideoFormat(value: unknown): value is VideoFormat {
   return VIDEO_FORMATS.includes(value as VideoFormat);

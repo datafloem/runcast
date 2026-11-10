@@ -90,7 +90,7 @@ interface CaptureFile {
   pointer: Array<PointerSample>;
   focus: Array<Focus>;
   navigations?: Array<number>;
-  /** What each stretch of the recording was (core/video-capture.ts); older captures have none. */
+  /** What each stretch of the recording was (core/capture-log.ts); older captures have none. */
   spans?: Array<Span>;
   /** Older captures: off-camera time cut out of the screen recording. */
   cuts?: Array<{ at: number; ms: number }>;

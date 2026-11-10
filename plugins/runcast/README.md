@@ -5,8 +5,9 @@ and the same walk-through runs as an **automated end-to-end test**.
 
 Describe the video you want to your AI assistant. It plans the video with you,
 then writes a short Playwright scenario that drives a real Chrome browser
-through your app. Runcast records the screen with a smooth cursor and a calm,
-zooming camera, and renders an MP4: landscape, or vertical for YouTube Shorts
+through your app. Runcast records the app's tab in a hidden browser (you keep
+using your computer meanwhile), adds a smooth cursor and a calm, zooming
+camera, and renders an MP4: landscape, or vertical for YouTube Shorts
 and Instagram Reels. You can add captions, title cards, blurred
 private fields, cube transitions between steps and a voice-over, and upload the
 result to YouTube. You don't edit video, use a screen recorder or click
@@ -27,11 +28,13 @@ an order"*.
 ## Requirements
 
 - Node 22.18 or newer, and Google Chrome (or Playwright's Chromium).
-- `ffmpeg` for video and voice-over. On macOS, the app that runs the command
-  needs the Screen Recording permission. On Linux, Runcast uses Xvfb when
-  there is no screen. On Windows, it records the signed-in desktop.
-- Video recording runs on macOS, Linux and Windows 10/11. Test and rehearsal
-  runs work anywhere, CI included.
+- `ffmpeg` for video and voice-over.
+- Video, test and rehearsal runs work on macOS, Linux, Windows 10/11 and CI:
+  video records a headless Chrome tab, with no permission and no screen.
+- Optional screen capture (`REC_CAPTURE=screen`, for flows that must show
+  real OS dialogs): on macOS the app that runs the command needs the Screen
+  Recording permission; on Linux Runcast uses Xvfb when there is no screen;
+  on Windows it records the signed-in desktop.
 
 ## What Runcast installs, sends and stores
 
@@ -57,6 +60,10 @@ your computer, only when you or your assistant run the command named.
 - **Your app**, at the base URL in `recording.config.ts`, in the browser that
   Playwright drives, signed in with the test account you put in
   `tests/recording/.env.local`.
+- **The kit's own local pages**, in that same browser, in video mode: the
+  recorder (`core/recorder.html` in the runtime folder, opened as a
+  `file://` page) records the app's tab and hands the video to the kit
+  inside the browser. These pages load nothing from the network.
 - **ElevenLabs** (`api.elevenlabs.io`), only when you run
   `narration generate`. It sends each voice-over line's text, plus the lines
   just before and after it, with your `ELEVENLABS_API_KEY` from `.env.local`,
@@ -76,7 +83,7 @@ your computer, only when you or your assistant run the command named.
 - `videos/`, `narration/`, `.results/`, `.report/`: renders, audio, test
   output and test reports.
 - `.captures/<scenario>/`: the latest video recording of each scenario (the
-  screen recording, its event log and step times), kept until that scenario
+  tab or screen recording, its event log and step times), kept until that scenario
   is recorded again. Each render also writes `render-report.json` there (how
   each step was fitted to its voice-over, and where it starts in the video),
   and `render --check` one picture per step to `check/`. `render --draft`
@@ -85,7 +92,9 @@ your computer, only when you or your assistant run the command named.
 
 **Records**
 
-- In video mode only, with ffmpeg: on macOS the screen, cropped to the
+- In video mode only: by default the app's tab in the headless browser, with
+  Chrome's own tab capture (nothing else on your screen is recorded). With
+  `REC_CAPTURE=screen`, with ffmpeg: on macOS the screen, cropped to the
   browser's page area; on Linux the display (Xvfb when there is no screen),
   limited to the page area; on Windows the page area of the main screen
   (Desktop Duplication, or GDI as a fallback). The capture stays on your computer. Fields you

@@ -17,12 +17,9 @@ import { projectDirOf } from "./narration.ts";
 import { screenProblem } from "./on-screen.ts";
 import { captureRootFor } from "./project.ts";
 import type { ShowTransition, VideoCard } from "./scenario.ts";
-import {
-  fitWindow,
-  VideoCapture,
-  type Box,
-  type FocusKind,
-} from "./video-capture.ts";
+import type { Box, Capture, FocusKind } from "./capture-log.ts";
+import { sizeWindow, TabCapture } from "./tab-capture.ts";
+import { fitWindow, VideoCapture } from "./video-capture.ts";
 import { VirtualMouse } from "./virtual-mouse.ts";
 
 /** Recording fast (settings.fastRecording): real time spent of a viewer pause... */
@@ -83,7 +80,7 @@ interface StepMark {
  */
 export class Recorder {
   private mouse: VirtualMouse | null = null;
-  private capture: VideoCapture | null = null;
+  private capture: Capture | null = null;
   /** Box of the element the last action aimed at (page coordinates). */
   private lastBox: Box | undefined;
   private live = false;
@@ -104,11 +101,16 @@ export class Recorder {
   showTransition: ShowTransition = "pan";
   /** The video's shape (see ScenarioDefinition); set by useFormat(). */
   private format: VideoFormat = "landscape";
+  /** Tab capture: the window has been sized to the page size. */
+  private sized = false;
 
-  constructor(
-    private readonly page: Page,
-    private readonly testInfo: TestInfo,
-  ) {}
+  private readonly page: Page;
+  private readonly testInfo: TestInfo;
+
+  constructor(page: Page, testInfo: TestInfo) {
+    this.page = page;
+    this.testInfo = testInfo;
+  }
 
   /** True once `start()` ran: actions are the ones the video shows. */
   get isLive(): boolean {
@@ -117,36 +119,58 @@ export class Recorder {
 
   /**
    * Sets the video's shape. "vertical" makes the page 9:16 right away (a
-   * narrow window in video mode, a 9:16 viewport otherwise), so the app is
-   * prepared and recorded in its mobile layout.
+   * 540x960 page; with screen capture a narrow window), so the app is
+   * prepared and recorded in its mobile layout. Tab capture sizes the
+   * window to the page size here, before the first page load.
    */
   async useFormat(format: VideoFormat): Promise<void> {
     this.format = format;
+    if (isVideoMode && settings.capture === "tab") {
+      await this.sizeTab();
+      return;
+    }
     if (!recordsVertically(format)) return;
     if (isVideoMode) await fitWindow(this.page, true);
     else await this.page.setViewportSize(VERTICAL_PAGE);
   }
 
+  /** Tab capture: the window around the page, sized to the format's page size. */
+  private async sizeTab(): Promise<void> {
+    await sizeWindow(
+      this.page,
+      recordsVertically(this.format) ? VERTICAL_PAGE : pageSize,
+    );
+    this.sized = true;
+  }
+
   /**
    * Ends the preparation phase: from here on actions run at a person's pace
-   * (video, rehearsal) and, in video mode, the screen is recorded.
+   * (video, rehearsal) and, in video mode, the page is recorded.
    */
   async start(): Promise<void> {
     this.live = true;
     this.startedAt = Date.now();
     if (isTestMode) return;
-    let capture: VideoCapture | null = null;
+    let capture: Capture | null = null;
     let viewport = this.page.viewportSize() ?? pageSize;
     if (isVideoMode) {
       rmSync(this.captureRoot(), { recursive: true, force: true });
-      capture = new VideoCapture(
-        this.page,
-        path.join(this.captureRoot(), "capture"),
-        this.startedAt,
-        path.basename(this.testInfo.file, ".spec.ts"),
-        recordsVertically(this.format),
-      );
-      // Time zero is when the screen recording runs.
+      const dir = path.join(this.captureRoot(), "capture");
+      const scenario = path.basename(this.testInfo.file, ".spec.ts");
+      if (settings.capture === "tab") {
+        if (!this.sized) await this.sizeTab();
+        capture = new TabCapture(this.page, dir, scenario, {
+          scale: settings.scale,
+        });
+      } else {
+        capture = new VideoCapture(
+          this.page,
+          dir,
+          scenario,
+          recordsVertically(this.format),
+        );
+      }
+      // Time zero is when the recording runs.
       const started = await capture.start();
       this.startedAt = started.startedAt;
       viewport = started.viewport;

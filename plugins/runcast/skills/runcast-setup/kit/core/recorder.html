@@ -1,0 +1,154 @@
+<!doctype html>
+<!--
+  Runcast's recorder tab (core/tab-capture.ts opens it from the kit's folder).
+  It records another tab of the same browser with getDisplayMedia (Chrome
+  picks the tab whose title holds the marker, --auto-select-tab-capture-
+  source-by-title) and MediaRecorder, and hands each chunk to Node through
+  window.__runcastChunk. Loads nothing from the network.
+-->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Recorder</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        background: #000;
+      }
+    </style>
+  </head>
+  <body>
+    <script>
+      /** Running recordings by stream name ("screen", "stage"). */
+      const running = {};
+
+      function pickMime(audio) {
+        const options = audio
+          ? ["video/mp4;codecs=avc1,mp4a.40.2", "video/webm;codecs=vp9,opus"]
+          : ["video/mp4;codecs=avc1", "video/webm;codecs=vp9"];
+        const mime = options.find((type) => MediaRecorder.isTypeSupported(type));
+        if (!mime) throw new Error("This Chrome cannot record MP4 or WebM video.");
+        return mime;
+      }
+
+      /**
+       * Watches a video track's frames (on a clone, closed at once) for the
+       * wall-clock time of its first frame. MediaRecorder times the file from
+       * the track's first frame, which comes when capture starts, before the
+       * recorder does (a still page sends no new frames). A frame's timestamp
+       * is on a clock of its own; the smallest gap between it and when the
+       * frame is read moves it onto the wall clock.
+       */
+      function watchFrames(track) {
+        const info = { first: null, minDelay: Infinity };
+        if (typeof MediaStreamTrackProcessor !== "function") {
+          return { info, stop() {} };
+        }
+        const reader = new MediaStreamTrackProcessor({ track }).readable.getReader();
+        (async () => {
+          for (;;) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            const timestamp = value.timestamp / 1000;
+            value.close();
+            const delay = performance.timeOrigin + performance.now() - timestamp;
+            if (info.first === null) info.first = timestamp;
+            if (delay < info.minDelay) info.minDelay = delay;
+          }
+        })().catch(() => {});
+        return {
+          info,
+          stop() {
+            reader.cancel().catch(() => {});
+            track.stop();
+          },
+        };
+      }
+
+      function toBase64(blob) {
+        return new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result).split(",", 2)[1] ?? "");
+          reader.onerror = () => reject(reader.error);
+          reader.readAsDataURL(blob);
+        });
+      }
+
+      /**
+       * Starts recording the marked tab. Resolves once the recorder runs, with
+       * the wall-clock time of its start event.
+       */
+      async function startCapture(target) {
+        const name = target.name ?? "screen";
+        const stream = await navigator.mediaDevices.getDisplayMedia({
+          video: {
+            width: { ideal: target.width },
+            height: { ideal: target.height },
+            frameRate: { ideal: 30, max: 30 },
+            cursor: "never",
+          },
+          audio: target.audio
+            ? {
+                suppressLocalAudioPlayback: true,
+                echoCancellation: false,
+                noiseSuppression: false,
+                autoGainControl: false,
+                channelCount: 2,
+              }
+            : false,
+          preferCurrentTab: false,
+          selfBrowserSurface: "exclude",
+        });
+        const frames = watchFrames(stream.getVideoTracks()[0].clone());
+        const mime = pickMime(target.audio && stream.getAudioTracks().length > 0);
+        const extension = mime.startsWith("video/mp4") ? "mp4" : "webm";
+        const recorder = new MediaRecorder(stream, {
+          mimeType: mime,
+          videoBitsPerSecond: target.bitsPerSecond ?? 25_000_000,
+          audioBitsPerSecond: 192_000,
+        });
+        // Chunks go to Node one after another, in order.
+        let sending = Promise.resolve();
+        recorder.ondataavailable = (event) => {
+          if (event.data.size === 0) return;
+          const data = event.data;
+          sending = sending.then(async () =>
+            window.__runcastChunk(name, await toBase64(data), extension),
+          );
+        };
+        const stopped = new Promise((resolve) => (recorder.onstop = resolve));
+        const started = new Promise((resolve) => (recorder.onstart = () => resolve(Date.now())));
+        recorder.start(target.timesliceMs ?? 1000);
+        const startWall = await started;
+        running[name] = { recorder, stream, frames, startWall, stopped, sending: () => sending };
+        return {
+          mime,
+          startWall,
+          audioTracks: stream.getAudioTracks().length,
+          audioSettings: stream.getAudioTracks()[0]?.getSettings() ?? null,
+        };
+      }
+
+      /**
+       * Stops a recording; resolves once its last chunk reached Node, with the
+       * wall-clock time of the file's first frame (the recorder's start when
+       * frames cannot be watched).
+       */
+      async function stopCapture(name = "screen") {
+        const entry = running[name];
+        if (!entry) return null;
+        delete running[name];
+        if (entry.recorder.state !== "inactive") entry.recorder.stop();
+        await entry.stopped;
+        await entry.sending();
+        entry.frames.stop();
+        for (const track of entry.stream.getTracks()) track.stop();
+        const { first, minDelay } = entry.frames.info;
+        return {
+          firstFrameWall: first !== null && Number.isFinite(minDelay) ? first + minDelay : entry.startWall,
+        };
+      }
+    </script>
+  </body>
+</html>

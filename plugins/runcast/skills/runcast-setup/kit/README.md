@@ -1,9 +1,10 @@
 # Runcast
 
 Turns Playwright flows through a web app into **finished demo videos** and,
-from the same code, **end-to-end tests**. No video editing: a visible Chrome
-is screen-recorded while a virtual cursor works at a person's pace, then the
-kit renders an MP4 with a calm camera, a drawn cursor with click ripples, a
+from the same code, **end-to-end tests**. No video editing: the app's tab in
+a headless Chrome is recorded while a virtual cursor works at a person's
+pace (nothing opens on screen, so the computer stays free), then the kit
+renders an MP4 with a calm camera, a drawn cursor with click ripples, a
 framed 1920×1080 layout (or 1080×1920 for YouTube Shorts and Instagram
 Reels), and optionally captions, title cards, blurred fields and an
 ElevenLabs voice-over fitted to the steps when rendering.
@@ -33,19 +34,23 @@ It is app-agnostic. An app adds a **recording folder** (default
 - Node 22.18+ (runs TypeScript directly) and Google Chrome (or Playwright's
   Chromium with `REC_CHANNEL=chromium`). Playwright and canvas come with the
   kit's runtime; the project installs nothing.
-- Video mode and the narration tools: `ffmpeg`.
-  - **macOS:** `brew install ffmpeg`, and Screen Recording permission for the
-    app that runs the command (System Settings > Privacy & Security > Screen
-    Recording).
-  - **Linux:** `ffmpeg` and `xvfb` (e.g. `apt install ffmpeg xvfb`). Without a
+- Video mode and the narration tools: `ffmpeg` (`brew install ffmpeg`,
+  `apt install ffmpeg`, `winget install Gyan.FFmpeg`). Video records a
+  headless Chrome tab (`REC_CAPTURE=tab`, the default): no permission, no
+  display, the same on macOS, Linux, Windows and CI.
+- Screen capture (`REC_CAPTURE=screen`, only for flows that must show real OS
+  dialogs) records a visible Chrome window with ffmpeg instead:
+  - **macOS:** Screen Recording permission for the app that runs the command
+    (System Settings > Privacy & Security > Screen Recording).
+  - **Linux:** `xvfb` too (e.g. `apt install ffmpeg xvfb`). Without a
     screen (CI, servers, containers) the kit starts an Xvfb display of
     `REC_XVFB_SIZE` (default 1920x1080) itself, at `REC_XVFB_SCALE` (1, or
     2 for Retina-sharp video at four times the pixels); with a desktop session it
     records `DISPLAY` (X11; under Wayland run it with `xvfb-run`). On ARM
     Linux there is no Google Chrome: `REC_CHANNEL=chromium` and
     `node <recording folder>/.kit/node_modules/@playwright/test/cli.js install chromium`.
-  - **Windows 10/11:** `winget install Gyan.FFmpeg` (ffmpeg 6 or newer).
-    Video records the page area of the main screen with ffmpeg's `ddagrab`
+  - **Windows 10/11:** ffmpeg 6 or newer.
+    Screen capture records the page area of the main screen with ffmpeg's `ddagrab`
     (Desktop Duplication, physical pixels, so display scaling is fine) and
     falls back to `gdigrab` when that can't start; `REC_WIN_GRABBER` picks
     one. Keep the desktop signed in and unlocked while it records.
@@ -134,7 +139,7 @@ The CLI takes the recording folder from `--dir`, else `REC_PROJECT`, else
 
 | Mode      | Command                                      | What                                                                                    |
 | --------- | -------------------------------------------- | --------------------------------------------------------------------------------------- |
-| Video     | `node tests/recording/.kit/cli.ts video`     | Records Chrome with ffmpeg, then renders `videos/<scenario>.mp4`. macOS, Linux, Windows |
+| Video     | `node tests/recording/.kit/cli.ts video`     | Records the app's tab in a headless Chrome, then renders `videos/<scenario>.mp4`. Any OS and CI |
 | Rehearsal | `node tests/recording/.kit/cli.ts rehearsal` | The video's pace, headless and not recorded. Measures step lengths before the first video |
 | Test      | `node tests/recording/.kit/cli.ts test`      | Headless, Playwright's own clicks, no pauses. Any OS and CI; HTML report in `.report/`  |
 
@@ -145,11 +150,17 @@ Add a scenario name to run one: `node tests/recording/.kit/cli.ts test login`.
 
 ## Video
 
-1. Chrome fills the screen's usable area (format `"vertical"`: its full
-   height, as wide as makes the page 9:16); the page takes its size and the
-   renderer fits it into the frame. ffmpeg records that area at screen
-   resolution, 30 fps (`.captures/<scenario>/capture/screen.mkv`); the real cursor
-   is not recorded. A virtual cursor moves inside the page, and every click,
+1. A headless Chrome runs the scenario with the page at a fixed size,
+   `REC_PAGE_SIZE` (default 1440×810; format `"vertical"`: 540×960), drawn
+   at `REC_SCALE` (default 2, so 2880×1620 video pixels for the camera to zoom
+   into). A second tab, the kit's recorder (`core/recorder.html`, a local
+   page), records the app's tab with Chrome's own tab capture at up to 30 fps
+   (`.captures/<scenario>/capture/screen.mp4`, or `.webm`); nothing opens on
+   screen and the real cursor is never in it. Tests and rehearsals use the
+   same page sizes. With `REC_CAPTURE=screen` Chrome instead fills the
+   screen's usable area (format `"vertical"`: its full height, as wide as
+   makes the page 9:16) and ffmpeg records that area at screen resolution
+   (`capture/screen.mkv`). A virtual cursor moves inside the page, and every click,
    keystroke, hover and navigation is logged (`capture/events.json`).
    Recording runs fast: viewer pauses and cursor rests are cut short, cursor
    moves run three times faster and typing at 40 ms per character, each
@@ -170,9 +181,9 @@ Add a scenario name to run one: `node tests/recording/.kit/cli.ts test login`.
      page with a shadow.
    - **Format (optional):** `scenario({ format })` picks the video's shape:
      - `"landscape"` (default): 1920×1080, for YouTube, websites, slides.
-     - `"vertical"`: 1080×1920. The page itself is 9:16 in every mode (a
-       narrow window in video, 480×854 in test and rehearsal), so the app
-       shows its mobile layout. For apps that have one.
+     - `"vertical"`: 1080×1920. The page itself is 9:16 in every mode
+       (540×960; a narrow window with screen capture), so the app shows its
+       mobile layout. For apps that have one.
      - `"vertical-crop"`: 1080×1920 from a desktop recording. The camera
        shows a 9:16 slice of the page and follows the action.
      - `"vertical-fit"`: 1080×1920 with the whole desktop recording across
@@ -211,9 +222,10 @@ Add a scenario name to run one: `node tests/recording/.kit/cli.ts test login`.
      voice-over, no cards, to `videos/<name>.steps-3-5.mp4` (or the draft
      file with `--draft`).
 
-While recording, keep other windows off Chrome and the mouse away from it.
-With several screens the window opens on the main one; set `REC_SCREEN` if
-ffmpeg picks the wrong screen.
+While a tab is recorded you can go on using the computer: nothing of it
+reaches the video. Screen capture is different: keep other windows off
+Chrome and the mouse away from it; with several screens the window opens on
+the main one, and `REC_SCREEN` picks the screen ffmpeg records.
 
 ## Starting from a step
 
@@ -358,9 +370,9 @@ and checks that it can be shown: inside the visible page, not covered by
 another element (a toast, a dialog, a sticky header), not animating in and
 not moving. It waits up to 5 s for that, then fails the step naming the
 problem ("covered by div.toast"), so a test run catches what would spoil the
-video. Tests and rehearsals run at the page size of the newest landscape
-video recording (printed at the start), so the app lays out as it will on
-camera.
+video. Tests and rehearsals run at the video's page size (`REC_PAGE_SIZE`,
+default 1440×810; with screen capture, the newest landscape recording's,
+printed at the start), so the app lays out as it will on camera.
 
 The full rules are in the `runcast-scenario` skill (`skills/runcast-scenario/SKILL.md` in the runtime).
 
@@ -379,13 +391,16 @@ The full rules are in the `runcast-scenario` skill (`skills/runcast-scenario/SKI
 | `REC_FORMAT`                                | scenario           | Overrides the scenario's video format (recording and rendering) |
 | `REC_END_HOLD_MS`                           | `2000`             | How long the last frame stays (video, rehearsal)               |
 | `REC_AIM_MS`                                | `400`              | Cursor rest on a target before clicking (video, rehearsal)     |
-| `REC_PAGE_WIDTH`                            | newest video       | Rehearsal and test page width (16:9). Unset: the newest landscape recording's page size, else 1440 (video fills the screen) |
-| `REC_VIDEO_FPS`, `REC_SCREEN`               | `30`, auto         | Output frame rate; ffmpeg's screen index (macOS; Windows `ddagrab`: `0` = main screen) |
-| `REC_WIN_GRABBER`                           | auto               | Windows: `ddagrab` or `gdigrab`; auto tries `ddagrab` first    |
-| `REC_CAPTURE_OFFSET`                        | `0,0`              | Moves the recorded area by `x,y` screen pixels, when a window frame shifts the page |
+| `REC_CAPTURE`                               | `tab`              | Video: `tab` records the app's tab in a headless Chrome; `screen` records a visible window with ffmpeg (for real OS dialogs) |
+| `REC_PAGE_SIZE`                             | `1440x810`         | Landscape page size in CSS pixels, in every mode (vertical: 540x960). Screen capture: tests take the newest landscape recording's |
+| `REC_PAGE_WIDTH`                            | —                  | Instead of `REC_PAGE_SIZE`: that width at 16:9                  |
+| `REC_SCALE`                                 | `2`                | Tab capture: video pixels per CSS pixel (2: 2880x1620 for 1440x810) |
+| `REC_VIDEO_FPS`, `REC_SCREEN`               | `30`, auto         | Output frame rate; screen capture: ffmpeg's screen index (macOS; Windows `ddagrab`: `0` = main screen) |
+| `REC_WIN_GRABBER`                           | auto               | Screen capture on Windows: `ddagrab` or `gdigrab`; auto tries `ddagrab` first |
+| `REC_CAPTURE_OFFSET`                        | `0,0`              | Screen capture: moves the recorded area by `x,y` screen pixels, when a window frame shifts the page |
 | `REC_CHANNEL`                               | `chrome`           | Browser: `chrome` (Google Chrome) or `chromium` (Playwright's) |
-| `REC_XVFB_SIZE`                             | `1920x1080`        | Linux without a screen: the Xvfb page area, in CSS pixels      |
-| `REC_XVFB_SCALE`                            | `1`                | Linux without a screen: `2` draws the page at 2x, like Retina  |
+| `REC_XVFB_SIZE`                             | `1920x1080`        | Screen capture on Linux without a screen: the Xvfb page area, in CSS pixels |
+| `REC_XVFB_SCALE`                            | `1`                | Screen capture on Linux without a screen: `2` draws the page at 2x, like Retina |
 | `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID` | —                  | For `node tests/recording/.kit/cli.ts narration generate`      |
 
 The project adds its own (account, base URL, scenario values).
@@ -394,8 +409,9 @@ The project adds its own (account, base URL, scenario values).
 
 `test/linux/` checks the kit on Linux in a container: a sample app, a fresh
 install from the templates, a narration split with ffmpeg, test mode, then
-video mode on Xvfb with captions, blur, title cards, a `show`, an off-camera step
-and a cube transition. From the
+video mode twice, recording a headless tab and recording the screen on Xvfb,
+with captions, blur, title cards, a `show`, an off-camera step and a cube
+transition. From the
 Runcast repository root:
 
 ```bash
@@ -403,13 +419,18 @@ docker build -f plugins/runcast/skills/runcast-setup/kit/test/linux/Dockerfile -
 docker run --rm -v "$PWD/kit-linux-out:/out" runcast-linux
 ```
 
-It ends with "Linux self-test passed"; the video, three frames and the
-captures land in `kit-linux-out/`. The same script runs outside a container:
+It ends with "Linux self-test passed"; each video with three of its frames
+(`screen/`, `tab/`) and the captures land in `kit-linux-out/`. The same script runs outside a container:
 `APP_DIR=<empty folder> PLUGIN_DIR=<plugin folder> OUT=<folder> bash <plugin folder>/skills/runcast-setup/kit/test/linux/run.sh`.
 
 ## Limits
 
-- Video mode runs on macOS (ffmpeg avfoundation), Linux (ffmpeg x11grab,
+- Tab capture needs Google Chrome (or Chromium) with tab capture by title
+  (`--auto-select-tab-capture-source-by-title`); if a Chrome update drops
+  it, `REC_CAPTURE=screen` still records. It cannot record popups or new
+  tabs the app opens, nor real OS dialogs. Heavy WebGL pages can lose frames
+  in headless Chrome's software rendering.
+- Screen capture runs on macOS (ffmpeg avfoundation), Linux (ffmpeg x11grab,
   Xvfb when there is no screen) and Windows 10/11 (ffmpeg ddagrab or
   gdigrab, main screen only). Windows support is new and checked in CI with
   test and rehearsal runs; a CI video run is a smoke test only. On Linux the
@@ -417,8 +438,8 @@ captures land in `kit-linux-out/`. The same script runs outside a container:
   text (same layout, four times the pixels); on a 4-CPU VM it delivered about
   29 instead of 30 frames per second (the drawn cursor stays smooth, page
   content can stutter briefly), and rendering takes longer.
-- Chrome opens on the main screen at 100% zoom.
-- Format `"vertical"` records a window as tall as the screen: about 560×990
+- Screen capture: Chrome opens on the main screen at 100% zoom. Format
+  `"vertical"` records a window as tall as the screen: about 560×990
   CSS pixels on a laptop. A Retina or 4K screen gives a sharp 1080×1920
   video; a 1x screen is upscaled about two times. On Linux without a screen use
   `REC_XVFB_SCALE=2`.

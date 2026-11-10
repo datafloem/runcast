@@ -13,7 +13,7 @@
 
 export type SpanKind = "move" | "aim" | "hold" | "type" | "cut";
 
-/** A logged stretch of the recording (core/video-capture.ts). */
+/** A logged stretch of the recording (core/capture-log.ts). */
 export interface Span {
   from: number;
   to: number;

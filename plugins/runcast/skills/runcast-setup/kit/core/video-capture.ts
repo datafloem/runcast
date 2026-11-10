@@ -4,81 +4,17 @@ import {
   spawn,
   type ChildProcessWithoutNullStreams,
 } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import path from "node:path";
+import {
+  CaptureLog,
+  type Box,
+  type Capture,
+  type FocusKind,
+  type PointerKind,
+  type SpanKind,
+} from "./capture-log.ts";
 import type { Point } from "./cursor.ts";
-
-export interface Box {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
-
-export type PointerKind = "move" | "down" | "up";
-
-/**
- * A logged stretch of the recording and how long it lasts in the video
- * (scripts/video/timemap.ts reads these): a cursor move, the rest on a
- * target before clicking, a viewer pause, typing, or an off-camera cut.
- */
-export type SpanKind = "move" | "aim" | "hold" | "type" | "cut";
-export interface CaptureSpan {
-  from: number;
-  to: number;
-  kind: SpanKind;
-  outMs: number;
-  /** "cut" only: screen-recording time left out. */
-  skipMs?: number;
-}
-export type FocusKind =
-  | "click"
-  | "double-click"
-  | "right-click"
-  | "hover"
-  | "type"
-  | "drag"
-  | "show";
-
-/** What scripts/video/ needs to build the video. Times are ms since recording start. */
-export interface CaptureFile {
-  scenario: string;
-  /** Page size in CSS pixels. */
-  viewport: { width: number; height: number };
-  /** Video pixels per CSS pixel (2 on a Retina screen). */
-  scale: number;
-  durationMs: number;
-  /** The raw screen recording of the page area. */
-  video: {
-    file: string;
-    /** When its first frame was taken, in ms since recording start (usually < 0). */
-    startMs: number;
-    width: number;
-    height: number;
-  };
-  /** Virtual cursor path, in page CSS pixels. */
-  pointer: Array<{ t: number; x: number; y: number; kind: PointerKind }>;
-  /** Where the action is: what the camera should look at, and when. */
-  focus: Array<{
-    t: number;
-    until: number;
-    kind: FocusKind;
-    x: number;
-    y: number;
-    box?: Box;
-    /** A "show": how the camera gets there (pan, slide, fade, cube, cut). */
-    transition?: string;
-  }>;
-  /** Page changes (route changes included): the camera pulls back on these. */
-  navigations: Array<number>;
-  /**
-   * What each stretch of the recording was and how long it lasts in the
-   * video. Time no span covers is app time (loading, waiting), shown 1:1.
-   * Off-camera steps are "cut" spans: at `from` (on the clock above, which
-   * already leaves them out) the screen recording skips `skipMs`.
-   */
-  spans: Array<CaptureSpan>;
-}
 
 /**
  * Video mode: records the page area of the (visible) Chrome window with
@@ -90,35 +26,28 @@ export interface CaptureFile {
  * there is no screen: core/xvfb.ts). The real cursor is left out of the
  * video; the renderer draws its own.
  */
-export class VideoCapture {
+export class VideoCapture implements Capture {
   private ffmpeg: ChildProcessWithoutNullStreams | null = null;
-  private readonly data: CaptureFile;
+  private readonly log: CaptureLog;
   /** Wall-clock time of the video's first frame, from ffmpeg's progress reports. */
   private videoStartWall = Infinity;
-  /** Off camera since this wall-clock time (0: on camera). */
-  private pausedAt = 0;
-  private pausedMs = 0;
 
-  constructor(
-    private readonly page: Page,
-    /** Output folder: .captures/<scenario>/capture of the recording folder. */
-    readonly dir: string,
-    private startedAt: number,
-    scenario: string,
-    /** Record a 9:16 page (format "vertical") instead of the whole screen. */
-    private readonly vertical = false,
-  ) {
-    this.data = {
-      scenario,
-      viewport: { width: 0, height: 0 },
-      scale: 1,
-      durationMs: 0,
-      video: { file: "screen.mkv", startMs: 0, width: 0, height: 0 },
-      pointer: [],
-      focus: [],
-      navigations: [],
-      spans: [],
-    };
+  private readonly page: Page;
+  /** Output folder: .captures/<scenario>/capture of the recording folder. */
+  readonly dir: string;
+  /** Record a 9:16 page (format "vertical") instead of the whole screen. */
+  private readonly vertical: boolean;
+
+  constructor(page: Page, dir: string, scenario: string, vertical = false) {
+    this.page = page;
+    this.dir = dir;
+    this.vertical = vertical;
+    this.log = new CaptureLog(scenario);
+    this.log.data.video.file = "screen.mkv";
+  }
+
+  private get data() {
+    return this.log.data;
   }
 
   /**
@@ -159,9 +88,9 @@ export class VideoCapture {
             : `Make sure ffmpeg is installed and DISPLAY (${process.env.DISPLAY ?? "not set"}) is reachable.`;
       throw new Error(`ffmpeg could not record the screen. ${hint}\n${stderr}`);
     }
-    this.page.on("framenavigated", this.onNavigation);
-    this.startedAt = Date.now();
-    return { viewport: this.data.viewport, startedAt: this.startedAt };
+    this.log.attach(this.page);
+    this.log.startedAt = Date.now();
+    return { viewport: this.data.viewport, startedAt: this.log.startedAt };
   }
 
   /** Starts ffmpeg with one screen input and waits for its first frame; returns its error output. */
@@ -268,49 +197,25 @@ export class VideoCapture {
     return { x, y, width, height, scale };
   }
 
-  private readonly onNavigation = (frame: { parentFrame(): unknown }) => {
-    if (!frame.parentFrame()) this.data.navigations.push(this.now());
-  };
-
-  /** ms since recording start, time off camera left out. */
   now(): number {
-    const wall = this.pausedAt || Date.now();
-    return wall - this.startedAt - this.pausedMs;
+    return this.log.now();
   }
 
   /** Off camera: ffmpeg keeps recording, the renderer cuts this time out. */
   pause(): void {
-    if (this.pausedAt) return;
-    this.pausedAt = Date.now();
+    this.log.pause();
   }
 
   resume(): void {
-    if (!this.pausedAt) return;
-    const at = this.now();
-    const ms = Date.now() - this.pausedAt;
-    this.pausedMs += ms;
-    this.pausedAt = 0;
-    this.data.spans.push({ from: at, to: at, kind: "cut", outMs: 0, skipMs: ms });
+    this.log.resume();
   }
 
-  /** Logs a stretch of the recording (see CaptureFile.spans). */
   span(kind: SpanKind, from: number, to: number, outMs: number): void {
-    if (this.pausedAt) return;
-    this.data.spans.push({
-      from: Math.round(from),
-      to: Math.round(to),
-      kind,
-      outMs: Math.round(outMs),
-    });
+    this.log.span(kind, from, to, outMs);
   }
 
   pointer(at: Point, kind: PointerKind): void {
-    this.data.pointer.push({
-      t: this.now(),
-      x: round(at.x),
-      y: round(at.y),
-      kind,
-    });
+    this.log.pointer(at, kind);
   }
 
   focus(
@@ -320,28 +225,13 @@ export class VideoCapture {
     from?: number,
     transition?: string,
   ): void {
-    const t = from ?? this.now();
-    this.data.focus.push({
-      ...(transition ? { transition } : {}),
-      t,
-      until: this.now(),
-      kind,
-      x: round(at.x),
-      y: round(at.y),
-      box: box && {
-        x: round(box.x),
-        y: round(box.y),
-        width: round(box.width),
-        height: round(box.height),
-      },
-    });
+    this.log.focus(kind, at, box, from, transition);
   }
 
   /** Stops ffmpeg (it finishes the file) and writes events.json. */
   async stop(): Promise<string> {
-    this.resume();
-    this.data.durationMs = this.now();
-    this.page.off("framenavigated", this.onNavigation);
+    this.log.finish();
+    this.log.detach(this.page);
     const ffmpeg = this.ffmpeg;
     if (ffmpeg?.exitCode === null) {
       const closed = new Promise<void>((resolve) =>
@@ -354,10 +244,10 @@ export class VideoCapture {
       ]);
       if (!finished) ffmpeg.kill("SIGKILL");
     }
-    this.data.video.startMs = Math.round(this.videoStartWall - this.startedAt);
-    const file = path.join(this.dir, "events.json");
-    writeFileSync(file, JSON.stringify(this.data));
-    return file;
+    this.data.video.startMs = Math.round(
+      this.videoStartWall - this.log.startedAt,
+    );
+    return this.log.write(this.dir);
   }
 }
 
@@ -528,8 +418,4 @@ function screenDeviceIndex(): string {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function round(n: number): number {
-  return Math.round(n * 10) / 10;
 }

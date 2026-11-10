@@ -1,10 +1,11 @@
 /**
  * How the scenarios run. One switch, REC_MODE:
  *
- * - "video": the demo video. A visible Chrome window is recorded with ffmpeg
- *   (macOS or Linux screen capture) while a virtual cursor moves inside the page at a
- *   person's pace; every pointer event is logged, then scripts/video/ turns
- *   both into a finished MP4 (camera, cursor, framing, voice-over).
+ * - "video": the demo video. The app's tab is recorded (REC_CAPTURE: a
+ *   headless Chrome tab by default, or the screen) while a virtual cursor
+ *   moves inside the page at a person's pace; every pointer event is logged,
+ *   then scripts/video/ turns both into a finished MP4 (camera, cursor,
+ *   framing, voice-over).
  * - "rehearsal": the same pace and timing as a video, but headless and not
  *   recorded. For measuring how long each step takes (narration planning).
  * - "test" (default): a plain end-to-end run. Headless, Playwright's own
@@ -27,9 +28,20 @@ export const isVideoMode = mode === "video";
 /** Video and rehearsal run at a person's pace; a test runs as fast as it can. */
 const paced = !isTestMode;
 
+/**
+ * How video mode records (REC_CAPTURE): "tab" (default) records the app's
+ * tab in a headless Chrome, so the computer stays free and the page size is
+ * fixed; "screen" records a visible Chrome window with ffmpeg, for flows that
+ * must show real OS dialogs.
+ */
+const capture: "tab" | "screen" = env.REC_CAPTURE === "screen" ? "screen" : "tab";
+
 export const settings = {
-  /** Only the video needs a window (ffmpeg records the screen). */
-  headless: !isVideoMode,
+  capture,
+  /** Tab capture: video pixels per CSS pixel (REC_SCALE, default 2). */
+  scale: Math.max(1, Number(env.REC_SCALE ?? 2) || 2),
+  /** Only screen capture needs a window on screen. */
+  headless: !isVideoMode || capture === "tab",
   /**
    * Use the scenario's voice-over (scenarios/<name>.narration.json): warn
    * about segments that do not fit the steps. The renderer fits the audio
@@ -52,15 +64,15 @@ export const settings = {
   pauses: paced,
   /** Delay between typed characters. */
   typeDelay: (pacedDelayMs: number) => (paced ? pacedDelayMs : 0),
-  /** Rehearsal and test: page width in CSS pixels; height at 16:9. Video fills the screen. */
+  /** Page width in CSS pixels; height at 16:9. Screen capture fills the screen instead. */
   pageWidth: Number(env.REC_PAGE_WIDTH ?? 1440),
 };
 
 /**
- * Page size of the headless modes (rehearsal, test). REC_PAGE_WIDTH: that
- * width at 16:9. Otherwise REC_PAGE_SIZE ("1512x860"), which the Playwright
- * config sets from the newest video recording so tests lay the app out as
- * the video does. Otherwise 1440x810.
+ * Page size of a landscape page (tab capture, rehearsal, test). REC_PAGE_WIDTH:
+ * that width at 16:9. Otherwise REC_PAGE_SIZE ("1512x860"; with screen
+ * capture the Playwright config sets it from the newest video recording, so
+ * tests lay the app out as the video does). Otherwise 1440x810.
  */
 const sizeSetting = /^(\d+)x(\d+)$/.exec(env.REC_PAGE_SIZE ?? "");
 export const pageSize =

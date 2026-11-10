@@ -1,13 +1,13 @@
 ---
 name: runcast-scenario
-description: Writes or fixes a recording scenario with Runcast — a Playwright flow through a web app that runs as a fast end-to-end test or is recorded into a finished demo video (screen capture, virtual cursor, calm camera, captions, title cards, voice-over). Use when asked to add, change or debug a recording scenario, a demo video flow, a step or helper, or anything in the project's recording folder (default tests/recording/).
+description: Writes or fixes a recording scenario with Runcast — a Playwright flow through a web app that runs as a fast end-to-end test or is recorded into a finished demo video (headless tab capture, virtual cursor, calm camera, captions, title cards, voice-over). Use when asked to add, change or debug a recording scenario, a demo video flow, a step or helper, or anything in the project's recording folder (default tests/recording/).
 ---
 
 # Writing a recording scenario
 
 A scenario walks through one flow of the app from start to finish, either as a
-test (headless, fast) or as a demo video (a visible Chrome is screen-recorded
-and the kit renders a finished MP4 with camera moves, a drawn cursor, optional
+test (headless, fast) or as a demo video (the app's tab in a headless Chrome is
+recorded and the kit renders a finished MP4 with camera moves, a drawn cursor, optional
 captions, title cards and voice-over). The goal is a video that looks hand-made
 and, from the same code, a reliable end-to-end test.
 
@@ -154,7 +154,7 @@ shows each step separately in the Playwright report.
 
 | Mode      | Command                                             | Notes                                                                                                                     |
 | --------- | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| video     | `node tests/recording/.kit/cli.ts video <name>`     | Visible Chrome, ffmpeg screen capture, then the MP4. macOS (Screen Recording permission), Linux (Xvfb without a screen) or Windows (unlocked desktop) |
+| video     | `node tests/recording/.kit/cli.ts video <name>`     | Headless Chrome, the app's tab recorded by the kit's recorder tab, then the MP4. Any OS and CI; the user can keep working. `REC_CAPTURE=screen` records a visible window with ffmpeg instead (only for real OS dialogs; macOS needs Screen Recording permission, Linux Xvfb without a screen, Windows an unlocked desktop) |
 | rehearsal | `node tests/recording/.kit/cli.ts rehearsal <name>` | The video's pace and timing, headless and not recorded. For measuring step lengths                                        |
 | test      | `node tests/recording/.kit/cli.ts test <name>`      | Headless end-to-end, no pauses (the default mode)                                                                         |
 

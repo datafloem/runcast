@@ -41,17 +41,31 @@ ls tests/recording/narration/selftest
 step "Test mode (headless)"
 $REC test
 
-step "Video mode (Linux: Xvfb + x11grab; macOS: screen capture)"
-$REC video selftest
+# Checks the newest video of selftest and keeps it and three frames as <label>.
+check_video() {
+  local label="$1"
+  local VIDEO=tests/recording/videos/selftest.mp4
+  ffprobe -v error -show_entries stream=codec_type,width,height,duration -of compact "$VIDEO"
+  ffprobe -v error -select_streams a -show_entries stream=codec_type -of csv=p=0 "$VIDEO" | grep -q audio
+  # The recording logged its spans and the render reported the narration fit.
+  node -e 'const e=require(process.argv[1]); if(!e.spans?.length) throw new Error("no spans in events.json")' "$PWD/tests/recording/.captures/selftest/capture/events.json"
+  test -s tests/recording/.captures/selftest/render-report.json
+  mkdir -p "$OUT/$label"
+  cp "$VIDEO" "$OUT/$label/"
+  for t in 1 4 8; do ffmpeg -v error -y -ss "$t" -i "$VIDEO" -frames:v 1 "$OUT/$label/frame-$t.png"; done
+}
 
-step "Check the video"
-VIDEO=tests/recording/videos/selftest.mp4
-ffprobe -v error -show_entries stream=codec_type,width,height,duration -of compact "$VIDEO"
-ffprobe -v error -select_streams a -show_entries stream=codec_type -of csv=p=0 "$VIDEO" | grep -q audio
-# The recording logged its spans and the render reported the narration fit.
-node -e 'const e=require(process.argv[1]); if(!e.spans?.length) throw new Error("no spans in events.json")' "$PWD/tests/recording/.captures/selftest/capture/events.json"
-test -s tests/recording/.captures/selftest/render-report.json
-for t in 1 4 8; do ffmpeg -v error -y -ss "$t" -i "$VIDEO" -frames:v 1 "$OUT/frame-$t.png"; done
+step "Video mode, screen capture (Linux: Xvfb + x11grab; macOS: screen capture)"
+REC_CAPTURE=screen $REC video selftest
+step "Check the screen-capture video"
+check_video screen
+
+step "Video mode, tab capture (headless Chrome, no display needed)"
+REC_CAPTURE=tab $REC video selftest
+step "Check the tab-capture video"
+check_video tab
+# The tab is recorded at REC_SCALE (2): 2880x1620 for the 1440x810 page.
+node -e 'const e=require(process.argv[1]); if(e.video.width!==2880||e.video.height!==1620) throw new Error(`tab capture is ${e.video.width}x${e.video.height}`)' "$PWD/tests/recording/.captures/selftest/capture/events.json"
 
 cp -r tests/recording/videos "$OUT/"
 cp -r tests/recording/.results "$OUT/results"

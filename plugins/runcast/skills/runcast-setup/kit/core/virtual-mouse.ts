@@ -1,6 +1,6 @@
 import type { Page } from "@playwright/test";
 import { sleep, type Point } from "./cursor.ts";
-import type { VideoCapture } from "./video-capture.ts";
+import type { Capture } from "./capture-log.ts";
 
 /** How much faster the cursor moves while recording fast. */
 const FAST_MOVE_FACTOR = 3;
@@ -16,12 +16,14 @@ const FAST_MOVE_FACTOR = 3;
 export class VirtualMouse {
   private position: Point;
 
-  constructor(
-    private readonly page: Page,
-    private readonly capture: VideoCapture | null,
-    start: Point,
-    private readonly fast = false,
-  ) {
+  private readonly page: Page;
+  private readonly capture: Capture | null;
+  private readonly fast: boolean;
+
+  constructor(page: Page, capture: Capture | null, start: Point, fast = false) {
+    this.page = page;
+    this.capture = capture;
+    this.fast = fast;
     this.position = start;
     capture?.pointer(start, "move");
   }
