@@ -16,6 +16,19 @@ import {
 
 const channel = captureChannel();
 
+type Size = { width: number; height: number };
+
+/**
+ * The page is the asked size, or 1 px off where the browser rounds (Chrome on
+ * Linux at scale 1.5 lays 1920x1080 out as 1920x1081).
+ */
+function assertPageSize(actual: Size, expected: Size): void {
+  assert.ok(
+    Math.abs(actual.width - expected.width) <= 1 && Math.abs(actual.height - expected.height) <= 1,
+    `page is ${actual.width}x${actual.height}, not ${expected.width}x${expected.height}`,
+  );
+}
+
 test("REC_CHANNEL=chromium records with Playwright's full Chromium, not the headless shell", () => {
   // The headless shell has no tab capture (getDisplayMedia: NotSupportedError).
   assert.equal(captureChannel("chromium"), "chromium");
@@ -43,17 +56,18 @@ after(async () => {
   for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
 });
 
-test("sizeWindow gives the exact page size", async () => {
+test("sizeWindow gives the page size, and returns it", async () => {
   for (const size of [
     { width: 1920, height: 1080 },
     { width: 540, height: 960 },
   ]) {
-    await sizeWindow(page, size);
+    const returned = await sizeWindow(page, size);
     const inner = await page.evaluate(() => ({
       width: window.innerWidth,
       height: window.innerHeight,
     }));
-    assert.deepEqual(inner, size);
+    assertPageSize(inner, size);
+    assert.deepEqual(returned, inner);
   }
 });
 
@@ -104,12 +118,16 @@ div{width:200px;height:200px;background:#fff;animation:spin 1s linear infinite}
 
 let animatedEvents = "";
 
-test("a 2 s recording has constant 2880x1620 frames", async () => {
+test("a 2 s recording has constant frames of the page at 1.5 (2880x1620 for 1920x1080)", async () => {
   animatedEvents = await record(ANIMATED, 2000);
-  const events = JSON.parse(readFileSync(animatedEvents, "utf-8")) as { video: { file: string } };
+  const events = JSON.parse(readFileSync(animatedEvents, "utf-8")) as {
+    viewport: Size;
+    video: { file: string };
+  };
   const sizes = frameSizes(path.join(path.dirname(animatedEvents), events.video.file));
   assert.ok(sizes.length >= 20, `${sizes.length} frames`);
-  assert.deepEqual([...new Set(sizes)], ["2880,1620"]);
+  const { width, height } = events.viewport;
+  assert.deepEqual([...new Set(sizes)], [`${Math.round(width * 1.5)},${Math.round(height * 1.5)}`]);
 });
 
 test("events.json holds video file, size and startMs", () => {
@@ -120,10 +138,10 @@ test("events.json holds video file, size and startMs", () => {
     video: { file: string; startMs: number; width: number; height: number };
   };
   assert.match(events.video.file, /^screen\.(mp4|webm)$/);
-  assert.deepEqual(events.viewport, { width: 1920, height: 1080 });
+  assertPageSize(events.viewport, { width: 1920, height: 1080 });
   assert.equal(events.scale, 1.5);
-  assert.equal(events.video.width, 2880);
-  assert.equal(events.video.height, 1620);
+  assert.equal(events.video.width, Math.round(events.viewport.width * 1.5));
+  assert.equal(events.video.height, Math.round(events.viewport.height * 1.5));
   assert.ok(Number.isFinite(events.video.startMs), `startMs ${events.video.startMs}`);
   // Before time zero: the file starts when the app's tab is captured, time
   // zero once the stage is captured too (seconds on a busy machine).
@@ -241,7 +259,9 @@ test("window is sized before the first load", async () => {
   await first.goto(
     `data:text/html,<script>window.firstSize = innerWidth + "x" + innerHeight;</script>`,
   );
-  assert.equal(await first.evaluate(() => (window as unknown as { firstSize: string }).firstSize), "1920x1080");
+  const firstSize = await first.evaluate(() => (window as unknown as { firstSize: string }).firstSize);
+  const [width, height] = firstSize.split("x").map(Number);
+  assertPageSize({ width, height }, { width: 1920, height: 1080 });
   await fresh.close();
 });
 
@@ -279,10 +299,9 @@ test("stage stream records its own file with the same size", async () => {
   const capture = new TabCapture(page, dir, "demo", { scale: 1.5 });
   await capture.start();
   assert.ok(capture.stage, "no stage tab");
-  assert.deepEqual(
-    await capture.stage.evaluate(() => [window.innerWidth, window.innerHeight]),
-    [1920, 1080],
-  );
+  const [appWidth, appHeight] = await page.evaluate(() => [window.innerWidth, window.innerHeight]);
+  const [stageWidth, stageHeight] = await capture.stage.evaluate(() => [window.innerWidth, window.innerHeight]);
+  assertPageSize({ width: stageWidth, height: stageHeight }, { width: appWidth, height: appHeight });
   capture.source("stage", "lift");
   await capture.stage.setContent(ANIMATED.replace("#2050d0", "#d05020"));
   await wait(1500);

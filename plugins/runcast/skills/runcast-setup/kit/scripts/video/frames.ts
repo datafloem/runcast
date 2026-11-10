@@ -88,10 +88,15 @@ export async function* readFrames(
     skip = Math.floor(((offset - Math.floor(shown)) * fps) / 1000 + 1e-6);
   }
   args.push("-i", file);
+  const filters: Array<string> = [];
   if (offset < 0) {
-    args.push("-vf", `tpad=start_duration=${(-offset / 1000).toFixed(3)}:start_mode=clone`);
+    filters.push(`tpad=start_duration=${(-offset / 1000).toFixed(3)}:start_mode=clone`);
   }
-  args.push("-r", String(fps), "-f", "rawvideo", "-pix_fmt", "rgba", "pipe:1");
+  // round=up: a frame lands in the first slot at or after its time, never
+  // earlier (the output -r rounds to the nearest slot, and older ffmpeg
+  // versions put a change one slot early).
+  filters.push(`fps=${fps}:round=up`);
+  args.push("-vf", filters.join(","), "-f", "rawvideo", "-pix_fmt", "rgba", "pipe:1");
   const decoder = spawn("ffmpeg", args, { stdio: ["ignore", "pipe", "ignore"] });
 
   const frameSize = width * height * 4;
