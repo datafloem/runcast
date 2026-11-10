@@ -215,7 +215,9 @@ step + `gapMs` holds the step's last frame; a step longer than its voice loses
 time from its loading waits, never from pauses, cursor moves or typing. The
 render prints a fit table (`.captures/<name>/render-report.json`). A segment's
 length is the measured audio (`durationMs`) when it is up to date, else an
-estimate from the word count (then no audio is mixed in). `REC_NARRATION=0`
+estimate from the word count (then no audio is mixed in). A clip that ends
+on a cut-off start of the next segment (ElevenLabs, after a pause) plays and
+counts only up to before it; every clip fades in and out. `REC_NARRATION=0`
 leaves the narration out.
 
 `scenario({ compressWaits: false })` keeps the app's real waiting time (for

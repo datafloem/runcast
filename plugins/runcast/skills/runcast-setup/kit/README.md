@@ -334,6 +334,12 @@ is left is silence. Pauses, cursor moves and typing are never shortened.
 (`REC_COMPRESS_WAITS=0/1` overrides it when rendering). The AI writes the text
 to fit each step's word budget.
 
+Every clip fades in (10 ms) and out (30 ms), so none starts or stops on a
+click. Given the next segment as context, ElevenLabs sometimes starts saying
+it at the end of a clip: after a pause, a cut-off piece of the next word. The
+render plays such a clip only up to 80 ms after its speech, and
+`narration measure` / `generate` store that length as `durationMs`.
+
 1. Steps' own lengths (writes to the backend): record once,
    `node tests/recording/.kit/cli.ts video <name>`, or, before any video,
    `node tests/recording/.kit/cli.ts rehearsal <name>`.
