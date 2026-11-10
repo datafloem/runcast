@@ -42,9 +42,9 @@ test("a frame asked past the end of a recording is its last frame", async () => 
  * A recording like Chrome's tab capture: a frame only when the page changes
  * (red at 0 s, blue at 1 s, green at 2.4 s), nothing in between.
  */
-function sparse(): string {
-  const out = path.join(dir, "sparse.mp4");
-  const list = path.join(dir, "sparse.txt");
+function sparse(blueS = 1.4): string {
+  const out = path.join(dir, `sparse-${blueS}.mp4`);
+  const list = path.join(dir, `sparse-${blueS}.txt`);
   const still = (name: string, c: string) => {
     const f = path.join(dir, `${name}.png`);
     execFileSync("ffmpeg", ["-v", "error", "-y", "-f", "lavfi", "-i", `color=c=${c}:s=16x16:d=0.04`, "-frames:v", "1", f]);
@@ -53,7 +53,7 @@ function sparse(): string {
   const red = still("red", "red");
   const blue = still("blue", "blue");
   const green = still("green", "green");
-  writeFileSync(list, `file '${red}'\nduration 1\nfile '${blue}'\nduration 1.4\nfile '${green}'\nduration 0.6\nfile '${green}'\n`);
+  writeFileSync(list, `file '${red}'\nduration 1\nfile '${blue}'\nduration ${blueS}\nfile '${green}'\nduration 0.6\nfile '${green}'\n`);
   execFileSync("ffmpeg", ["-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", list, "-fps_mode", "vfr", "-pix_fmt", "yuv420p", out]);
   return out;
 }
@@ -76,4 +76,16 @@ test("frames read from the middle of a sparse recording start with the frame sho
   }
   const blue = frames.findIndex(([r, g, b]) => !(b > 200 && r < 60 && g < 60));
   assert.equal(blue, 27, `first not-blue frame ${blue}: ${JSON.stringify(frames[0])}`);
+});
+
+test("a change between two frame slots shows from the next slot, never the one before", async () => {
+  // Green from 2.38 s: the slot at 2.367 s still shows blue, 2.4 s is green.
+  const file = sparse(1.38);
+  const frames: Array<[number, number, number]> = [];
+  for await (const frame of readFrames(file, 0, 16, 16, 1500, 30)) {
+    frames.push(colour(frame) as [number, number, number]);
+    if (frames.length >= 30) break;
+  }
+  const blue = frames.findIndex(([r, g, b]) => !(b > 200 && r < 60 && g < 60));
+  assert.equal(blue, 27, `first not-blue frame ${blue}`);
 });

@@ -27,9 +27,11 @@ const START_TIMEOUT_MS = 5_000;
 const BITS_PER_SECOND = 25_000_000;
 /**
  * How much later the app's sound reaches the recording than the page plays
- * it (Chrome's audio output and capture), measured: 90-135 ms.
+ * it (Chrome's audio output and capture), beyond the audio stream's own start
+ * offset in the file, which the renderer reads. Set so the rendered sound
+ * lands on its frame: with 100 ms it came 10-80 ms early (macOS and Linux CI).
  */
-const APP_AUDIO_DELAY_MS = 100;
+const APP_AUDIO_DELAY_MS = 50;
 /** How long the recorder may take to hand over its last chunk. */
 const STOP_TIMEOUT_MS = 15_000;
 
