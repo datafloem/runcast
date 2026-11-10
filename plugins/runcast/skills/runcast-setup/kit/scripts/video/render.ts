@@ -37,6 +37,7 @@ import {
   clicksAtTime,
   cursorAtTime,
   easeInOutCubic,
+  sourceTransitionAt,
   transitionAtTime,
   type Camera,
   type Focus,
@@ -101,7 +102,16 @@ interface CaptureFile {
   audio?: { file: string; startMs: number };
   /** Browser dialogs the kit answered; each has a "dialog" span. */
   dialogs?: Array<CaptureDialog>;
+  /** Tab capture: the stage tab's recording and when it starts. */
+  stage?: { file: string; startMs: number };
+  /** Switches between the app's tab and the stage. */
+  sources?: Array<{ t: number; source: SourceName; transition: SourceTransition }>;
+  /** Files the cursor carried (drag and drop). */
+  carries?: Array<{ from: number; to: number; label: string }>;
 }
+
+type SourceName = "app" | "stage";
+type SourceTransition = "fade" | "slide" | "cube" | "cut" | "lift";
 
 interface CaptureDialog {
   t: number;
@@ -152,10 +162,10 @@ export function findCaptures(): Array<string> {
   return findProjectCaptures(RECORDING_DIR);
 }
 
-/** Where `drawAt` gets the recording's frames from (fills the source canvas). */
+/** Where `drawAt` gets the recording's frames from (fills the source canvases). */
 interface FrameSource {
-  /** Puts the screen recording at file time `fileMs` into the source canvas. */
-  at(fileMs: number): Promise<void>;
+  /** Puts tab `source`'s recording (default the app's) at file time `fileMs` into its canvas. */
+  at(fileMs: number, source?: SourceName): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -271,7 +281,7 @@ async function prepare(captureDir: string): Promise<Prepared> {
       ? { ...capture.audio, ...appLevels }
       : null;
   const { map, report } = fitNarration(
-    naturalMap(capture.spans ?? [], capture.durationMs, capture.cuts),
+    naturalMap(capture.spans ?? [], capture.durationMs, capture.cuts, capture.sources),
     recSteps.map((step) => ({ id: step.id, startMs: step.seconds * 1000 })),
     new Map([...voices].map(([id, voice]) => [id, voice.ms])),
     { compressWaits, speedUpWaits: !appSound },
@@ -375,40 +385,48 @@ async function prepare(captureDir: string): Promise<Prepared> {
   const beforeCut = createCanvas(OUT_WIDTH, OUT_HEIGHT);
   let cutFadeFrom = -Infinity;
   const { width: videoW, height: videoH } = capture.video;
-  const source = createCanvas(videoW, videoH);
-  const sourceCtx = source.getContext("2d");
-  let hasFrame = false;
-  const putFrame = (frame: Buffer) => {
+  // Each recorded tab: its file, its start, and the canvas its frame goes to.
+  const stageFile = capture.stage ? path.join(captureDir, capture.stage.file) : null;
+  const tabs: Record<SourceName, { file: string; startMs: number } | null> = {
+    app: { file: videoFile, startMs: capture.video.startMs },
+    stage:
+      capture.stage && stageFile && existsSync(stageFile)
+        ? { file: stageFile, startMs: capture.stage.startMs }
+        : null,
+  };
+  const canvases: Record<SourceName, Canvas> = {
+    app: createCanvas(videoW, videoH),
+    stage: createCanvas(videoW, videoH),
+  };
+  const hasFrame: Record<SourceName, boolean> = { app: false, stage: false };
+  const putFrame = (frame: Buffer, which: SourceName) => {
     const pixels = new Uint8ClampedArray(
       frame.buffer,
       frame.byteOffset,
       frame.byteLength,
     );
-    sourceCtx.putImageData(new ImageData(pixels, videoW, videoH), 0, 0);
-    hasFrame = true;
+    canvases[which]
+      .getContext("2d")
+      .putImageData(new ImageData(pixels, videoW, videoH), 0, 0);
+    hasFrame[which] = true;
   };
 
-  // The recording, decoded by ffmpeg into raw frames at the output rate,
-  // aligned so frame i shows the screen file at i / FPS seconds after the
+  // A tab's recording, decoded by ffmpeg into raw frames at the output rate,
+  // aligned so frame i shows the file at i / FPS seconds after the
   // recording's start (off-camera time included: the time map skips it).
-  const streamFrames = (fromFileMs = 0): FrameSource => {
+  const streamTab = (which: SourceName, fromFileMs: number) => {
+    const tab = tabs[which]!;
     const open = (index: number) =>
-      readFrames(
-        videoFile,
-        capture.video.startMs,
-        videoW,
-        videoH,
-        (index * 1000) / FPS,
-      );
+      readFrames(tab.file, tab.startMs, videoW, videoH, (index * 1000) / FPS);
     const first = Math.max(0, Math.floor((fromFileMs * FPS) / 1000));
     let frames = open(first);
-    /** Index of the decoded frame in `source` (first - 1: none yet). */
+    /** Index of the decoded frame in its canvas (first - 1: none yet). */
     let frameIndex = first - 1;
     return {
       // Forward only: a held or stretched frame is reused, skipped frames are
       // read past, and a long jump (an off-camera step, a cut wait) starts
       // the decoder again at the target instead of decoding what it skips.
-      async at(fileMs) {
+      async at(fileMs: number) {
         const target = Math.max(0, Math.floor((fileMs * FPS) / 1000 + 1e-6));
         if (target - frameIndex > RESEEK_FRAMES) {
           await frames.return(undefined);
@@ -422,29 +440,66 @@ async function prepare(captureDir: string): Promise<Prepared> {
           latest = next.value;
           frameIndex++;
         }
-        if (latest) putFrame(latest);
+        if (latest) putFrame(latest, which);
       },
       async close() {
         await frames.return(undefined); // stops the decoder
       },
     };
   };
+  // One forward-only decoder per tab, the stage's opened when first shown.
+  const streamFrames = (fromFileMs = 0): FrameSource => {
+    const streams: Partial<Record<SourceName, ReturnType<typeof streamTab>>> = {
+      app: streamTab("app", fromFileMs),
+    };
+    return {
+      async at(fileMs, which = "app") {
+        if (!tabs[which]) return;
+        const stream = (streams[which] ??= streamTab(which, fileMs));
+        await stream.at(fileMs);
+      },
+      async close() {
+        for (const stream of Object.values(streams)) await stream.close();
+      },
+    };
+  };
   const seekFrames = (): FrameSource => ({
-    async at(fileMs) {
+    async at(fileMs, which = "app") {
+      const tab = tabs[which];
+      if (!tab) return;
       const frame = await readFrameAt(
-        videoFile,
-        Math.max(0, fileMs - capture.video.startMs),
+        tab.file,
+        Math.max(0, fileMs - tab.startMs),
         videoW,
         videoH,
       );
-      if (frame) putFrame(frame);
+      if (frame) putFrame(frame, which);
     },
     async close() {},
   });
+  // The stage is shown whole: the camera stays at its base view.
+  const stageCamera = clampCamera(
+    { zoom: 1, cx: viewport.width / 2, cy: viewport.height / 2 },
+    viewport,
+    view,
+  );
+  const cameraFor = (which: SourceName, t: number) =>
+    which === "stage" ? stageCamera : cameraAtTime(track, t, viewport, view);
+  // Files the cursor carries, on the video clock.
+  const carries = (capture.carries ?? []).map((carry) => ({
+    from: map.toOut(carry.from),
+    to: map.toOut(carry.to),
+    label: carry.label,
+  }));
+  const carryAt = (t: number) => carries.find((c) => t >= c.from && t < c.to);
 
-  /** The recording at time t (ms since it started), drawn over the background. */
-  /** The recording at time t through `camera`, drawn over the background. */
-  const drawView = (t: number, camera: Camera, captions: boolean) => {
+  /** Tab `which`'s recording at time t through `camera`, drawn over the background. */
+  const drawView = (
+    t: number,
+    camera: Camera,
+    captions: boolean,
+    which: SourceName = "app",
+  ) => {
     const visibleW = view.width / camera.zoom;
     const visibleH = view.height / camera.zoom;
     const x0 = camera.cx - visibleW / 2;
@@ -469,9 +524,9 @@ async function prepare(captureDir: string): Promise<Prepared> {
     ctx.save();
     roundedRect(ctx, contentX, contentY, contentW, contentH, layout.radius);
     ctx.clip();
-    if (hasFrame) {
+    if (hasFrame[which]) {
       ctx.drawImage(
-        source,
+        canvases[which],
         x0 * scale,
         y0 * scale,
         visibleW * scale,
@@ -508,6 +563,8 @@ async function prepare(captureDir: string): Promise<Prepared> {
         (s) => s.kind === "down" && t >= s.t && t - s.t < 140,
       );
       drawCursor(ctx, toOut(cursor), cursorScale * (pressed ? 0.85 : 1));
+      const carry = carryAt(t);
+      if (carry) drawGhost(ctx, toOut(cursor), carry.label, cursorScale);
     }
     ctx.restore();
 
@@ -525,7 +582,11 @@ async function prepare(captureDir: string): Promise<Prepared> {
    * transition runs, the view the camera leaves and the one it reaches are
    * both drawn from the current frame and joined as a slide, fade or cube.
    */
-  const drawScene = (t: number) => {
+  const drawScene = (t: number, which: SourceName = "app") => {
+    if (which === "stage") {
+      drawView(t, stageCamera, true, "stage");
+      return;
+    }
     const turn = transitionAtTime(track, t);
     if (!turn) {
       drawView(t, cameraAtTime(track, t, viewport, view), true);
@@ -535,11 +596,38 @@ async function prepare(captureDir: string): Promise<Prepared> {
     grabContent(faceA);
     drawView(t, cameraAtTime(track, t, viewport, view), false);
     grabContent(faceB);
-    const p = easeInOutCubic(turn.p);
+    composeTurn(turn.kind, turn.p);
+    drawCaptionAt(t);
+  };
+
+  /**
+   * A tab change (app ↔ stage) right after the switch: the last frame of the
+   * tab left behind and the live frame of the tab reached, joined by the
+   * switch's transition. Both tabs' frames must be in their canvases.
+   */
+  const drawSourceTurn = (
+    t: number,
+    turn: { at: number; from: SourceName; to: SourceName; kind: SourceTransition; p: number },
+  ) => {
+    drawView(t, cameraFor(turn.from, turn.at - 1), false, turn.from);
+    grabContent(faceA);
+    drawView(t, cameraFor(turn.to, t), false, turn.to);
+    grabContent(faceB);
+    composeTurn(turn.kind, turn.p);
+    drawCaptionAt(t);
+  };
+
+  /**
+   * Joins faceA (the view left) and faceB (the view reached), `p` (0-1)
+   * through: a cube turn, a slide, a fade, or a lift (A shrinks and fades
+   * back over B, like a window going behind).
+   */
+  const composeTurn = (kind: string, rawP: number) => {
+    const p = easeInOutCubic(rawP);
     const box = { x: contentX, y: contentY, w: contentW, h: contentH };
     ctx.drawImage(background, 0, 0);
-    if (turn.kind === "cube") {
-      drawCubeTurn(ctx, faceA, faceB, turn.p, box);
+    if (kind === "cube") {
+      drawCubeTurn(ctx, faceA, faceB, rawP, box);
     } else {
       ctx.save();
       ctx.shadowColor = "rgba(0, 0, 0, 0.45)";
@@ -552,10 +640,21 @@ async function prepare(captureDir: string): Promise<Prepared> {
       ctx.save();
       roundedRect(ctx, contentX, contentY, contentW, contentH, layout.radius);
       ctx.clip();
-      if (turn.kind === "slide") {
+      if (kind === "slide") {
         const offset = p * contentW;
         ctx.drawImage(faceA, contentX - offset, contentY);
         ctx.drawImage(faceB, contentX + contentW - offset, contentY);
+      } else if (kind === "lift") {
+        ctx.drawImage(faceB, contentX, contentY);
+        const scale = 1 - 0.08 * p;
+        const w = contentW * scale;
+        const h = contentH * scale;
+        ctx.globalAlpha = 1 - p;
+        ctx.shadowColor = "rgba(0, 0, 0, 0.4)";
+        ctx.shadowBlur = 40;
+        ctx.drawImage(faceA, contentX + (contentW - w) / 2, contentY + (contentH - h) / 2, w, h);
+      } else if (kind === "cut") {
+        ctx.drawImage(faceB, contentX, contentY);
       } else {
         ctx.drawImage(faceA, contentX, contentY);
         ctx.globalAlpha = p;
@@ -563,7 +662,20 @@ async function prepare(captureDir: string): Promise<Prepared> {
       }
       ctx.restore();
     }
-    drawCaptionAt(t);
+  };
+
+  /** Fetches the frames scene time t needs and draws it (tab changes included). */
+  const drawSceneAt = async (sceneT: number, frames: FrameSource) => {
+    const turn = sourceTransitionAt(map.switchesOut, sceneT);
+    if (turn) {
+      await frames.at(map.toRec(turn.at - 0.5), turn.from);
+      await frames.at(map.toRec(sceneT), turn.to);
+      drawSourceTurn(sceneT, turn);
+      return;
+    }
+    const which = map.sourceAt(sceneT);
+    await frames.at(map.toRec(sceneT), which);
+    drawScene(sceneT, which);
   };
 
   // Steps marked with a transition: over their time (recording ms) the video
@@ -619,11 +731,9 @@ async function prepare(captureDir: string): Promise<Prepared> {
         : undefined;
     if (turn) {
       if (cubeFor !== turn) {
-        await frames.at(map.toRec(turn.from));
-        drawScene(turn.from);
+        await drawSceneAt(turn.from, frames);
         grabContent(cubeA);
-        await frames.at(map.toRec(turn.to));
-        drawScene(turn.to);
+        await drawSceneAt(turn.to, frames);
         grabContent(cubeB);
         cubeFor = turn;
       }
@@ -638,8 +748,7 @@ async function prepare(captureDir: string): Promise<Prepared> {
       // first frame shows through it.
       const crossFrom = introMs - CROSSFADE_MS;
       if (t >= crossFrom) {
-        await frames.at(map.toRec(0));
-        drawScene(0);
+        await drawSceneAt(0, frames);
         drawCard(
           ctx,
           background,
@@ -667,8 +776,7 @@ async function prepare(captureDir: string): Promise<Prepared> {
         beforeCut.getContext("2d").drawImage(canvas, 0, 0);
         cutFadeFrom = sceneT;
       }
-      await frames.at(map.toRec(sceneT));
-      drawScene(sceneT);
+      await drawSceneAt(sceneT, frames);
       const fade = (sceneT - cutFadeFrom) / CUT_FADE_MS;
       if (fade >= 0 && fade < 1) {
         ctx.save();
@@ -678,8 +786,7 @@ async function prepare(captureDir: string): Promise<Prepared> {
       }
     } else {
       // Outro: the card comes in over the last frame of the recording.
-      await frames.at(map.toRec(sceneMs));
-      drawScene(sceneMs);
+      await drawSceneAt(sceneMs, frames);
       if (stepsData?.outro) {
         const shown = t - introMs - sceneMs;
         drawCard(
@@ -718,8 +825,11 @@ async function prepare(captureDir: string): Promise<Prepared> {
       return null;
     if (clicksAtTime(events.pointer, sceneT).length > 0) return null;
     if (dialogAt(sceneT)) return null;
-    const source = Math.floor((map.toRec(sceneT) * FPS) / 1000 + 1e-6);
-    const camera = cameraAtTime(track, sceneT, viewport, view);
+    if (sourceTransitionAt(map.switchesOut, sceneT)) return null;
+    if (carryAt(sceneT)) return null;
+    const which = map.sourceAt(sceneT);
+    const source = `${which}:${Math.floor((map.toRec(sceneT) * FPS) / 1000 + 1e-6)}`;
+    const camera = cameraFor(which, sceneT);
     const cursor = cursorAtTime(events.pointer, sceneT);
     const pressed = events.pointer.some(
       (p) => p.kind === "down" && sceneT >= p.t && sceneT - p.t < 140,
@@ -1067,6 +1177,55 @@ function wrapText(
   }
   if (line) lines.push(line);
   return lines;
+}
+
+/**
+ * The file a cursor carries (drag and drop): a page icon with its name,
+ * just below and right of the cursor tip, slightly see-through.
+ */
+function drawGhost(
+  ctx: SKRSContext2D,
+  at: { x: number; y: number },
+  label: string,
+  scale: number,
+) {
+  const s = scale;
+  const x = at.x + 14 * s;
+  const y = at.y + 16 * s;
+  const w = 22 * s;
+  const h = 28 * s;
+  const fold = 7 * s;
+  ctx.save();
+  ctx.globalAlpha = 0.92;
+  ctx.shadowColor = "rgba(0, 0, 0, 0.35)";
+  ctx.shadowBlur = 10 * s;
+  ctx.shadowOffsetY = 3 * s;
+  ctx.beginPath();
+  ctx.moveTo(x, y);
+  ctx.lineTo(x + w - fold, y);
+  ctx.lineTo(x + w, y + fold);
+  ctx.lineTo(x + w, y + h);
+  ctx.lineTo(x, y + h);
+  ctx.closePath();
+  ctx.fillStyle = "#ffffff";
+  ctx.fill();
+  ctx.shadowColor = "transparent";
+  ctx.strokeStyle = "rgba(0, 0, 0, 0.25)";
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.fillStyle = `rgb(${BRAND.r}, ${BRAND.g}, ${BRAND.b})`;
+  ctx.fillRect(x + 4 * s, y + h - 9 * s, w - 8 * s, 4 * s);
+  ctx.font = `600 ${8 * s}px ${FONT}`;
+  const textW = ctx.measureText(label).width;
+  const pillX = x + w + 6 * s;
+  const pillY = y + h / 2 - 8 * s;
+  roundedRect(ctx, pillX, pillY, textW + 12 * s, 16 * s, 8 * s);
+  ctx.fillStyle = "rgba(20, 24, 33, 0.85)";
+  ctx.fill();
+  ctx.fillStyle = "#ffffff";
+  ctx.textBaseline = "middle";
+  ctx.fillText(label, pillX + 6 * s, pillY + 8 * s);
+  ctx.restore();
 }
 
 /**

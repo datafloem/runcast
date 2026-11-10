@@ -5,7 +5,8 @@ import {
   type Page,
   type TestInfo,
 } from "@playwright/test";
-import { rmSync, writeFileSync } from "node:fs";
+import { readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
 import path from "node:path";
 import { sleep, type Point } from "./cursor.ts";
 import {
@@ -21,11 +22,16 @@ import {
   type AppAudio,
 } from "./mode.ts";
 import { projectDirOf } from "./narration.ts";
-import { removeStandIn, showMonth, showOptions } from "./native-ui.ts";
+import {
+  dispatchDrag,
+  removeStandIn,
+  showMonth,
+  showOptions,
+} from "./native-ui.ts";
 import { screenProblem } from "./on-screen.ts";
 import { captureRootFor } from "./project.ts";
 import type { ShowTransition, VideoCard } from "./scenario.ts";
-import type { Box, Capture, FocusKind } from "./capture-log.ts";
+import type { Box, Capture, FocusKind, SourceSwitch } from "./capture-log.ts";
 import { sizeWindow, TabCapture } from "./tab-capture.ts";
 import { fitWindow, VideoCapture } from "./video-capture.ts";
 import { VirtualMouse } from "./virtual-mouse.ts";
@@ -117,6 +123,10 @@ export class Recorder {
   private format: VideoFormat = "landscape";
   /** Tab capture: the window has been sized to the page size. */
   private sized = false;
+  /** Rehearsal's stage page (video mode records TabCapture's). */
+  private rehearsalStage: Page | null = null;
+  /** The cursor on the stage tab (same coordinates as the app's). */
+  private stageMouse: VirtualMouse | null = null;
 
   private readonly page: Page;
   private readonly testInfo: TestInfo;
@@ -240,6 +250,60 @@ export class Recorder {
       { x: viewport.width / 2, y: viewport.height / 2 },
       this.fastRecording,
     );
+  }
+
+  /**
+   * Runs `fn` on the stage, a second recorded tab of the page's size, with
+   * its own cursor, and shows it in the video from now until `fn` ends:
+   * reached by `transition`, left by `back` (default the same). For what
+   * the app's tab cannot show: a file manager, a drag source, a scene. Video
+   * (tab capture) and rehearsal only.
+   */
+  async onStage<T>(
+    fn: (stage: Page, mouse: VirtualMouse) => Promise<T>,
+    transition: SourceSwitch["transition"] = "fade",
+    back: SourceSwitch["transition"] = transition,
+  ): Promise<T> {
+    const app = this.liveMouse();
+    if (!app) throw new Error("rec.onStage runs on camera only (video and rehearsal).");
+    const stage = await this.stagePage();
+    this.stageMouse ??= new VirtualMouse(stage, this.capture, app.at, this.fastRecording);
+    this.stageMouse.place(app.at);
+    this.switchTo("stage", transition);
+    try {
+      return await fn(stage, this.stageMouse);
+    } finally {
+      app.place(this.stageMouse.at);
+      this.switchTo("app", back);
+    }
+  }
+
+  /** Logs which tab the video shows from now on (tab capture). */
+  private switchTo(
+    source: SourceSwitch["source"],
+    transition: SourceSwitch["transition"],
+  ): void {
+    if (this.capture instanceof TabCapture && !this.suspended) {
+      this.capture.source(source, transition);
+    }
+  }
+
+  /** The stage tab: the recorded one in video mode, a plain page in rehearsal. */
+  private async stagePage(): Promise<Page> {
+    if (this.capture instanceof TabCapture && this.capture.stage) return this.capture.stage;
+    if (isVideoMode) {
+      throw new Error(
+        "The stage needs tab capture: unset REC_CAPTURE (or REC_CAPTURE=tab).",
+      );
+    }
+    if (!this.rehearsalStage) {
+      this.rehearsalStage = await this.page.context().newPage();
+      await this.rehearsalStage.setViewportSize(
+        this.page.viewportSize() ?? pageSize,
+      );
+      await this.page.bringToFront();
+    }
+    return this.rehearsalStage;
   }
 
   /**
@@ -391,6 +455,174 @@ export class Recorder {
       this.page.locator(`[data-runcast-ui] [data-day="${Number(value.slice(8))}"]`),
       () => target.fill(value),
     );
+  }
+
+  /**
+   * Uploads files through the app's file chooser: clicking `trigger` opens
+   * it. In video and rehearsal the stage shows a file manager with the
+   * files, the cursor picks them and clicks Open, and the video goes back to
+   * the app (`transition`, default "fade"); then the chooser gets the files.
+   * Test mode: the trigger is clicked and the files are set. Relative paths
+   * are from the recording folder.
+   */
+  async chooseFiles(
+    trigger: Target,
+    files: Array<string>,
+    options: { transition?: SourceSwitch["transition"] } = {},
+  ): Promise<void> {
+    const paths = this.filePaths(files);
+    const chooserOpens = this.page.waitForEvent("filechooser", { timeout: 15_000 });
+    await this.click(trigger);
+    const chooser = await chooserOpens;
+    if (paths.length > 1 && !chooser.isMultiple()) {
+      throw new Error(
+        `rec.chooseFiles: the file chooser takes one file, ${paths.length} were given.`,
+      );
+    }
+    if (this.liveMouse()) {
+      await this.onStage(async (stage, mouse) => {
+        await this.showFileManager(stage, paths, "open");
+        await this.pickFiles(stage, mouse, paths);
+        const open = stage.locator('[data-action="open"]');
+        await mouse.moveTo(await centreOf(open));
+        await this.rest("aim", settings.aimMs);
+        await mouse.click(await centreOf(open));
+        await sleep(150);
+      }, options.transition ?? "fade");
+    }
+    await chooser.setFiles(paths);
+  }
+
+  /**
+   * Drops files on a drop zone, as if dragged from the desktop. In video and
+   * rehearsal the stage shows a file manager, the cursor grabs the files
+   * there and carries them (the video draws their icon at the cursor) to
+   * the zone; the video goes back to the app with `transition` (default
+   * "lift": the file manager goes behind). The zone gets dragenter, dragover
+   * on the way and a drop with real File objects. Test mode: the three
+   * events at the zone's centre. Relative paths are from the recording folder.
+   */
+  async dropFiles(
+    zone: Locator,
+    files: Array<string>,
+    options: { transition?: SourceSwitch["transition"] } = {},
+  ): Promise<void> {
+    const paths = this.filePaths(files);
+    const payload = paths.map((file) => ({
+      name: path.basename(file),
+      type: mimeType(file),
+      base64: readFileSync(file).toString("base64"),
+    }));
+    const send = (
+      type: "dragenter" | "dragover" | "drop",
+      at: Point,
+      withFiles: boolean,
+    ) =>
+      this.page.evaluate(dispatchDrag, {
+        type,
+        x: at.x,
+        y: at.y,
+        ...(withFiles ? { files: payload } : {}),
+      });
+
+    const mouse = this.liveMouse();
+    if (!mouse) {
+      const at = await this.pagePoint(zone);
+      await send("dragenter", at, true);
+      await send("dragover", at, false);
+      await send("drop", at, false);
+      return;
+    }
+
+    await this.pagePoint(zone); // the zone must be ready before the files are picked
+    let grabbedAt = 0;
+    let stageMouse: VirtualMouse | null = null;
+    await this.onStage(
+      async (stage, cursor) => {
+        await this.showFileManager(stage, paths, "drag");
+        const last = await this.pickFiles(stage, cursor, paths);
+        await cursor.down(last);
+        grabbedAt = this.capture?.now() ?? 0;
+        await sleep(150);
+        stageMouse = cursor;
+      },
+      "fade",
+      options.transition ?? "lift",
+    );
+    // The press stays on the stage; let go there quietly.
+    await (stageMouse as VirtualMouse | null)?.up(mouse.at).catch(() => {});
+    const target = await this.pagePoint(zone);
+    const box = this.lastBox;
+    let entered = false;
+    const inside = (at: Point) =>
+      !!box && at.x >= box.x && at.x <= box.x + box.width && at.y >= box.y && at.y <= box.y + box.height;
+    await mouse.moveTo(target, undefined, async (at) => {
+      if (!inside(at)) return;
+      await send(entered ? "dragover" : "dragenter", at, !entered);
+      entered = true;
+    });
+    if (!entered) await send("dragenter", target, true);
+    await send("dragover", target, false);
+    await sleep(120);
+    await send("drop", target, false);
+    await mouse.up(target, false);
+    if (this.capture instanceof TabCapture && !this.suspended) {
+      const label = paths.length === 1 ? path.basename(paths[0]!) : `${paths.length} files`;
+      this.capture.carry(grabbedAt, this.capture.now(), label);
+    }
+    this.logFocus("drag", zone, target);
+  }
+
+  /** The files as absolute paths (relative ones from the recording folder), checked. */
+  private filePaths(files: Array<string>): Array<string> {
+    if (files.length === 0) throw new Error("No files given.");
+    const base = projectDirOf(this.testInfo.file);
+    return files.map((file) => {
+      const full = path.resolve(base, file);
+      try {
+        statSync(full);
+      } catch {
+        throw new Error(`File not found: ${file} (${full}).`);
+      }
+      return full;
+    });
+  }
+
+  /** Opens the kit's file manager on the stage, listing the files. */
+  private async showFileManager(
+    stage: Page,
+    paths: Array<string>,
+    mode: "open" | "drag",
+  ): Promise<void> {
+    const spec = {
+      mode,
+      title: path.basename(path.dirname(paths[0]!)),
+      files: paths.map((file) => {
+        const stat = statSync(file);
+        return { name: path.basename(file), size: stat.size, modified: stat.mtimeMs };
+      }),
+    };
+    const page = pathToFileURL(path.join(import.meta.dirname, "stage", "files.html")).href;
+    // In the query, not the hash: a new query loads the page again.
+    await stage.goto(`${page}?${encodeURIComponent(JSON.stringify(spec))}`);
+    await stage.locator("[data-file]").first().waitFor();
+  }
+
+  /** Selects the files in the file manager (Shift-click for more); returns where the last click was. */
+  private async pickFiles(
+    stage: Page,
+    mouse: VirtualMouse,
+    paths: Array<string>,
+  ): Promise<Point> {
+    let at = mouse.at;
+    for (const [i, file] of paths.entries()) {
+      at = await centreOf(stage.locator(`[data-file=${cssString(path.basename(file))}]`));
+      await mouse.moveTo(at);
+      await this.rest("aim", settings.aimMs);
+      if (i === 0) await mouse.click(at);
+      else await mouse.clickWith(at, [process.platform === "darwin" ? "Meta" : "Control"]);
+    }
+    return at;
   }
 
   /**
@@ -698,6 +930,39 @@ function isStaleElementError(error: unknown): boolean {
   return /not attached|detached|not stable|Timeout \d+ms exceeded/i.test(
     message,
   );
+}
+
+/** The centre of an element on its page (CSS pixels). */
+async function centreOf(locator: Locator): Promise<Point> {
+  await locator.waitFor({ state: "visible" });
+  const box = await locator.boundingBox();
+  if (!box) throw new Error(`${locator.toString()} has no size.`);
+  return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+}
+
+/** A file's type from its name, as a browser would guess it. */
+function mimeType(file: string): string {
+  const types: Record<string, string> = {
+    csv: "text/csv",
+    txt: "text/plain",
+    md: "text/markdown",
+    json: "application/json",
+    pdf: "application/pdf",
+    zip: "application/zip",
+    png: "image/png",
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    gif: "image/gif",
+    webp: "image/webp",
+    svg: "image/svg+xml",
+    mp4: "video/mp4",
+    mov: "video/quicktime",
+    mp3: "audio/mpeg",
+    wav: "audio/wav",
+    xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  };
+  return types[path.extname(file).slice(1).toLowerCase()] ?? "application/octet-stream";
 }
 
 /** A CSS string literal (attribute selectors) for any text. */

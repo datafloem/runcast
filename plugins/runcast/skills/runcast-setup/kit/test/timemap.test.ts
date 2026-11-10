@@ -302,3 +302,63 @@ test("dialog span becomes a freeze", () => {
     [500, 1000, 2000],
   ]);
 });
+
+// Two captured tabs: the app and the stage (file pickers, drag sources, scenes).
+
+const toStage = { t: 1000, source: "stage" as const, transition: "lift" as const };
+const back = { t: 2000, source: "app" as const, transition: "fade" as const };
+
+test("segments carry their source", () => {
+  const map = naturalMap([], 3000, [], [toStage, back]);
+  assert.deepEqual(
+    map.segments.map((s) => [s.recFrom, s.recTo, s.source]),
+    [
+      [0, 1000, "app"],
+      [1000, 2000, "stage"],
+      [2000, 3000, "app"],
+    ],
+  );
+  assert.equal(map.sourceAt(500), "app");
+  assert.equal(map.sourceAt(1500), "stage");
+  assert.equal(map.sourceAt(2500), "app");
+  // The stage has no sound.
+  assert.deepEqual(audioPlan(map).map((p) => [p.fileFrom, p.fileTo]), [
+    [0, 1000],
+    [2000, 3000],
+  ]);
+});
+
+test("split keeps the source", () => {
+  const { map } = fitNarration(
+    naturalMap([], 3000, [], [toStage, back]),
+    [
+      { id: "a", startMs: 0 },
+      { id: "b", startMs: 1500 },
+    ],
+    new Map([["b", 1200]]),
+    { compressWaits: true },
+  );
+  // The stage stretch was split at b's start (1500) and both halves are still stage.
+  assert.ok(map.segments.some((s) => s.recFrom === 1500 && s.source === "stage"));
+  assert.ok(map.segments.some((s) => s.recTo === 1500 && s.source === "stage"));
+  assert.ok(
+    map.segments.every((s) => s.source === (s.recFrom >= 1000 && s.recTo <= 2000 ? "stage" : "app")),
+  );
+});
+
+test("switches map to video time", () => {
+  const map = naturalMap(
+    [{ from: 0, to: 200, kind: "hold", outMs: 1200 }],
+    3000,
+    [],
+    [toStage, back],
+  );
+  assert.deepEqual(map.switchesOut, [
+    { at: 2000, from: "app", to: "stage", transition: "lift" },
+    { at: 3000, from: "stage", to: "app", transition: "fade" },
+  ]);
+  const { map: fitted } = fitNarration(map, [{ id: "a", startMs: 0 }], new Map([["a", 5000]]), {
+    compressWaits: true,
+  });
+  assert.deepEqual(fitted.switchesOut, map.switchesOut);
+});

@@ -32,6 +32,17 @@ export interface Span {
  */
 export type SegmentKind = SpanKind | "wait" | "freeze";
 
+/** Which captured tab a stretch of video shows (tab capture: the app or the stage). */
+export type Source = "app" | "stage";
+export type SourceTransition = "fade" | "slide" | "cube" | "cut" | "lift";
+
+/** From `t` (capture clock) on the video shows `source`, reached by `transition` (core/capture-log.ts). */
+export interface SourceSwitch {
+  t: number;
+  source: Source;
+  transition: SourceTransition;
+}
+
 export interface Segment {
   kind: SegmentKind;
   recFrom: number;
@@ -40,6 +51,10 @@ export interface Segment {
   fileTo: number;
   outFrom: number;
   outTo: number;
+  /** The tab it shows (its own file and file clock). */
+  source: Source;
+  /** How the video got to this source (used where the source changes). */
+  via?: SourceTransition;
 }
 
 export interface TimeMap {
@@ -52,6 +67,10 @@ export interface TimeMap {
   toOut(recMs: number): number;
   /** Video times of the cuts, where the renderer cross-fades. */
   cutsOut: Array<number>;
+  /** The tab shown at video time `outMs`. */
+  sourceAt(outMs: number): Source;
+  /** Where the video changes tab, and how. */
+  switchesOut: Array<{ at: number; from: Source; to: Source; transition: SourceTransition }>;
 }
 
 /** The map that plays every span at its natural length and app waits 1:1. */
@@ -59,6 +78,7 @@ export function naturalMap(
   spans: Array<Span>,
   durationMs: number,
   legacyCuts: Array<{ at: number; ms: number }> = [],
+  switches: Array<SourceSwitch> = [],
 ): TimeMap {
   const all: Array<Span> = [
     ...spans,
@@ -91,6 +111,7 @@ export function naturalMap(
       fileTo: recTo + skipped + skipMs,
       outFrom: 0,
       outTo: outLength,
+      source: "app",
     });
     skipped += skipMs;
   };
@@ -122,7 +143,29 @@ export function naturalMap(
     cursor = to;
   }
   if (durationMs > cursor) push("wait", cursor, durationMs, durationMs - cursor);
-  return mapFromSegments(segments);
+  return mapFromSegments(withSources(segments, switches));
+}
+
+/**
+ * Splits segments at the source switches and tags each with its tab. A held
+ * frame exactly at a switch still shows the tab before it.
+ */
+function withSources(segments: Array<Segment>, switches: Array<SourceSwitch>): Array<Segment> {
+  if (switches.length === 0) return segments;
+  const sorted = [...switches].sort((a, b) => a.t - b.t);
+  const split = splitAt(segments, sorted.map((s) => s.t));
+  const switchAt = (t: number, strict: boolean) => {
+    let found: SourceSwitch | undefined;
+    for (const s of sorted) if (strict ? s.t < t : s.t <= t) found = s;
+    return found;
+  };
+  return split.map((segment) => {
+    const at =
+      segment.recTo > segment.recFrom
+        ? switchAt((segment.recFrom + segment.recTo) / 2, false)
+        : switchAt(segment.recFrom, true);
+    return at ? { ...segment, source: at.source, via: at.transition } : segment;
+  });
 }
 
 /**
@@ -147,9 +190,27 @@ export function mapFromSegments(input: Array<Segment>): TimeMap {
     return segments[0];
   };
 
+  const switchesOut: TimeMap["switchesOut"] = [];
+  for (let i = 1; i < segments.length; i++) {
+    const before = segments[i - 1]!;
+    const after = segments[i]!;
+    if (after.source !== before.source) {
+      switchesOut.push({
+        at: after.outFrom,
+        from: before.source,
+        to: after.source,
+        transition: after.via ?? "cut",
+      });
+    }
+  }
+
   return {
     segments,
     outMs,
+    switchesOut,
+    sourceAt(t) {
+      return lastFrom("outFrom", t)?.source ?? "app";
+    },
     cutsOut: segments.filter((s) => s.kind === "cut").map((s) => s.outFrom),
     toRec(t) {
       const s = lastFrom("outFrom", t);
@@ -261,6 +322,8 @@ export function fitNarration(
         fileTo: file,
         outFrom: 0,
         outTo: voice - naturalMs,
+        source: last?.source ?? "app",
+        ...(last?.via ? { via: last.via } : {}),
       });
       fit.freezeMs = voice - naturalMs;
       return fit;
@@ -309,6 +372,7 @@ function shorten(wait: Segment, target: number, maxSpeedup: number): Array<Segme
   return [
     { ...wait, recTo: headEnd, fileTo: fileAt(headEnd), outFrom: 0, outTo: half },
     {
+      ...wait,
       kind: "cut",
       recFrom: headEnd,
       recTo: tailStart,
@@ -386,6 +450,8 @@ export function audioPlan(map: TimeMap): Array<AudioPiece> {
   for (const segment of map.segments) {
     const out = outLength(segment);
     const file = segment.fileTo - segment.fileFrom;
+    // The stage tab has no sound.
+    if (segment.source !== "app") continue;
     if (out < MIN_AUDIO_MS || Math.abs(file - out) > 1) continue;
     const last = pieces.at(-1);
     if (

@@ -172,3 +172,48 @@ export function showMonth(input: Element, value: string): void {
 export function removeStandIn(): void {
   document.querySelectorAll("[data-runcast-ui]").forEach((host) => host.remove());
 }
+
+/**
+ * Sends a drag event with files at (x, y) (viewport CSS pixels) to the
+ * element there, as a file dragged from the desktop would. The first call
+ * (with `files`) builds the DataTransfer of real File objects; later calls
+ * reuse it; "drop" ends it. Returns whether the page called preventDefault.
+ */
+export function dispatchDrag(args: {
+  type: "dragenter" | "dragover" | "dragleave" | "drop";
+  x: number;
+  y: number;
+  files?: Array<{ name: string; type: string; base64: string }>;
+}): boolean {
+  const win = window as Window & { __runcastDrag?: DataTransfer };
+  if (args.files) {
+    const transfer = new DataTransfer();
+    for (const file of args.files) {
+      const bytes = Uint8Array.from(atob(file.base64), (c) => c.charCodeAt(0));
+      transfer.items.add(new File([bytes], file.name, { type: file.type }));
+    }
+    transfer.effectAllowed = "all";
+    transfer.dropEffect = "copy";
+    win.__runcastDrag = transfer;
+  }
+  const transfer = win.__runcastDrag;
+  if (!transfer) throw new Error("No files are being dragged.");
+  // The element under the point, through open shadow roots.
+  let target = document.elementFromPoint(args.x, args.y);
+  while (target?.shadowRoot) {
+    const inner = target.shadowRoot.elementFromPoint(args.x, args.y);
+    if (!inner || inner === target) break;
+    target = inner;
+  }
+  const event = new DragEvent(args.type, {
+    bubbles: true,
+    cancelable: true,
+    composed: true,
+    clientX: args.x,
+    clientY: args.y,
+    dataTransfer: transfer,
+  });
+  (target ?? document.body).dispatchEvent(event);
+  if (args.type === "drop") delete win.__runcastDrag;
+  return event.defaultPrevented;
+}

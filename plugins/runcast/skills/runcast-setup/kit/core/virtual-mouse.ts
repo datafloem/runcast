@@ -28,7 +28,22 @@ export class VirtualMouse {
     capture?.pointer(start, "move");
   }
 
-  async moveTo(to: Point, durationMs?: number): Promise<void> {
+  /** Where the cursor is (page CSS pixels). */
+  get at(): Point {
+    return this.position;
+  }
+
+  /** Puts the cursor at `point` without moving it there (another tab took over). */
+  place(point: Point): void {
+    this.position = point;
+  }
+
+  /** `onStep` runs after each step of the move (e.g. to send drag events). */
+  async moveTo(
+    to: Point,
+    durationMs?: number,
+    onStep?: (at: Point) => Promise<void>,
+  ): Promise<void> {
     const from = this.position;
     const distance = Math.hypot(to.x - from.x, to.y - from.y);
     const natural =
@@ -45,6 +60,7 @@ export class VirtualMouse {
       };
       await this.page.mouse.move(point.x, point.y);
       this.capture?.pointer(point, "move");
+      await onStep?.(point);
       await sleep(duration / steps);
     }
     this.position = to;
@@ -61,6 +77,31 @@ export class VirtualMouse {
     await this.page.mouse.up();
     this.capture?.pointer(at, "up");
     this.position = at;
+  }
+
+  /** Presses the button at `at` (a grab), shown and sent. */
+  async down(at: Point): Promise<void> {
+    await this.page.mouse.move(at.x, at.y);
+    this.capture?.pointer(at, "down");
+    await this.page.mouse.down();
+    this.position = at;
+  }
+
+  /** Lets go at `at`: shown; sent only when `send` (this page had the press). */
+  async up(at: Point, send = true): Promise<void> {
+    if (send) await this.page.mouse.up();
+    this.capture?.pointer(at, "up");
+    this.position = at;
+  }
+
+  /** A click with keys held (Shift, Control, Meta), e.g. to select several files. */
+  async clickWith(at: Point, modifiers: Array<"Shift" | "Control" | "Meta">): Promise<void> {
+    for (const key of modifiers) await this.page.keyboard.down(key);
+    try {
+      await this.click(at);
+    } finally {
+      for (const key of modifiers) await this.page.keyboard.up(key);
+    }
   }
 
   /**

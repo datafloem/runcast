@@ -63,7 +63,10 @@ your computer, only when you or your assistant run the command named.
 - **The kit's own local pages**, in that same browser, in video mode: the
   recorder (`core/recorder.html` in the runtime folder, opened as a
   `file://` page) records the app's tab and hands the video to the kit
-  inside the browser. These pages load nothing from the network.
+  inside the browser; the stage (`core/stage/*.html`: a blank page and a
+  file manager listing the files a step uploads) is a second recorded tab.
+  These pages load nothing from the network. Files a step uploads are read
+  from your recording folder and handed to your app in the browser only.
 - **ElevenLabs** (`api.elevenlabs.io`), only when you run
   `narration generate`. It sends each voice-over line's text, plus the lines
   just before and after it, with your `ELEVENLABS_API_KEY` from `.env.local`,

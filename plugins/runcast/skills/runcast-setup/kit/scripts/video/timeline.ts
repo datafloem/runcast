@@ -38,6 +38,32 @@ export type ShowTransition = "pan" | "slide" | "fade" | "cube" | "cut";
 export const SHOW_TRANSITION_MS: Record<Exclude<ShowTransition, "pan">, number> =
   { slide: 600, fade: 500, cube: 900, cut: 0 };
 
+/** How the video changes tab (app ↔ stage): a show transition, or "lift" (the leaving view goes behind). */
+export type SourceTransition = "fade" | "slide" | "cube" | "cut" | "lift";
+
+/** How long each tab change takes (ms), played right after the switch. */
+export const SOURCE_TRANSITION_MS: Record<SourceTransition, number> = {
+  ...SHOW_TRANSITION_MS,
+  lift: 450,
+};
+
+/**
+ * The tab change running at video time t: which tabs, which transition and
+ * how far through it (0-1), or null.
+ */
+export function sourceTransitionAt<S extends string>(
+  switches: Array<{ at: number; from: S; to: S; transition: SourceTransition }>,
+  t: number,
+): { at: number; from: S; to: S; kind: SourceTransition; p: number } | null {
+  for (const s of switches) {
+    const ms = SOURCE_TRANSITION_MS[s.transition] ?? 0;
+    if (ms > 0 && t >= s.at && t < s.at + ms) {
+      return { at: s.at, from: s.from, to: s.to, kind: s.transition, p: (t - s.at) / ms };
+    }
+  }
+  return null;
+}
+
 export interface PointerSample {
   t: number;
   x: number;

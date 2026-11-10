@@ -238,6 +238,22 @@ export class CaptureLog {
     this.data.spans.push({ from: t, to: t, kind: "dialog", outMs: DIALOG_FREEZE_MS });
   }
 
+  /** The cursor carried a file from `from` to `to` (drag and drop): the renderer draws its icon. */
+  carry(from: number, to: number, label: string): void {
+    if (this.pausedAt) return;
+    (this.data.carries ??= []).push({
+      from: Math.round(from),
+      to: Math.round(to),
+      label,
+    });
+  }
+
+  /** From now on the video shows `source` (tab capture), reached by `transition`. Dropped off camera. */
+  source(source: SourceSwitch["source"], transition: SourceSwitch["transition"]): void {
+    if (this.pausedAt) return;
+    (this.data.sources ??= []).push({ t: this.now(), source, transition });
+  }
+
   pointer(at: Point, kind: PointerKind): void {
     this.data.pointer.push({
       t: this.now(),

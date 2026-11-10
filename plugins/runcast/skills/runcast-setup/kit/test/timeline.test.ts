@@ -5,6 +5,8 @@ import {
   baseView,
   buildCameraTrack,
   type Focus,
+  SOURCE_TRANSITION_MS,
+  sourceTransitionAt,
 } from "../scripts/video/timeline.ts";
 
 const viewport = { width: 1600, height: 900 };
@@ -36,4 +38,24 @@ test("the whole page in view frames everything", () => {
   const focus = [click(1000, 100), click(1500, 1500)];
   const track = buildCameraTrack(focus, viewport);
   assert.deepEqual(actionsOutOfFrame(focus, track, viewport, viewport), []);
+});
+
+test("a tab switch plays its transition right after the switch", () => {
+  const switches = [
+    { at: 1000, from: "app" as const, to: "stage" as const, transition: "fade" as const },
+    { at: 3000, from: "stage" as const, to: "app" as const, transition: "lift" as const },
+    { at: 5000, from: "app" as const, to: "stage" as const, transition: "cut" as const },
+  ];
+  assert.equal(SOURCE_TRANSITION_MS.lift, 450);
+  assert.equal(sourceTransitionAt(switches, 999), null);
+  assert.deepEqual(sourceTransitionAt(switches, 1250), {
+    at: 1000,
+    from: "app",
+    to: "stage",
+    kind: "fade",
+    p: 250 / SOURCE_TRANSITION_MS.fade,
+  });
+  assert.equal(sourceTransitionAt(switches, 3000)?.p, 0);
+  assert.equal(sourceTransitionAt(switches, 3000 + 450), null);
+  assert.equal(sourceTransitionAt(switches, 5000), null); // a cut takes no time
 });

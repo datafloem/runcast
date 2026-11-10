@@ -238,3 +238,45 @@ test("a beeping page gives a non-silent audio track", async () => {
   assert.ok(mean > -40, `mean volume ${mean} dB`);
   assert.equal((settings as Record<string, unknown> | null)?.suppressLocalAudioPlayback, true);
 });
+
+test("stage stream records its own file with the same size", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "runcast-tab-"));
+  dirs.push(dir);
+  await sizeWindow(page, { width: 1440, height: 810 });
+  await page.setContent(`<style>body{margin:0;background:#2050d0}</style>`);
+  const capture = new TabCapture(page, dir, "demo", { scale: 2 });
+  await capture.start();
+  assert.ok(capture.stage, "no stage tab");
+  assert.deepEqual(
+    await capture.stage.evaluate(() => [window.innerWidth, window.innerHeight]),
+    [1440, 810],
+  );
+  capture.source("stage", "lift");
+  await capture.stage.setContent(ANIMATED.replace("#2050d0", "#d05020"));
+  await wait(1500);
+  capture.source("app", "fade");
+  await wait(300);
+  const file = await capture.stop();
+  const events = JSON.parse(readFileSync(file, "utf-8")) as {
+    video: { file: string };
+    stage?: { file: string; startMs: number };
+    sources?: Array<{ t: number; source: string; transition: string }>;
+  };
+  assert.ok(events.stage, "no stage in events.json");
+  assert.match(events.stage.file, /^stage\.(mp4|webm)$/);
+  assert.ok(Number.isFinite(events.stage.startMs));
+  assert.deepEqual(
+    events.sources?.map((s) => [s.source, s.transition]),
+    [
+      ["stage", "lift"],
+      ["app", "fade"],
+    ],
+  );
+  for (const name of [events.video.file, events.stage.file]) {
+    const sizes = frameSizes(path.join(dir, name));
+    assert.ok(sizes.length >= 1, `${name}: no frames`);
+    assert.deepEqual([...new Set(sizes)], ["2880,1620"], name);
+  }
+  // The stage recorded its animation.
+  assert.ok(frameSizes(path.join(dir, events.stage.file)).length >= 15);
+});

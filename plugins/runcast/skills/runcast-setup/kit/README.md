@@ -376,6 +376,22 @@ Steps and helpers move through `rec`, never `page.click`:
   month grid; `core/native-ui.ts`) and the cursor clicks the entry; the
   value is set with Playwright. Test mode sets it directly. Never click a
   native select.
+- `rec.chooseFiles(trigger, ["fixtures/orders.csv"], { transition })`: an
+  upload through the app's file chooser. The click on `trigger` opens it; in
+  video and rehearsal the **stage** (a second recorded tab of the same size)
+  shows a file manager with the files, the cursor picks them and clicks
+  Open, and the video goes back to the app (`transition`: `fade` default,
+  `slide`, `cube`, `cut`, `lift`). Test mode sets the files directly.
+- `rec.dropFiles(zone, ["fixtures/orders.csv"], { transition })`: a drag and
+  drop from the desktop. The cursor grabs the files in the stage's file
+  manager; the video draws their icon at the cursor while it carries them
+  to the zone and goes back to the app with `transition` (default `lift`: the
+  file manager shrinks and fades back, like a window going behind). The zone
+  gets `dragenter`, `dragover` on the way and a `drop` with real `File`s.
+  Test mode sends the three events. Relative paths are from the recording
+  folder; tab capture only (screen capture fails with a clear message).
+- `rec.onStage(async (stage, mouse) => { ... }, transition)`: anything else
+  the app's tab cannot show, played on the stage with its own cursor.
 - `rec.onDialog({ accept, text })`: how the next browser dialog is answered;
   otherwise `scenario({ dialogs: "accept" | "dismiss" })` (default accept).
   The video holds the frame 1.5 s and draws the dialog (message, buttons)

@@ -11,6 +11,7 @@ import {
   type Capture,
   type FocusKind,
   type PointerKind,
+  type SourceSwitch,
   type SpanKind,
 } from "./capture-log.ts";
 import { sleep, type Point } from "./cursor.ts";
@@ -112,6 +113,14 @@ interface Started {
 export class TabCapture implements Capture {
   private readonly log: CaptureLog;
   private recorder: Page | null = null;
+  /**
+   * The stage: a second recorded tab of the same size for what the app's tab
+   * cannot show (a file manager, a drag source, a scene). Blank and still
+   * between staged steps.
+   */
+  stage: Page | null = null;
+  /** Wall-clock time of the stage file's first frame. */
+  private stageWall = NaN;
   /** Wall-clock time of the file's first frame (until stop: the recorder's start). */
   private startWall = NaN;
   /** Files the chunks went to, by stream name. */
@@ -122,13 +131,14 @@ export class TabCapture implements Capture {
   private readonly page: Page;
   /** Output folder: .captures/<scenario>/capture of the recording folder. */
   readonly dir: string;
-  private readonly options: { scale: number; audio?: boolean };
+  private readonly options: { scale: number; audio?: boolean; stage?: boolean };
 
   constructor(
     page: Page,
     dir: string,
     scenario: string,
-    options: { scale: number; audio?: boolean },
+    /** `stage` (default true): also open and record the stage tab. */
+    options: { scale: number; audio?: boolean; stage?: boolean },
   ) {
     this.page = page;
     this.dir = dir;
@@ -155,6 +165,14 @@ export class TabCapture implements Capture {
     this.data.video.width = Math.round(viewport.width * scale);
     this.data.video.height = Math.round(viewport.height * scale);
 
+    if (this.options.stage !== false) {
+      this.stage = await this.page.context().newPage();
+      await sizeWindow(this.stage, viewport);
+      await this.stage.goto(
+        pathToFileURL(path.join(import.meta.dirname, "stage", "blank.html")).href,
+      );
+    }
+
     let error: unknown;
     for (let attempt = 0; attempt < 2 && !this.started; attempt++) {
       try {
@@ -179,7 +197,7 @@ export class TabCapture implements Capture {
     return { viewport, startedAt: this.log.startedAt };
   }
 
-  /** Opens the recorder tab and starts recording the marked app tab. */
+  /** Opens the recorder tab and starts recording the app's tab, then the stage's. */
   private async startOnce(): Promise<Started> {
     const recorder = await this.page.context().newPage();
     this.recorder = recorder;
@@ -196,17 +214,32 @@ export class TabCapture implements Capture {
       },
     );
     await recorder.goto(pathToFileURL(path.join(import.meta.dirname, "recorder.html")).href);
+    const started = await this.captureTab(recorder, this.page, "screen", this.options.audio ?? false);
+    if (this.stage) await this.captureTab(recorder, this.stage, "stage", false);
+    return started;
+  }
 
+  /**
+   * Starts recording one tab: the marker goes into its title (and only its),
+   * the recorder comes to the front to ask for it, then the app's tab is
+   * fronted again.
+   */
+  private async captureTab(
+    recorder: Page,
+    tab: Page,
+    name: string,
+    audio: boolean,
+  ): Promise<Started> {
     const marker = `${MARKER}${randomBytes(6).toString("hex")}`;
-    await this.page.evaluate(markTitle, marker);
+    await tab.evaluate(markTitle, marker);
     try {
       // getDisplayMedia only works from the tab in front.
       await recorder.bringToFront();
       const target = {
-        name: "screen",
+        name,
         width: this.data.video.width,
         height: this.data.video.height,
-        audio: this.options.audio ?? false,
+        audio,
         bitsPerSecond: BITS_PER_SECOND,
       };
       return await withTimeout(
@@ -220,12 +253,22 @@ export class TabCapture implements Capture {
           target,
         ),
         START_TIMEOUT_MS,
-        "it did not start within 5 s",
+        `the ${name === "stage" ? "stage" : "app's"} tab did not start within 5 s`,
       );
     } finally {
-      await this.page.evaluate(unmarkTitle).catch(() => {});
+      await tab.evaluate(unmarkTitle).catch(() => {});
       await this.page.bringToFront();
     }
+  }
+
+  /** The cursor carried a file (see CaptureLog.carry). */
+  carry(from: number, to: number, label: string): void {
+    this.log.carry(from, to, label);
+  }
+
+  /** From now on the video shows the app's tab or the stage, reached by `transition`. */
+  source(source: SourceSwitch["source"], transition: SourceSwitch["transition"]): void {
+    this.log.source(source, transition);
   }
 
   now(): number {
@@ -275,27 +318,41 @@ export class TabCapture implements Capture {
     this.log.detach(this.page);
     const recorder = this.recorder;
     if (recorder) {
-      const stopped = await withTimeout(
-        recorder.evaluate(() =>
-          (
-            window as unknown as {
-              stopCapture(): Promise<{ firstFrameWall: number } | null>;
-            }
-          ).stopCapture(),
-        ),
-        STOP_TIMEOUT_MS,
-        "the recorder did not finish",
-      ).catch((error: unknown) => {
-        console.warn(`Tab capture: ${String(error)}`);
-        return null;
-      });
-      if (stopped && Number.isFinite(stopped.firstFrameWall)) {
-        this.startWall = stopped.firstFrameWall;
+      const stopOne = (name: string) =>
+        withTimeout(
+          recorder.evaluate(
+            (stream) =>
+              (
+                window as unknown as {
+                  stopCapture(name: string): Promise<{ firstFrameWall: number } | null>;
+                }
+              ).stopCapture(stream),
+            name,
+          ),
+          STOP_TIMEOUT_MS,
+          "the recorder did not finish",
+        ).catch((error: unknown) => {
+          console.warn(`Tab capture (${name}): ${String(error)}`);
+          return null;
+        });
+      const app = await stopOne("screen");
+      if (app && Number.isFinite(app.firstFrameWall)) this.startWall = app.firstFrameWall;
+      if (this.stage) {
+        const stage = await stopOne("stage");
+        this.stageWall = stage?.firstFrameWall ?? NaN;
       }
       await recorder.close().catch(() => {});
       this.recorder = null;
     }
+    await this.stage?.close().catch(() => {});
     this.data.video.startMs = Math.round(this.startWall - this.log.startedAt);
+    const stageFile = this.files.get("stage");
+    if (stageFile && Number.isFinite(this.stageWall)) {
+      this.data.stage = {
+        file: path.basename(stageFile),
+        startMs: Math.round(this.stageWall - this.log.startedAt),
+      };
+    }
     if (this.options.audio && (this.started?.audioTracks ?? 0) > 0) {
       // The sound is in the same file, on the video's clock, and reaches it
       // a little after the page plays it.

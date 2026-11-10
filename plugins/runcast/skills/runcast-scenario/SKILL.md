@@ -259,6 +259,14 @@ element, a wrong record, a stray window).
    grid under the field and the cursor picks the entry (test mode sets the
    value directly). Custom dropdowns built from page elements are clicked
    with `rec.click` as usual.
+   **File uploads:** never `setInputFiles` and never click an upload button
+   expecting a dialog: `rec.chooseFiles(button, ["fixtures/orders.csv"])`
+   (the app's file chooser) or `rec.dropFiles(zone, [...])` (drag and drop).
+   On camera the kit shows a file manager on the stage tab, the cursor picks
+   or carries the files, and the video returns to the app (`{ transition }`:
+   `fade`, `slide`, `cube`, `cut`, `lift`; drops default to `lift`). Keep the
+   files in the recording folder (e.g. `fixtures/`) and name them as a viewer
+   would expect.
    **Dialogs** (`alert`, `confirm`, `prompt`, leave-page) are answered by the
    kit: `scenario({ dialogs: "accept" | "dismiss" })` (default "accept");
    `rec.onDialog({ accept: false })` (or `{ accept: true, text: "…" }` for a

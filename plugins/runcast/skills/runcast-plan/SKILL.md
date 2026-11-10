@@ -233,7 +233,7 @@ Settle the steps in groups of 2–3. For each step:
 | Focus         | Where the viewer should look once the step is done: the element that carries its message (see below), and its transition if it differs |
 | Check         | What must be on screen when the step ends (a success message, a new row, a total...). The test's value |
 | Transition    | Only if chosen in phase 1: does a cube turn replace this step? Only for steps that just move elsewhere |
-| Browser UI    | Does the step open something the browser draws itself? Mark it: a select list, a date picker, a dialog (alert, confirm, prompt, leave-page), a permission prompt |
+| Browser UI    | Does the step open something the browser draws itself? Mark it: a select list, a date picker, a dialog (alert, confirm, prompt, leave-page), a permission prompt, a file choice or a drag-and-drop upload |
 
 **Browser-drawn controls.** A recorded tab cannot show what the browser draws
 outside the page, so the kit shows its own: a select's list and a date
@@ -244,6 +244,13 @@ for a dialog whether it is accepted or cancelled (the scenario's default is
 "accept"; prompts need the text). Permission prompts (location,
 notifications, clipboard) are granted before the video starts, so they never
 show: list the permissions in the text ("Permissions").
+A **file upload** is staged: a file manager window appears (the video
+changes to it), the cursor picks the files — and for a drag and drop
+carries them, with their icon, back to the app's drop zone. Agree which
+files (names a viewer understands; they live in the recording folder, e.g.
+`fixtures/`), whether it is "choose" or "drag", and the transition back
+(`lift`: the file manager goes behind, the default for drops; `fade`,
+`slide`, `cube`, `cut`).
 
 **Focus decides the camera.** Work it out yourself from the goal and the
 screen, then confirm: what should the viewer see when this step ends? After
