@@ -29,3 +29,10 @@ test("recording fast a move keeps its natural length", async () => {
   await mouse.moveTo({ x: 400, y: 0 }, 300);
   assert.equal(log.data.spans[0]?.outMs, 300);
 });
+
+test("the stage cursor's type comes from the kit's public API", async () => {
+  // A helper can type rec.onStage's callback with it.
+  type FromIndex = import("../core/index.ts").VirtualMouse;
+  const mouse: FromIndex = new VirtualMouse(slowPage, null, { x: 0, y: 0 }, true);
+  assert.deepEqual(mouse.at, { x: 0, y: 0 });
+});

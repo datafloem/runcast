@@ -99,7 +99,8 @@ your computer, only when you or your assistant run the command named.
   each step was fitted to its voice-over, and where it starts in the video),
   and `render --check` one picture per step to `check/`. `render --draft`
   and `--steps` write `videos/<name>.draft.mp4` and
-  `videos/<name>.steps-<a>-<b>.mp4`. `scene preview <name>` records a scene
+  `videos/<name>.steps-<a>-<b>.mp4` (vertical videos:
+  `videos/<name>-vertical.draft.mp4`, `videos/<name>-vertical.steps-<a>-<b>.mp4`). `scene preview <name>` records a scene
   alone to `.captures/scene-<name>/`; `scene render` writes
   `videos/scene-<name>.mp4` (and `.gif`).
 

@@ -266,7 +266,8 @@ export function scenario(
         continue;
       }
 
-      const startedMs = rec.elapsedMs();
+      // On the video's clock: a fast recording is shorter than its video.
+      const startedMs = rec.videoElapsedMs();
       await rec.step(title, step.note, {
         id: step.id,
         transition: step.transition,
@@ -275,11 +276,12 @@ export function scenario(
         await step.run(ctx);
         if (step.show) await showStep(ctx, step.show);
       });
-      if (isVideoMode) await sleep(STEP_SETTLE_MS);
+      // Preparation steps (before REC_FROM) are not recorded: no settle.
+      if (isVideoMode && rec.isLive) await sleep(STEP_SETTLE_MS);
 
       if (step.transition) {
         // A turn faster than this cannot be followed (rec.pause: video and rehearsal only).
-        const spentMs = rec.elapsedMs() - startedMs;
+        const spentMs = rec.videoElapsedMs() - startedMs;
         if (spentMs < TRANSITION_MIN_MS)
           await rec.pause(TRANSITION_MIN_MS - spentMs);
       }

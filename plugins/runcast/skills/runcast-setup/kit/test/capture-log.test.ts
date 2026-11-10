@@ -60,3 +60,11 @@ test("dialogs off camera add no freeze", () => {
   assert.equal(log.data.dialogs?.length ?? 0, 0);
   assert.equal(log.data.spans.length, 0);
 });
+
+test("the log knows how much longer the video is than the recording", () => {
+  const log = new CaptureLog("demo");
+  log.span("hold", 0, 300, 1500); // a pause recorded short: 1200 ms more in the video
+  log.span("move", 300, 400, 300); // a fast move: 200 ms more
+  log.span("aim", 400, 650, 200); // longer than planned: nothing taken off
+  assert.equal(log.stretchMs, 1400);
+});

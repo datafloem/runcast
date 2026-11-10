@@ -69,6 +69,8 @@ interface StepMark {
   id?: string;
   at: string;
   seconds: number;
+  /** Exact start on the capture clock (ms); `seconds` is rounded to 0.1 s. */
+  startMs: number;
   title: string;
   /** The on-screen message for this step (scenario-specific). */
   note?: string;
@@ -399,13 +401,22 @@ export class Recorder {
   step(
     title: string,
     note?: string,
-    extra: { id?: string; transition?: string } = {},
+    extra: {
+      id?: string;
+      transition?: string;
+      /**
+       * @deprecated Ignored: narration is fitted when rendering, from the
+       * scenario's narration file. Accepted so older helpers still compile.
+       */
+      narration?: unknown;
+    } = {},
   ): Promise<void> {
     if (!this.live) {
       console.log(`(preparation) ${title}`);
       return Promise.resolve();
     }
-    const seconds = this.elapsedMs() / 1000;
+    const elapsed = this.elapsedMs();
+    const seconds = elapsed / 1000;
     const at = `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(
       Math.floor(seconds % 60),
     ).padStart(2, "0")}`;
@@ -413,6 +424,7 @@ export class Recorder {
       id: extra.id,
       at,
       seconds: Math.round(seconds * 10) / 10,
+      startMs: Math.round(elapsed),
       title,
       note,
       transition: extra.transition,
@@ -831,6 +843,14 @@ export class Recorder {
     });
   }
 
+  /**
+   * How long the video is so far: elapsedMs plus what the video adds to a
+   * fast recording (pauses and cursor rests recorded short, fast moves).
+   */
+  videoElapsedMs(): number {
+    return this.elapsedMs() + (this.capture?.stretchMs ?? 0);
+  }
+
   /** Time since the recording started, time off camera left out (0 before it). */
   elapsedMs(): number {
     if (!this.live) return 0;
@@ -931,8 +951,8 @@ export class Recorder {
     if (this.steps.length > 0) {
       const endSeconds = this.elapsedMs() / 1000;
       this.steps.forEach((mark, i) => {
-        const next = this.steps[i + 1]?.seconds ?? endSeconds;
-        mark.durationMs = Math.round((next - mark.seconds) * 1000);
+        const next = this.steps[i + 1]?.startMs ?? endSeconds * 1000;
+        mark.durationMs = Math.round(next - mark.startMs);
       });
       // With the video it belongs to (out of .results, which Playwright
       // empties on every run); a rehearsal's stays in .results.

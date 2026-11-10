@@ -28,6 +28,8 @@ export {
   type Ui,
 } from "./recorder.ts";
 export { scene, sceneProblems } from "./scene.ts";
+// The stage's cursor, which rec.onStage hands to its callback.
+export type { VirtualMouse } from "./virtual-mouse.ts";
 export {
   hold,
   scenario,

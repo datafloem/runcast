@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { audioPlan, fitNarration, naturalMap, retimeCapture } from "../scripts/video/timemap.ts";
+import { audioPlan, fitNarration, naturalMap, retimeCapture, stepStartMs } from "../scripts/video/timemap.ts";
 
 test("no spans is identity", () => {
   const m = naturalMap([], 1000);
@@ -376,4 +376,25 @@ test("app sound plays through moves logged at their real length", () => {
   assert.deepEqual(audioPlan(map), [
     { fileFrom: 0, fileTo: 3000, outFrom: 0, fadeIn: false, fadeOut: false },
   ]);
+});
+
+test("step starts come from exact ms, else the rounded seconds", () => {
+  assert.equal(stepStartMs({ seconds: 1.2, startMs: 1234 }), 1234);
+  assert.equal(stepStartMs({ seconds: 1.2 }), 1200);
+});
+
+test("a voiced step with no segments of its own still gets its freeze", () => {
+  // b and c start at the same time: b owns no segment.
+  const { map, report } = fitNarration(
+    naturalMap([], 3000),
+    [
+      { id: "a", startMs: 0 },
+      { id: "b", startMs: 1000 },
+      { id: "c", startMs: 1000 },
+    ],
+    new Map([["b", 800]]),
+    { compressWaits: true },
+  );
+  assert.equal(report[1]!.freezeMs, 800);
+  assert.equal(map.outMs, 3800);
 });

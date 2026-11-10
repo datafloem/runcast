@@ -238,7 +238,8 @@ Add a scenario name to run one: `node tests/recording/.kit/cli.ts test login`.
      animation the AI designed (`scenes/<name>/index.html`, the
      `runcast-scene` skill) on the stage tab, like the app: same frame and
      captions, joined by `fade` (default), `slide`, `cube`, `cut` or `lift`,
-     no cursor over it. The page keeps a small contract
+     no cursor over it; in `vertical-crop` the stage is shown whole, fitted
+     across the middle, not cropped. The page keeps a small contract
      (`window.runcastScene = { duration, beats: [{ id, at }], start() }`,
      no autoplay with `?record`, deterministic, local files, brand from
      `--runcast-brand` / `--runcast-logo`). Each beat is a step
@@ -261,6 +262,8 @@ Add a scenario name to run one: `node tests/recording/.kit/cli.ts test login`.
    - `--steps 3-5` (or `--steps 4`): only those recorded steps, with their
      voice-over, no cards, to `videos/<name>.steps-3-5.mp4` (or the draft
      file with `--draft`).
+   - Vertical videos keep their `-vertical` in these names:
+     `videos/<name>-vertical.draft.mp4`, `videos/<name>-vertical.steps-3-5.mp4`.
 
 While a tab is recorded you can go on using the computer: nothing of it
 reaches the video. Screen capture is different: keep other windows off

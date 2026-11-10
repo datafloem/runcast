@@ -231,6 +231,14 @@ export function mapFromSegments(input: Array<Segment>): TimeMap {
   };
 }
 
+/**
+ * Where a step of steps.json starts on the capture clock: its exact ms, or
+ * (older files) its seconds, rounded to 0.1 s.
+ */
+export function stepStartMs(step: { seconds: number; startMs?: number }): number {
+  return typeof step.startMs === "number" ? step.startMs : step.seconds * 1000;
+}
+
 /** How a step was fitted to its narration (the render report). */
 export interface StepFit {
   index: number;
@@ -285,18 +293,19 @@ export function fitNarration(
 
   // Segments grouped by the step they belong to (-1: before the first step).
   const groups = new Map<number, Array<Segment>>();
-  const order: Array<number> = [];
   for (const segment of segments) {
     const owner = ownerOf(segment, starts);
     if (!groups.has(owner)) {
       groups.set(owner, []);
-      order.push(owner);
     }
     groups.get(owner)!.push(segment);
   }
 
   const report: Array<StepFit> = steps.map((step, index) => {
-    const group = groups.get(index) ?? [];
+    // A step may own no segment (it starts where the next one does): it
+    // still gets a group, so a freeze for its voice is kept.
+    if (!groups.has(index)) groups.set(index, []);
+    const group = groups.get(index)!;
     const naturalMs = group.reduce((sum, s) => sum + outLength(s), 0);
     const voice = step.id === undefined ? undefined : voices.get(step.id);
     const fit: StepFit = {
@@ -354,7 +363,10 @@ export function fitNarration(
   });
 
   return {
-    map: mapFromSegments(order.flatMap((owner) => groups.get(owner)!)),
+    // Owners in time order: before the first step (-1), then each step.
+    map: mapFromSegments(
+      [-1, ...steps.map((_, i) => i)].flatMap((owner) => groups.get(owner) ?? []),
+    ),
     report,
   };
 }

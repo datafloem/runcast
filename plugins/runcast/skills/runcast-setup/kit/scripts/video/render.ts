@@ -55,6 +55,7 @@ import {
   fitNarration,
   naturalMap,
   retimeCapture,
+  stepStartMs,
   type AudioPiece,
   type Span,
   type StepFit,
@@ -158,6 +159,8 @@ interface StepsFile {
   steps: Array<{
     id?: string;
     seconds: number;
+    /** Exact start (ms, capture clock); older files have only seconds. */
+    startMs?: number;
     title: string;
     note?: string;
     /** "cube": a cube turn over this step, from the frame before to the one after. */
@@ -260,7 +263,9 @@ async function prepare(
 
   // Title cards. A narration segment "intro" / "outro" is spoken over its
   // card, which then lasts at least as long as the audio.
-  const cardAudio = narrationForCards(capture.scenario);
+  // REC_NARRATION=0 leaves the whole narration file out, card voices included.
+  const cardAudio =
+    process.env.REC_NARRATION === "0" ? {} : narrationForCards(capture.scenario);
   const introMs = stepsData?.intro
     ? Math.max(
         stepsData.intro.durationMs ?? 3000,
@@ -300,7 +305,7 @@ async function prepare(
       : null;
   const { map, report } = fitNarration(
     naturalMap(capture.spans ?? [], capture.durationMs, capture.cuts, capture.sources),
-    recSteps.map((step) => ({ id: step.id, startMs: step.seconds * 1000 })),
+    recSteps.map((step) => ({ id: step.id, startMs: stepStartMs(step) })),
     new Map([...voices].map(([id, voice]) => [id, voice.ms])),
     { compressWaits, speedUpWaits: !appSound },
   );
@@ -311,7 +316,7 @@ async function prepare(
   });
   const steps = recSteps.map((step) => ({
     ...step,
-    seconds: map.toOut(step.seconds * 1000) / 1000,
+    seconds: map.toOut(stepStartMs(step)) / 1000,
   }));
   const sceneMs = map.outMs;
 
@@ -445,13 +450,16 @@ async function prepare(
     let frames = open(first);
     /** Index of the decoded frame in its canvas (first - 1: none yet). */
     let frameIndex = first - 1;
+    let decoded = false;
     return {
       // Forward only: a held or stretched frame is reused, skipped frames are
       // read past, and a long jump (an off-camera step, a cut wait) starts
       // the decoder again at the target instead of decoding what it skips.
+      // Asked for a frame before where it started, with nothing decoded yet
+      // (a --steps range that starts on a cube step), it starts again there.
       async at(fileMs: number) {
         const target = Math.max(0, Math.floor((fileMs * FPS) / 1000 + 1e-6));
-        if (target - frameIndex > RESEEK_FRAMES) {
+        if (target - frameIndex > RESEEK_FRAMES || (!decoded && target <= frameIndex)) {
           await frames.return(undefined);
           frames = open(target);
           frameIndex = target - 1;
@@ -463,7 +471,10 @@ async function prepare(
           latest = next.value;
           frameIndex++;
         }
-        if (latest) putFrame(latest, which);
+        if (latest) {
+          putFrame(latest, which);
+          decoded = true;
+        }
       },
       async close() {
         await frames.return(undefined); // stops the decoder
@@ -531,13 +542,27 @@ async function prepare(
     captions: boolean,
     which: SourceName = "app",
   ) => {
-    const visibleW = view.width / camera.zoom;
-    const visibleH = view.height / camera.zoom;
-    const x0 = camera.cx - visibleW / 2;
-    const y0 = camera.cy - visibleH / 2;
+    // The stage in a crop layout (vertical-crop) is shown whole, fitted into
+    // the frame: a scene or a file manager is laid out for the full page.
+    const fitStage =
+      which === "stage" &&
+      (view.width < viewport.width - 0.5 || view.height < viewport.height - 0.5);
+    const visibleW = fitStage ? viewport.width : view.width / camera.zoom;
+    const visibleH = fitStage ? viewport.height : view.height / camera.zoom;
+    const x0 = fitStage ? 0 : camera.cx - visibleW / 2;
+    const y0 = fitStage ? 0 : camera.cy - visibleH / 2;
+    const fit = Math.min(contentW / viewport.width, contentH / viewport.height);
+    const dest = fitStage
+      ? {
+          w: viewport.width * fit,
+          h: viewport.height * fit,
+          x: contentX + (contentW - viewport.width * fit) / 2,
+          y: contentY + (contentH - viewport.height * fit) / 2,
+        }
+      : { x: contentX, y: contentY, w: contentW, h: contentH };
     const toOut = (p: { x: number; y: number }) => ({
-      x: contentX + ((p.x - x0) / visibleW) * contentW,
-      y: contentY + ((p.y - y0) / visibleH) * contentH,
+      x: dest.x + ((p.x - x0) / visibleW) * dest.w,
+      y: dest.y + ((p.y - y0) / visibleH) * dest.h,
     });
 
     ctx.drawImage(background, 0, 0);
@@ -548,7 +573,8 @@ async function prepare(
     ctx.shadowBlur = 60;
     ctx.shadowOffsetY = 24;
     roundedRect(ctx, contentX, contentY, contentW, contentH, layout.radius);
-    ctx.fillStyle = "#ffffff";
+    // A fitted stage sits on a dark band, like a landscape clip on a phone.
+    ctx.fillStyle = fitStage ? "#111318" : "#ffffff";
     ctx.fill();
     ctx.restore();
 
@@ -562,10 +588,10 @@ async function prepare(
         y0 * scale,
         visibleW * scale,
         visibleH * scale,
-        contentX,
-        contentY,
-        contentW,
-        contentH,
+        dest.x,
+        dest.y,
+        dest.w,
+        dest.h,
       );
     }
     // Cursor size follows the zoom a little, so it stays readable.
@@ -709,7 +735,7 @@ async function prepare(
     drawScene(sceneT, which);
   };
 
-  // Steps marked with a transition: over their time (recording ms) the video
+  // Steps marked with a transition: over their time (video ms) the video
   // shows a cube turn from the frame where the step starts to the frame where
   // the next one starts, instead of what the page did meanwhile.
   const transitions = steps.flatMap((step, i) =>

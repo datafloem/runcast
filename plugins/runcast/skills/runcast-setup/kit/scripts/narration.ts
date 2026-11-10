@@ -32,7 +32,7 @@ import {
   type NarrationScript,
 } from "../core/narration.ts";
 import { findCaptures, kitCommand, loadProject } from "../core/project.ts";
-import { naturalMap, type Span } from "./video/timemap.ts";
+import { naturalMap, stepStartMs, type Span } from "./video/timemap.ts";
 
 // Also loads the project's .env.local (ElevenLabs key and voice).
 const PROJECT_DIR = (await loadProject()).dir;
@@ -391,7 +391,8 @@ function plan(script: NarrationScript): void {
 /**
  * Step id -> the step's own length (ms). From the newest video capture of
  * this scenario (.captures/<scenario>/), at the pace the video plays it (its
- * time map without narration); else from the newest rehearsal's steps.json.
+ * time map without narration); else (no video, or one from before the time
+ * map) from the newest rehearsal's steps.json.
  */
 function lastStepTimes(
   scenario: string,
@@ -426,10 +427,12 @@ function lastStepTimes(
       // Older captures timed steps to their narration: not their own length.
       if (!mark.id || mark.narration) return;
       const next = marks[i + 1];
-      const end = next ? map.toOut(next.seconds * 1000) : map.outMs;
-      byId.set(mark.id, Math.round(end - map.toOut(mark.seconds * 1000)));
+      const end = next ? map.toOut(stepStartMs(next)) : map.outMs;
+      byId.set(mark.id, Math.round(end - map.toOut(stepStartMs(mark))));
     });
-    return { file, byId };
+    // A video from before the time map (steps timed to their narration)
+    // gives no lengths: the rehearsal's are better than none.
+    if (byId.size > 0) return { file, byId };
   }
 
   const results = path.join(RECORDING_DIR, ".results");
@@ -452,6 +455,7 @@ interface StepsFile {
   steps: Array<{
     id?: string;
     seconds: number;
+    startMs?: number;
     durationMs?: number;
     narration?: unknown;
   }>;

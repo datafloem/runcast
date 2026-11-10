@@ -142,6 +142,8 @@ export interface Capture {
     transition?: string,
   ): void;
   span(kind: SpanKind, from: number, to: number, outMs: number): void;
+  /** How much longer the video is than the recording so far (CaptureLog.stretchMs). */
+  readonly stretchMs: number;
   /** A browser dialog the kit answered (see CaptureLog.dialog). */
   dialog(
     type: string,
@@ -206,9 +208,17 @@ export class CaptureLog {
     this.data.spans.push({ from: at, to: at, kind: "cut", outMs: 0, skipMs: ms });
   }
 
+  /**
+   * How much longer the video is than the recording so far: what spans
+   * add beyond their recorded length (pauses recorded short, fast moves,
+   * held frames). Nothing is taken off for spans that ran long.
+   */
+  stretchMs = 0;
+
   /** Logs a stretch of the recording (see CaptureFile.spans). Dropped off camera. */
   span(kind: SpanKind, from: number, to: number, outMs: number): void {
     if (this.pausedAt) return;
+    if (kind !== "cut") this.stretchMs += Math.max(0, outMs - (to - from));
     this.data.spans.push({
       from: Math.round(from),
       to: Math.round(to),
@@ -241,6 +251,7 @@ export class CaptureLog {
       ...(origin ? { origin } : {}),
     });
     this.data.spans.push({ from: t, to: t, kind: "dialog", outMs: DIALOG_FREEZE_MS });
+    this.stretchMs += DIALOG_FREEZE_MS;
   }
 
   /** The cursor carried a file from `from` to `to` (drag and drop): the renderer draws its icon. */

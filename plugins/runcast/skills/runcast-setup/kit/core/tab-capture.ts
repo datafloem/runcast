@@ -314,6 +314,10 @@ export class TabCapture implements Capture {
     this.log.span(kind, from, to, outMs);
   }
 
+  get stretchMs(): number {
+    return this.log.stretchMs;
+  }
+
   pointer(at: Point, kind: PointerKind): void {
     this.log.pointer(at, kind);
   }

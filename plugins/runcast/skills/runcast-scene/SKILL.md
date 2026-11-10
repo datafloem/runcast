@@ -54,7 +54,9 @@ records and fails with the list of problems:
 
 - **The page size is the video's page:** 1440×810 CSS pixels in landscape
   (`REC_PAGE_SIZE`), 540×960 for `format: "vertical"`, drawn at 2× for
-  detail. Size everything in `vw` / `vh` (or check both sizes) so nothing is
+  detail. In `vertical-crop` and `vertical-fit` videos the page stays
+  landscape and the scene is shown whole, across the middle of the 9:16
+  picture; for a full-height scene use `format: "vertical"`. Size everything in `vw` / `vh` (or check both sizes) so nothing is
   cut off; keep a margin of about 5% on every side.
 - **One idea per beat, few words:** a title of at most six words, short labels
   (two to four words), large type (titles ≥ 3vw, labels ≥ 1.2vw). The viewer

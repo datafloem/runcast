@@ -8,10 +8,11 @@
 //   setup                    prepare the runtime, create the recording folder, link .kit
 //   doctor                   what is installed, what is missing
 //   test [args]              headless end-to-end run (Playwright args, e.g. a scenario name)
-//   rehearsal [args]         the video's pace and timing, headless, not recorded
+//   rehearsal [args]         the video's pace, headless, not recorded (measures step lengths)
 //   video [args]             record and render MP4s
-//   render [scenario]        render the last capture again
-//   scene <cmd> <name>       a scene alone (preview: draft + beats sheet; render [--gif])
+//   render [scenario]        render the last capture again; --check (a picture per step),
+//                            --draft (half size, quick), --steps a-b (only those steps)
+//   scene <cmd> <name>       a scene alone (preview: draft + beats sheet; render [--gif] [--bare])
 //   narration <cmd> <name>   voice-over tools (plan, generate, measure, script, split)
 //   youtube <cmd> [name]     YouTube upload (check, auth, upload)
 //
@@ -93,7 +94,7 @@ switch (command) {
     console.log(
       readFileSync(import.meta.filename, "utf-8")
         .split("\n")
-        .slice(0, 20)
+        .slice(0, 21)
         .join("\n"),
     );
     process.exit(command === "help" ? 0 : 1);

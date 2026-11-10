@@ -159,3 +159,21 @@ test("dropFiles warns when the zone never accepts the drag", async () => {
   assert.match(warnings.join("\n"), /never accepted the drag/);
   await page.context().close();
 });
+
+test("a drop logs one press and one release for the carry", async () => {
+  const { TabCapture } = await import("../core/tab-capture.ts");
+  const page = await freshPage();
+  const rec = new Recorder(page, { file: path.join(dir, "scenarios", "demo.spec.ts") } as never);
+  await rec.start();
+  const capture = new TabCapture(page, dir, "demo", { scale: 1 });
+  const { VirtualMouse } = await import("../core/virtual-mouse.ts");
+  // Both cursors log to it, as in a video take.
+  (rec as unknown as { capture: unknown; mouse: unknown }).capture = capture;
+  (rec as unknown as { mouse: unknown }).mouse = new VirtualMouse(page, capture, { x: 10, y: 10 }, false);
+  await rec.dropFiles(page.locator("#zone"), [files[0]!]);
+  const pointer = (capture as unknown as { log: { data: { pointer: Array<{ kind: string }> } } }).log.data.pointer;
+  // The file is clicked (down, up), grabbed (down) and dropped (up): no extra up in between.
+  const kinds = pointer.filter((p) => p.kind !== "move").map((p) => p.kind);
+  assert.deepEqual(kinds, ["down", "up", "down", "up"]);
+  await page.context().close();
+});
