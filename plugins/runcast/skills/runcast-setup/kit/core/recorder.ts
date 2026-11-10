@@ -263,13 +263,15 @@ export class Recorder {
     fn: (stage: Page, mouse: VirtualMouse) => Promise<T>,
     transition: SourceSwitch["transition"] = "fade",
     back: SourceSwitch["transition"] = transition,
+    /** cursor: false hides the cursor while the stage shows (a scene). */
+    options: { cursor?: boolean } = {},
   ): Promise<T> {
     const app = this.liveMouse();
     if (!app) throw new Error("rec.onStage runs on camera only (video and rehearsal).");
     const stage = await this.stagePage();
     this.stageMouse ??= new VirtualMouse(stage, this.capture, app.at, this.fastRecording);
     this.stageMouse.place(app.at);
-    this.switchTo("stage", transition);
+    this.switchTo("stage", transition, options.cursor ?? true);
     try {
       return await fn(stage, this.stageMouse);
     } finally {
@@ -282,10 +284,34 @@ export class Recorder {
   private switchTo(
     source: SourceSwitch["source"],
     transition: SourceSwitch["transition"],
+    cursor = true,
   ): void {
     if (this.capture instanceof TabCapture && !this.suspended) {
-      this.capture.source(source, transition);
+      this.capture.source(source, transition, cursor);
     }
+  }
+
+  /**
+   * Runs `fn` and lets what it shows play at its real speed in the video:
+   * never sped up or shortened (an animation, a scene). Logged as a stretch
+   * whose video length is its own.
+   */
+  async realTime<T>(fn: () => Promise<T>): Promise<T> {
+    const capture = this.paced ? this.capture : null;
+    const from = capture?.now();
+    try {
+      return await fn();
+    } finally {
+      if (capture && from !== undefined) {
+        const to = capture.now();
+        capture.span("hold", from, to, to - from);
+      }
+    }
+  }
+
+  /** On camera: recording runs at a person's pace (video, rehearsal), not off camera. */
+  get onCamera(): boolean {
+    return this.liveMouse() !== null;
   }
 
   /** The stage tab: the recorded one in video mode, a plain page in rehearsal. */

@@ -11,6 +11,7 @@
 //   rehearsal [args]         the video's pace and timing, headless, not recorded
 //   video [args]             record and render MP4s
 //   render [scenario]        render the last capture again
+//   scene <cmd> <name>       a scene alone (preview: draft + beats sheet; render [--gif])
 //   narration <cmd> <name>   voice-over tools (plan, generate, measure, script, split)
 //   youtube <cmd> [name]     YouTube upload (check, auth, upload)
 //
@@ -82,6 +83,9 @@ switch (command) {
   case "narration":
     script(["scripts", "narration.ts"], passThrough);
     break;
+  case "scene":
+    script(["scripts", "scene.ts"], passThrough);
+    break;
   case "youtube":
     script(["scripts", "youtube.ts"], passThrough);
     break;
@@ -89,7 +93,7 @@ switch (command) {
     console.log(
       readFileSync(import.meta.filename, "utf-8")
         .split("\n")
-        .slice(0, 18)
+        .slice(0, 20)
         .join("\n"),
     );
     process.exit(command === "help" ? 0 : 1);

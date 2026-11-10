@@ -59,6 +59,8 @@ export interface SourceSwitch {
   t: number;
   source: "app" | "stage";
   transition: "fade" | "slide" | "cube" | "cut" | "lift";
+  /** false: no cursor is drawn until the next switch (a scene). */
+  cursor?: boolean;
 }
 
 /** A file carried by the cursor (drag and drop): the renderer draws its icon at the cursor. */
@@ -249,9 +251,18 @@ export class CaptureLog {
   }
 
   /** From now on the video shows `source` (tab capture), reached by `transition`. Dropped off camera. */
-  source(source: SourceSwitch["source"], transition: SourceSwitch["transition"]): void {
+  source(
+    source: SourceSwitch["source"],
+    transition: SourceSwitch["transition"],
+    cursor = true,
+  ): void {
     if (this.pausedAt) return;
-    (this.data.sources ??= []).push({ t: this.now(), source, transition });
+    (this.data.sources ??= []).push({
+      t: this.now(),
+      source,
+      transition,
+      ...(cursor ? {} : { cursor: false }),
+    });
   }
 
   pointer(at: Point, kind: PointerKind): void {

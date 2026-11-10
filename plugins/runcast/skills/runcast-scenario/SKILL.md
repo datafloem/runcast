@@ -109,6 +109,14 @@ shows each step separately in the Playwright report.
   `show: { target: "<selector>", transition: "cube" }`. Unlike a step's
   `transition: "cube"`, which hides the step, these only change how the view
   changes between two shown areas; the page keeps playing.
+- **Scenes (optional):** a row marked "Scene" becomes
+  `steps.scene({ id: "order-flow", name: "order-flow", title: "How an order flows", transition: "fade" })`
+  (`scene` comes from the kit: the template's `steps/index.ts` re-exports it
+  next to `hold`; add `scene` there in older projects). It plays
+  `scenes/<name>/index.html` on the stage tab, made and approved with the
+  `runcast-scene` skill; each beat becomes a step `<id>.<beat id>`, which a
+  narration segment can target, and the scene is never shortened. Test mode
+  checks that the scene loads and keeps its contract.
 - **App sound (optional):** if the scenario text says "App sound: yes", pass
   `appAudio: { volume, duckTo }` (defaults 1 and 0.3). The app's own sound
   (always captured with the tab, never on the speakers) is mixed under the

@@ -54,6 +54,8 @@ export interface Step {
    * Has no note, voice-over or caption. Tests run it as usual.
    */
   offCamera?: boolean;
+  /** A scene step (core/scene.ts): its scene's name. Narration may target `<id>.<beat id>`. */
+  scene?: string;
   /**
    * Brings a fresh page to where this step starts, when it is the first step
    * of the scenario (e.g. login opens the login page). Runs before recording.
@@ -291,6 +293,11 @@ function checkNarration(script: NarrationScript, steps: Array<Step>): void {
   for (const segment of script.segments) {
     // "intro" / "outro" are spoken over the title cards, not over a step.
     if (segment.step === "intro" || segment.step === "outro") continue;
+    // "<scene step id>.<beat id>": a beat of a scene step.
+    const sceneStep = steps.find(
+      (step) => step.scene && segment.step.startsWith(`${step.id}.`),
+    );
+    if (sceneStep) continue;
     if (!ids.has(segment.step)) {
       console.warn(
         `Narration: "${segment.step}" is not a step of this scenario.`,

@@ -267,8 +267,12 @@ export class TabCapture implements Capture {
   }
 
   /** From now on the video shows the app's tab or the stage, reached by `transition`. */
-  source(source: SourceSwitch["source"], transition: SourceSwitch["transition"]): void {
-    this.log.source(source, transition);
+  source(
+    source: SourceSwitch["source"],
+    transition: SourceSwitch["transition"],
+    cursor = true,
+  ): void {
+    this.log.source(source, transition, cursor);
   }
 
   now(): number {

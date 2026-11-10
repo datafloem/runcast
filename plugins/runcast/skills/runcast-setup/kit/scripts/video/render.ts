@@ -60,6 +60,7 @@ import {
   type StepFit,
 } from "./timemap.ts";
 import { appAudioFilter, shiftPlan } from "./audio.ts";
+import { readFrameAt } from "./frames.ts";
 import {
   findCaptures as findProjectCaptures,
   kitCommand,
@@ -105,7 +106,13 @@ interface CaptureFile {
   /** Tab capture: the stage tab's recording and when it starts. */
   stage?: { file: string; startMs: number };
   /** Switches between the app's tab and the stage. */
-  sources?: Array<{ t: number; source: SourceName; transition: SourceTransition }>;
+  sources?: Array<{
+    t: number;
+    source: SourceName;
+    transition: SourceTransition;
+    /** false: no cursor until the next switch (a scene). */
+    cursor?: boolean;
+  }>;
   /** Files the cursor carried (drag and drop). */
   carries?: Array<{ from: number; to: number; label: string }>;
 }
@@ -492,6 +499,14 @@ async function prepare(captureDir: string): Promise<Prepared> {
     label: carry.label,
   }));
   const carryAt = (t: number) => carries.find((c) => t >= c.from && t < c.to);
+  // Stretches without a cursor (scenes), on the video clock.
+  const switches = capture.sources ?? [];
+  const noCursor = switches.flatMap((s, i) =>
+    s.cursor === false
+      ? [{ from: map.toOut(s.t), to: i + 1 < switches.length ? map.toOut(switches[i + 1]!.t) : Infinity }]
+      : [],
+  );
+  const cursorHidden = (t: number) => noCursor.some((r) => t >= r.from && t < r.to);
 
   /** Tab `which`'s recording at time t through `camera`, drawn over the background. */
   const drawView = (
@@ -539,7 +554,7 @@ async function prepare(captureDir: string): Promise<Prepared> {
     }
     // Cursor size follows the zoom a little, so it stays readable.
     const cursorScale = 1.5 * (1 + (camera.zoom - 1) * 0.45);
-    const cursor = cursorAtTime(events.pointer, t);
+    const cursor = cursorHidden(t) ? null : cursorAtTime(events.pointer, t);
     const open = dialogAt(t);
     if (open) {
       // A browser dialog: drawn over the held frame, the cursor answering it.
@@ -830,7 +845,7 @@ async function prepare(captureDir: string): Promise<Prepared> {
     const which = map.sourceAt(sceneT);
     const source = `${which}:${Math.floor((map.toRec(sceneT) * FPS) / 1000 + 1e-6)}`;
     const camera = cameraFor(which, sceneT);
-    const cursor = cursorAtTime(events.pointer, sceneT);
+    const cursor = cursorHidden(sceneT) ? null : cursorAtTime(events.pointer, sceneT);
     const pressed = events.pointer.some(
       (p) => p.kind === "down" && sceneT >= p.t && sceneT - p.t < 140,
     );
@@ -1487,26 +1502,6 @@ async function* readFrames(
     decoder.stdout.destroy();
     decoder.kill();
   }
-}
-
-/** One raw RGBA frame of the screen recording at `ms` from its start (null past the end). */
-function readFrameAt(
-  file: string,
-  ms: number,
-  width: number,
-  height: number,
-): Promise<Buffer | null> {
-  const args = ["-v", "error", "-ss", (ms / 1000).toFixed(3), "-i", file];
-  args.push("-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgba", "pipe:1");
-  const decoder = spawn("ffmpeg", args, { stdio: ["ignore", "pipe", "ignore"] });
-  const pieces: Array<Buffer> = [];
-  decoder.stdout.on("data", (chunk: Buffer) => pieces.push(chunk));
-  return new Promise((resolve) => {
-    decoder.on("close", () => {
-      const frame = Buffer.concat(pieces);
-      resolve(frame.length >= width * height * 4 ? frame : null);
-    });
-  });
 }
 
 /**

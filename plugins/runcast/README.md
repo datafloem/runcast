@@ -9,8 +9,9 @@ through your app. Runcast records the app's tab in a hidden browser (you keep
 using your computer meanwhile), adds a smooth cursor and a calm, zooming
 camera, and renders an MP4: landscape, or vertical for YouTube Shorts
 and Instagram Reels. You can add captions, title cards, blurred
-private fields, cube transitions between steps and a voice-over, and upload the
-result to YouTube. You don't edit video, use a screen recorder or click
+private fields, cube transitions between steps, animated scenes your assistant
+designs, the app's own sound and a voice-over, and upload the result to
+YouTube. You don't edit video, use a screen recorder or click
 through the app yourself.
 
 ## Skills
@@ -20,6 +21,7 @@ through the app yourself.
 | `runcast-setup`    | Adds Runcast to a project: studies the app, writes the login helper, a first scenario and `PROJECT.md`      |
 | `runcast-plan`     | Interviews you about a new video (goal, audience, format, flow, captions, voice-over) and writes the plan   |
 | `runcast-scenario` | Writes or fixes a scenario that runs as a fast test or is recorded as a video                               |
+| `runcast-scene`    | Designs an animated scene (a concept, an architecture) for a video, previews it and changes it until you approve it |
 | `runcast-publish`  | Walks you through the one-time Google setup and uploads a rendered video to YouTube, after you approve it  |
 
 Try: *"Set up Runcast for this app"*, then *"Plan a 60-second demo of creating
@@ -64,8 +66,10 @@ your computer, only when you or your assistant run the command named.
   recorder (`core/recorder.html` in the runtime folder, opened as a
   `file://` page) records the app's tab and hands the video to the kit
   inside the browser; the stage (`core/stage/*.html`: a blank page and a
-  file manager listing the files a step uploads) is a second recorded tab.
-  These pages load nothing from the network. Files a step uploads are read
+  file manager listing the files a step uploads) is a second recorded tab,
+  where scenes from your recording folder (`scenes/<name>/index.html`,
+  opened as `file://` pages) play too. These pages load nothing from the
+  network. Files a step uploads are read
   from your recording folder and handed to your app in the browser only.
 - **ElevenLabs** (`api.elevenlabs.io`), only when you run
   `narration generate`. It sends each voice-over line's text, plus the lines
@@ -85,13 +89,17 @@ your computer, only when you or your assistant run the command named.
   that `youtube auth` writes.
 - `videos/`, `narration/`, `.results/`, `.report/`: renders, audio, test
   output and test reports.
+- `scenes/<name>/`: the animated scenes your assistant writes for your
+  videos (local files only; committed with your project if you wish).
 - `.captures/<scenario>/`: the latest video recording of each scenario (the
   tab or screen recording, its event log and step times), kept until that scenario
   is recorded again. Each render also writes `render-report.json` there (how
   each step was fitted to its voice-over, and where it starts in the video),
   and `render --check` one picture per step to `check/`. `render --draft`
   and `--steps` write `videos/<name>.draft.mp4` and
-  `videos/<name>.steps-<a>-<b>.mp4`.
+  `videos/<name>.steps-<a>-<b>.mp4`. `scene preview <name>` records a scene
+  alone to `.captures/scene-<name>/`; `scene render` writes
+  `videos/scene-<name>.mp4` (and `.gif`).
 
 **Records**
 

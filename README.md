@@ -9,7 +9,8 @@ or another tool). The assistant writes a short script that drives a real
 Chrome browser through your app. The kit then records it with a smooth cursor
 and a calm, zooming camera, and renders an MP4. If you want them, you also get
 captions, opening and closing title cards, blurred private fields, the
-app's own sound and a voice-over. The kit can upload the result to YouTube too.
+app's own sound, animated scenes the assistant designs (for what the app
+itself cannot show) and a voice-over. The kit can upload the result to YouTube too.
 
 You need no video editing and no screen-recording app. You don't click through
 the app yourself, and you can keep using your computer while it records:
@@ -63,7 +64,7 @@ the browser runs hidden, in the background.
 
 ## How it works
 
-You mostly talk to your AI assistant. The plugin gives it four **skills**:
+You mostly talk to your AI assistant. The plugin gives it five **skills**:
 instructions it follows for each job.
 
 | You say                            | Skill              | What the assistant does                                                                                                           |
@@ -71,6 +72,7 @@ instructions it follows for each job.
 | "Set up recordings for this app"   | `runcast-setup`    | Installs the kit, reads your app's code (pages, forms, sign-in, brand) and writes the project's recording files and a login test  |
 | "Plan a new demo video"            | `runcast-plan`     | Interviews you a few questions at a time (goal, audience, length, which screens, which data) and writes the agreed plan as a text |
 | "Write the test for that scenario" | `runcast-scenario` | Turns the approved plan into a Playwright script and checks that it passes                                                        |
+| "Add a scene that explains the order flow" | `runcast-scene` | Designs a short animation for what the app cannot show, shows you a preview of each moment and changes it until you approve |
 | "Upload the video to YouTube"      | `runcast-publish`  | Guides you through Google's one-time setup, drafts the title and description, and uploads after your yes                          |
 
 Under the hood:
@@ -173,7 +175,7 @@ folder and run setup by hand:
    node tools/runcast/skills/runcast-setup/kit/cli.ts setup --skills .claude/skills,.agents/skills
    ```
 
-   `--skills` copies the four skills into the folders where most AI tools
+   `--skills` copies the five skills into the folders where most AI tools
    look for them. Then continue with step 1 below. Setup is already done, so
    the assistant only studies the app.
 
@@ -432,6 +434,7 @@ plugins/runcast/
                                     project templates, Linux self-test
     runcast-plan/                   the planning interview
     runcast-scenario/               the rules for writing scenarios
+    runcast-scene/                  designing animated scenes, with an example
     runcast-publish/                the YouTube upload
 ```
 

@@ -27,6 +27,7 @@ export {
   type Target,
   type Ui,
 } from "./recorder.ts";
+export { scene, sceneProblems } from "./scene.ts";
 export {
   hold,
   scenario,

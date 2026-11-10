@@ -1,0 +1,199 @@
+<!doctype html>
+<!--
+  Example Runcast scene for a made-up customers and orders app: how a
+  customer's order becomes an invoice, in three beats. Copy it to
+  <recording folder>/scenes/<name>/index.html and change it.
+
+  The contract (runcast-scene skill):
+  - ?record: no autoplay, no loop, no controls; the kit calls start().
+  - window.runcastScene = { duration, beats: [{ id, at }], start() }, times
+    in ms from start(); each beat ends on a settled frame before the next.
+  - Local files only, deterministic (no randomness, no clock), no sound.
+  - The brand comes in as CSS variables: --runcast-brand, --runcast-logo.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>From a customer to an invoice</title>
+    <style>
+      :root {
+        --brand: var(--runcast-brand, #2f6feb);
+        --ink: #0f172a;
+        --muted: #64748b;
+        --card: #ffffff;
+        --bg: #eef2f7;
+      }
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: radial-gradient(circle at 50% 35%, #ffffff, var(--bg) 70%);
+        font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+        color: var(--ink);
+        overflow: hidden;
+      }
+      .logo {
+        position: absolute;
+        left: 4vw;
+        top: 5vh;
+        width: 9vw;
+        height: 5vh;
+        background: var(--runcast-logo, none) left center / contain no-repeat;
+      }
+      h1 {
+        position: absolute;
+        top: 11vh;
+        width: 100%;
+        margin: 0;
+        text-align: center;
+        font-size: 3.4vw;
+        font-weight: 700;
+        letter-spacing: -0.02em;
+      }
+      .row {
+        position: absolute;
+        top: 34vh;
+        left: 6vw;
+        right: 6vw;
+        display: grid;
+        grid-template-columns: 1fr 8vw 1fr 8vw 1fr;
+        align-items: center;
+      }
+      .card {
+        background: var(--card);
+        border-radius: 1.4vw;
+        padding: 2.2vw;
+        box-shadow: 0 1.6vw 4vw rgba(15, 23, 42, 0.12);
+        min-height: 16vw;
+      }
+      .kind {
+        font-size: 1vw;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--brand);
+      }
+      .title {
+        margin-top: 1.2vw;
+        font-size: 2.2vw;
+        font-weight: 700;
+      }
+      .line {
+        margin-top: 0.8vw;
+        font-size: 1.3vw;
+        color: var(--muted);
+      }
+      .total {
+        margin-top: 1.6vw;
+        display: inline-block;
+        padding: 0.6vw 1.2vw;
+        border-radius: 99vw;
+        background: var(--brand);
+        color: #fff;
+        font-size: 1.8vw;
+        font-weight: 700;
+      }
+      .arrow {
+        height: 0.4vw;
+        margin: 0 1vw;
+        background: var(--brand);
+        border-radius: 1vw;
+        position: relative;
+        transform-origin: left center;
+      }
+      .arrow::after {
+        content: "";
+        position: absolute;
+        right: -0.4vw;
+        top: -0.8vw;
+        border: 1vw solid transparent;
+        border-left: 1.4vw solid var(--brand);
+        border-right: 0;
+      }
+
+      /* Hidden until start(); each part comes in at its beat and stays. */
+      [data-beat],
+      .arrow,
+      h1 {
+        opacity: 0;
+      }
+      .play h1 {
+        animation: fade 600ms ease-out 0ms both;
+      }
+      .play [data-beat="customer"] {
+        animation: rise 700ms cubic-bezier(0.2, 0.7, 0.2, 1) 200ms both;
+      }
+      .play .arrow.one {
+        animation: grow 500ms ease-out 1800ms both;
+      }
+      .play [data-beat="order"] {
+        animation: rise 700ms cubic-bezier(0.2, 0.7, 0.2, 1) 2000ms both;
+      }
+      .play .arrow.two {
+        animation: grow 500ms ease-out 3600ms both;
+      }
+      .play [data-beat="invoice"] {
+        animation: rise 700ms cubic-bezier(0.2, 0.7, 0.2, 1) 3800ms both;
+      }
+      @keyframes fade {
+        from { opacity: 0; }
+        to { opacity: 1; }
+      }
+      @keyframes rise {
+        from { opacity: 0; transform: translateY(3vw) scale(0.96); }
+        to { opacity: 1; transform: none; }
+      }
+      @keyframes grow {
+        from { opacity: 0; transform: scaleX(0); }
+        to { opacity: 1; transform: none; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="logo"></div>
+    <h1>From a customer to an invoice</h1>
+    <div class="row">
+      <div class="card" data-beat="customer">
+        <div class="kind">Customer</div>
+        <div class="title">Ada Lovelace</div>
+        <div class="line">ada@example.com</div>
+        <div class="line">London</div>
+      </div>
+      <div class="arrow one"></div>
+      <div class="card" data-beat="order">
+        <div class="kind">Order #1042</div>
+        <div class="title">3 items</div>
+        <div class="line">2 × Notebook</div>
+        <div class="line">1 × Fountain pen</div>
+      </div>
+      <div class="arrow two"></div>
+      <div class="card" data-beat="invoice">
+        <div class="kind">Invoice</div>
+        <div class="title">Sent</div>
+        <div class="line">Due in 14 days</div>
+        <div class="total">€ 248.00</div>
+      </div>
+    </div>
+    <script>
+      const play = () => {
+        document.body.classList.remove("play");
+        void document.body.offsetWidth; // restart the animations
+        document.body.classList.add("play");
+      };
+      window.runcastScene = {
+        duration: 5600,
+        beats: [
+          { id: "customer", at: 0 },
+          { id: "order", at: 1800 },
+          { id: "invoice", at: 3600 },
+        ],
+        start: play,
+      };
+      // Opened by itself (not ?record): play in a loop, for a look.
+      if (!new URLSearchParams(location.search).has("record")) {
+        play();
+        setInterval(play, window.runcastScene.duration + 1500);
+      }
+    </script>
+  </body>
+</html>

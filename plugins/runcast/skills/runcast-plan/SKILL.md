@@ -214,6 +214,11 @@ step is boring, propose splitting it.
 
 While drafting:
 
+- Look for parts of the story the app **cannot show**: an idea, how data
+  moves between systems, what happens on the customer's side, the problem
+  before the feature. Propose a **scene** for each (an animation the AI
+  designs, played in the video like a step, joined to the app with a
+  transition) and mark the row "Scene"; phase 4b settles it.
 - Take screens and transitions from `PROJECT.md`; every step should be doable
   with existing helpers where possible. Mark the rest "New helper needed".
 - Account for the app's known behaviours (`PROJECT.md`).
@@ -283,6 +288,26 @@ passes `scenario({ showTransition: "slide" })`, and a step's own as
 Do not ask for details the user need not know (selectors, waits); ask only for
 decisions visible on screen. Update the text, then move to the next group.
 
+### 4b. Scenes (if any)
+
+For every row marked "Scene", settle with the user, then make it with the
+`runcast-scene` skill before the test is written:
+
+| Field      | Question / decision                                                          |
+| ---------- | ---------------------------------------------------------------------------- |
+| Purpose    | What should the viewer understand from it, in one sentence                    |
+| Length     | Roughly how many seconds (usually 4–10)                                       |
+| Beats      | The moments in order, each one idea (`customer`, `order`, `invoice`)          |
+| Look       | Light or dark, the app's own look or a plain diagram; which records it shows  |
+| Transition | How the video gets to it and back: `fade` (default), `slide`, `cube`, `cut`   |
+
+Write the scene (`<recording folder>/scenes/<name>/index.html`), run
+`node tests/recording/.kit/cli.ts scene preview <name>`, check the contact
+sheet of its beats yourself, then show the user the sheet and the draft
+video. Change it until they approve; **do not go on before the user approves
+every scene.** Write each scene in the text ("Scenes") with its beats; a
+voice-over can later speak over single beats (`<step id>.<beat id>`).
+
 ### 5. Review and approval
 
 Complete the text and summarise for the user:
@@ -298,6 +323,7 @@ Complete the text and summarise for the user:
 - Are steps needing new helpers listed?
 - Does every step that only shows something (no clicks the viewer follows)
   have a Focus? For `vertical-crop`, every such step needs one.
+- Is every scene approved by the user (phase 4b)?
 
 Then ask: "The scenario text is ready — shall I write the test?"
 

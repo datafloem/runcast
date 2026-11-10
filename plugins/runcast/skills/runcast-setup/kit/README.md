@@ -20,14 +20,15 @@ It is app-agnostic. An app adds a **recording folder** (default
 
 | Path                                | What                                                                                                    |
 | ----------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| `cli.ts`                            | The one command line: `setup`, `doctor`, `test`, `rehearsal`, `video`, `render`, `narration`, `youtube` |
+| `cli.ts`                            | The one command line: `setup`, `doctor`, `test`, `rehearsal`, `video`, `render`, `scene`, `narration`, `youtube` |
 | `core/`                             | The engine: `rec` (cursor, capture, modes), `scenario()`, project and Playwright config                 |
 | `scripts/video/`                    | Recording run (`run.ts`), renderer (`render.ts`), camera (`timeline.ts`)                                |
+| `scripts/scene.ts`                  | A scene alone: `scene preview` (draft + beats sheet) and `scene render` (MP4, GIF)                      |
 | `scripts/narration.ts`              | Voice-over tools: plan, generate (ElevenLabs), measure, single-take script and split                    |
 | `scripts/youtube.ts`                | YouTube upload: sign-in (OAuth) and resumable upload with metadata                                      |
 | `templates/project/`                | The recording folder a project starts from                                                              |
 | `test/linux/`                       | Self-test on Linux in a container                                                                       |
-| `../../` (`skills/` in the runtime) | AI skills: `runcast-setup`, `runcast-plan`, `runcast-scenario`, `runcast-publish`                       |
+| `../../` (`skills/` in the runtime) | AI skills: `runcast-setup`, `runcast-plan`, `runcast-scenario`, `runcast-scene`, `runcast-publish`      |
 
 ## Requirements
 
@@ -219,6 +220,20 @@ Add a scenario name to run one: `node tests/recording/.kit/cli.ts test login`.
      video and rehearsal; tests ignore it.
    - **Voice-over:** fitted to the steps here, not while recording (see
      Voice-over).
+   - **Scenes (optional):** `steps.scene({ name, transition })` plays an
+     animation the AI designed (`scenes/<name>/index.html`, the
+     `runcast-scene` skill) on the stage tab, like the app: same frame and
+     captions, joined by `fade` (default), `slide`, `cube`, `cut` or `lift`,
+     no cursor over it. The page keeps a small contract
+     (`window.runcastScene = { duration, beats: [{ id, at }], start() }`,
+     no autoplay with `?record`, deterministic, local files, brand from
+     `--runcast-brand` / `--runcast-logo`). Each beat is a step
+     `<step id>.<beat id>` for the voice-over; a longer voice holds the
+     beat's last frame and the scene is never shortened. Test mode checks
+     the contract. On its own: `node tests/recording/.kit/cli.ts scene preview <name>`
+     (a draft and a contact sheet of the beats, `.captures/scene-<name>/check/sheet.png`)
+     and `scene render <name> [--gif]` (`videos/scene-<name>.mp4`, a 960 px
+     GIF).
 3. Re-render without recording again: `node tests/recording/.kit/cli.ts render <scenario>`.
    Actions the camera does not show (a vertical crop too narrow for a
    scene) are printed as "Out of frame" and listed in `render-report.json`.
