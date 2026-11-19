@@ -33,6 +33,7 @@ export type { VirtualMouse } from "./virtual-mouse.ts";
 export type { PermissionDecision, PermissionsOption } from "./permissions.ts";
 export {
   hold,
+  open,
   scenario,
   type ScenarioDefinition,
   type ShowTransition,

@@ -20,13 +20,16 @@ It is app-agnostic. An app adds a **recording folder** (default
 
 | Path                                | What                                                                                                    |
 | ----------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| `cli.ts`                            | The one command line: `setup`, `doctor`, `test`, `rehearsal`, `video`, `render`, `scene`, `narration`, `youtube` |
+| `cli.ts`                            | The one command line: `setup`, `doctor`, `test`, `rehearsal`, `video`, `render`, `scene`, `explore`, `session`, `narration`, `youtube` |
 | `core/`                             | The engine: `rec` (cursor, capture, modes), `scenario()`, project and Playwright config                 |
 | `scripts/video/`                    | Recording run (`run.ts`), renderer (`render.ts`), camera (`timeline.ts`)                                |
 | `scripts/scene.ts`                  | A scene alone: `scene preview` (draft + beats sheet) and `scene render` (MP4, GIF)                      |
+| `scripts/explore/`                  | `explore`: read-only snapshots of the app's pages, the structure baseline and `--diff`                  |
+| `scripts/session.ts`                | `session --manual` / `--clear`: the saved sign-in session                                               |
 | `scripts/narration.ts`              | Voice-over tools: plan, generate (ElevenLabs), measure, single-take script and split                    |
 | `scripts/youtube.ts`                | YouTube upload: sign-in (OAuth) and resumable upload with metadata                                      |
 | `templates/project/`                | The recording folder a project starts from                                                              |
+| `templates/session/`                | `start.spec.ts` for projects whose sign-in a person does                                                |
 | `test/linux/`                       | Self-test on Linux in a container                                                                       |
 | `../../` (`skills/` in the runtime) | AI skills: `runcast-setup`, `runcast-plan`, `runcast-scenario`, `runcast-scene`, `runcast-publish`      |
 
@@ -402,6 +405,74 @@ guides the one-time Google Cloud setup and drafts the metadata. By hand:
 `node tests/recording/.kit/cli.ts youtube check` shows what is missing. YouTube allows about 100
 uploads per day per Google Cloud project.
 
+## Exploring a site (`explore`)
+
+For an app whose code is not at hand (a customer's or partner's site), or to
+see the rendered labels of your own. `explore` opens pages in a headless
+Chrome with the project's settings (base URL, locale, colour scheme, seeded
+`localStorage`, the saved session with `REC_SESSION=1`) and writes what it
+finds to `.explore/`:
+
+```bash
+node tests/recording/.kit/cli.ts explore /customers/new      # one page
+node tests/recording/.kit/cli.ts explore --crawl --mobile    # from /, two links deep, max 30 pages
+node tests/recording/.kit/cli.ts explore --headed            # you browse; every page you reach is taken
+```
+
+- **Read-only.** It only opens URLs: no clicks, typing or form submits. A
+  crawl follows same-origin links inside the base URL and skips links that
+  look like actions (`logout`, `delete`, `remove`, ...; add your own with
+  `--skip <regex>`), downloads and `mailto:`/`tel:`; each skipped link is
+  listed. A page that lands on another origin or shows a password field is
+  reported as a sign-in page and not followed. Pages whose network or DOM
+  never settles (polling, streams) are taken after 10 s + 5 s and marked.
+- **Per page** (`.explore/pages/<page>/`): `page.json` (controls with role,
+  accessible name, label, `name`, type, required, limits, `<select>`
+  options and test hooks; links by landmark; headings; localStorage,
+  sessionStorage and cookie *names*; brand colours and logo; same-origin
+  frames), `aria.yml` (the accessibility tree), `screenshot.png` and, with
+  `--mobile`, `mobile.png` and a 540×960 overflow check. `.explore/summary.md`
+  is the overview. Record ids in URLs become `:id` and query values `:v`,
+  so a list of 500 records is one page.
+- **Redaction.** No control value, storage value or cookie value is written.
+  Displayed data is shown as `…`: table cells and data rows, repeated list
+  items in `main`, definitions, custom listbox options, and the title and
+  main heading of a record's page (`/customers/:id`). Column headers, menus,
+  buttons, labels and `<select>` options stay. **Screenshots are not
+  redacted**; `.explore/` is gitignored.
+- **Runs.** Each run is kept in `.explore/runs/<time>/` (the last ten);
+  `.explore/pages/` holds the newest snapshot of every page explored, so a
+  one-page run does not hide the rest. `--forget <path>` drops a page.
+- **Baseline and changes.** `explore --accept` writes the newest run's
+  structure (pages, headings, menus, controls, test hooks; no data, values
+  or screenshots) to `explore/site.json`, which you commit.
+  `explore --diff` explores the baseline's pages again (or the paths given)
+  and writes `.explore/diff.md`: pages added, gone or redirecting, controls
+  added, removed or changed, test hooks removed, headings and menu links
+  changed. Pages a run did not reach are "not checked", not "gone", unless
+  it crawled from the same start.
+
+## Saved sessions (`session`)
+
+For sign-ins a scenario cannot do (SSO, two-factor, a captcha), and for
+`explore` behind a sign-in:
+
+```bash
+node tests/recording/.kit/cli.ts session            # runs the login scenario, saves its session
+node tests/recording/.kit/cli.ts session --manual   # a Chrome window opens: sign in, close it
+node tests/recording/.kit/cli.ts session --clear
+```
+
+The session (cookies, localStorage, IndexedDB and sessionStorage) is saved to
+`.auth/session.json` (owner-only, gitignored): a credential, never printed.
+The sign-in page is learnt while saving. With `REC_SESSION=1` in
+`.env.local`, every scenario and `explore` start from it (the project's
+seeded `localStorage` wins); the `session` command itself always signs in.
+Scenarios of such projects start with `steps.open({ path })` instead of
+`steps.login()`; a project without a login scenario starts from
+`templates/session/start.spec.ts`. When a run lands on the sign-in page it
+stops with "the saved session has expired": save it again.
+
 ## Writing scenarios
 
 Code has three layers; each job is written once:
@@ -547,6 +618,7 @@ The full rules are in the `runcast-scenario` skill (`skills/runcast-scenario/SKI
 | `REC_WIN_GRABBER`                           | auto               | Screen capture on Windows: `ddagrab` or `gdigrab`; auto tries `ddagrab` first |
 | `REC_CAPTURE_OFFSET`                        | `0,0`              | Screen capture: moves the recorded area by `x,y` screen pixels, when a window frame shifts the page |
 | `REC_CHANNEL`                               | `chrome`           | Browser: `chrome` (Google Chrome) or `chromium` (Playwright's) |
+| `REC_SESSION`                               | —                  | `1`: every scenario and `explore` start from the saved session (`.auth/session.json`) |
 | `REC_XVFB_SIZE`                             | `1920x1080`        | Screen capture on Linux without a screen: the Xvfb page area, in CSS pixels |
 | `REC_XVFB_SCALE`                            | `1`                | Screen capture on Linux without a screen: `2` draws the page at 2x, like Retina |
 | `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID` | —                  | For `node tests/recording/.kit/cli.ts narration generate`      |

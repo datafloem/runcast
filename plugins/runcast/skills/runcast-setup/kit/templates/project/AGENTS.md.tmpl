@@ -45,6 +45,9 @@ Most important rules:
   and only then as a test; both stay in sync.
 - Values come from `.env.local` and are listed in `.env.example`. Passwords
   never reach code, logs or chats (`rec.typeSecret`).
+- Without the app's code (`PROJECT.md` > "Source": live site), confirm
+  selectors in the explore output (`.explore/pages/`), never guess them; the
+  saved session in `.auth/` is a credential and never leaves this computer.
 - Every scenario passes in all modes (`test`, `rehearsal`, `video`).
   `rec.pause` is for the viewer only.
 - Ask the user about the video format (landscape or vertical), voice-over,

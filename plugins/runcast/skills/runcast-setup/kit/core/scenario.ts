@@ -10,6 +10,17 @@ import {
 import { sleep } from "./cursor.ts";
 import type { PermissionsOption } from "./permissions.ts";
 import { test, type Recorder, type Ui } from "./recorder.ts";
+import { kitCommand } from "./project.ts";
+import path from "node:path";
+import {
+  captureSession,
+  forgetSession,
+  readSession,
+  restoreSessionStorage,
+  sessionExpired,
+  signInFromUrl,
+  writeSession,
+} from "./session.ts";
 
 /** What a step gets: the page, the recorder, and state shared along the scenario. */
 export interface StepContext extends Ui {
@@ -251,7 +262,22 @@ export function scenario(
     await rec.useFormat(resolveFormat(definition.format));
     if (definition.blur?.length) await blurOnScreen(page, definition.blur);
     const ctx: StepContext = { page, rec, state: {} };
+    // REC_SESSION=1: the context starts from the saved session (core/playwright.ts);
+    // sessionStorage comes back here, before the first page loads.
+    const dir = process.env.REC_PROJECT ?? "";
+    const session = process.env.REC_SESSION === "1" ? readSession(dir) : null;
+    // The login scenario signs in itself, whatever REC_SESSION says.
+    const loginScenario = path.basename(test.info().file) === "login.spec.ts";
+    if (session && loginScenario)
+      await forgetSession(page.context(), session, JSON.parse(process.env.REC_SEED_KEYS ?? "[]") as Array<string>);
+    else if (session) await restoreSessionStorage(page.context(), session);
     await steps[0]?.entry?.(ctx);
+    if (session && !loginScenario && (await sessionExpired(page, session.signIn)))
+      throw new Error(
+        `The saved session has expired; run \`${kitCommand(dir)} session\` again.`,
+      );
+    // The `session` command: the first step's entry opened the sign-in page.
+    const signInUrl = page.url();
 
     for (const [index, step] of steps.entries()) {
       if (index > to) break;
@@ -289,6 +315,12 @@ export function scenario(
         if (spentMs < TRANSITION_MIN_MS)
           await rec.pause(TRANSITION_MIN_MS - spentMs);
       }
+    }
+
+    if (process.env.REC_SAVE_SESSION === "1") {
+      const signIn = /^https?:/.test(signInUrl) ? signInFromUrl(signInUrl) : null;
+      writeSession(dir, await captureSession(page.context(), signIn));
+      console.log("Session saved (.auth/session.json).");
     }
   };
 }
@@ -413,6 +445,42 @@ export function hold(options: StepOptions & { ms?: number } = {}): Step {
     // Its `show` is framed during the hold, not after it.
     run: (ctx) =>
       options.show ? showStep(ctx, options.show, ms) : ctx.rec.pause(ms),
+  };
+}
+
+/**
+ * Opens a page of the app: the first step of scenarios that start from a
+ * saved session (REC_SESSION=1) instead of signing in. As the first step it
+ * opens the page before the recording starts.
+ */
+/** A path of the app as a URL under the base URL's path ("/x" on https://e.com/app → /app/x). */
+export function appUrl(target: string, baseURL: string): string {
+  if (/^https?:\/\//i.test(target)) return target;
+  const base = baseURL.endsWith("/") ? baseURL : `${baseURL}/`;
+  return new URL(target.replace(/^\//, ""), base).href;
+}
+
+export function open(options: StepOptions & { path: string }): Step {
+  const go = async ({ page }: StepContext) => {
+    await page.goto(appUrl(options.path, test.info().project.use.baseURL ?? page.url()));
+    await page.waitForLoadState("load");
+  };
+  return {
+    id: options.id ?? "open",
+    title: options.title ?? "Open",
+    note: options.note,
+    transition: options.transition,
+    show: options.show,
+    offCamera: options.offCamera,
+    entry: go,
+    run: async (ctx) => {
+      const current = ctx.page.url();
+      const there =
+        /^https?:/.test(current) &&
+        new URL(appUrl(options.path, test.info().project.use.baseURL ?? current)).pathname ===
+          new URL(current).pathname;
+      if (!there) await go(ctx);
+    },
   };
 }
 

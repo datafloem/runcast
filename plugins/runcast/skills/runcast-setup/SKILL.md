@@ -16,6 +16,56 @@ to it. This skill creates and maintains that folder. When it is done, the
 Talk with the user in their language; write code, comments and `PROJECT.md`
 in English.
 
+## 0. Source code or live site
+
+Look for the app's source in the workspace yourself (a web app's package or
+build files, routes, pages); do not ask about it. If you find it, go on with
+step 1 and study the code in step 2.
+
+If you find none, say so ("I found no source code for a web app here") and
+confirm that the user wants to record a live site (a customer's or partner's
+app, say). The project's source is then **live site**, and:
+
+1. **Address.** Ask for the URL a visitor opens, e.g. `https://app.example.com`
+   or `https://example.com/app/`. The base URL is its origin plus any base
+   path; a deeper path (a dashboard, the sign-in page) is the first page to
+   explore. Ask whether it is the live site or a test environment, and for
+   the app's name if the address or page title does not make it clear.
+2. **Permission.** Always ask: "Are you allowed to record this site and
+   publish videos of it?" Stop unless the answer is yes. Write who
+   confirmed it, for which site, and the date in `PROJECT.md` > "Source".
+3. **Folder.** Ask where the recording folder should go (no default for a
+   live site), run setup with `--dir <that folder>` (step 1), then check the
+   address with `node <folder>/.kit/cli.ts explore <first page> --no-session`.
+   If it does not load (DNS, TLS, a VPN, a block page), tell the user what
+   happened and ask for a working address.
+4. **Sign-in.** The run above says whether the page landed on a sign-in page.
+   - A sign-in a scenario can do (a username and password form): explore the
+     sign-in page, write `helpers/auth.ts` from its controls, run
+     `test login`, then `node <folder>/.kit/cli.ts session` and set
+     `REC_SESSION=1` in `.env.local`.
+   - A sign-in only a person can do (SSO, two-factor, a captcha; never try
+     to get past one): delete `scenarios/login.spec.ts`, `helpers/auth.ts`,
+     `steps/auth.ts` and their exports in `helpers/index.ts` and
+     `steps/index.ts`, copy `.kit/templates/session/start.spec.ts.tmpl` to
+     `scenarios/start.spec.ts`, and ask the user to run
+     `node <folder>/.kit/cli.ts session --manual` ("a Chrome window opens;
+     sign in, then close the window"). Then set `REC_SESSION=1` and run
+     `test start`.
+5. **Study the site** (instead of step 2's code reading):
+   `node <folder>/.kit/cli.ts explore --crawl --mobile`, then fill
+   `PROJECT.md` from `.explore/summary.md` and `.explore/pages/<page>/`
+   (`page.json`: controls, links, hooks, storage keys, brand; `aria.yml`:
+   the page's roles and names; `screenshot.png`). Explore is read-only and
+   hides displayed data (table cells, data rows, record titles) as `…`;
+   screenshots are not redacted, so do not paste them anywhere. Ask the user
+   for what explore cannot show: roles, which records are safe to change,
+   the demo account's limits. With the user's OK, make this run the
+   baseline: `explore --accept`, and remind them to commit
+   `explore/site.json`.
+
+Then write the project layer (step 3) and verify (step 4) as for any app.
+
 ## 1. Install
 
 1. **Find the kit's CLI**, `kit/cli.ts`:
@@ -139,3 +189,15 @@ demo video").
 Run this skill again when the app's sign-in, routes or start-up state change,
 or when `PROJECT.md` no longer matches the code: update the affected sections
 and helpers, then repeat step 4.
+
+For a live site, the routine is:
+
+1. `node <folder>/.kit/cli.ts explore --diff`: explores every page in the
+   baseline (`explore/site.json`) and lists what changed: pages gone or
+   redirecting, controls added, removed or renamed, test hooks removed,
+   headings and menu links changed. Show the user the list.
+2. Fix the affected helpers and `PROJECT.md` sections, then run every
+   scenario in test mode.
+3. With the user's OK, `explore --accept` updates the baseline; the user
+   commits it with the fixes. If `test` fails with "the saved session has
+   expired", save it again (`session`, or `session --manual` by the user).

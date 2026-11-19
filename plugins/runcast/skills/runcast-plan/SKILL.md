@@ -27,9 +27,15 @@ other `scenarios/*.md` files.
 - **Do not ask what you can find out.** Screen names, buttons, fields and page
   transitions are in the app's code and in `PROJECT.md`. Look there first;
   ask the user only for **decisions** (what to show, which name, which value).
-- **Do not invent.** For a screen or action you cannot find in the code, ask
-  "I could not find this in the code — how is it done on screen?" or ask for a
-  screenshot.
+  For a live site (`PROJECT.md` > "Source": live site, no code), "the code"
+  below means the explore output: `.explore/summary.md` and
+  `.explore/pages/<page>/` (`page.json`, `aria.yml`). For a page not explored
+  yet, run `node <recording folder>/.kit/cli.ts explore <path>`; for one only
+  a person can reach (behind a menu, a wizard step, a dialog), ask the user to
+  run `explore --headed` and browse to it, then close the window.
+- **Do not invent.** For a screen or action you cannot find in the code (or
+  the explore output), ask "I could not find this — how is it done on
+  screen?" or ask for a screenshot.
 - **Save the draft early.** As soon as the goal is clear, create
   `scenarios/<name>.md` from the template and update it after every phase, so
   nothing is lost if the conversation stops.
@@ -148,12 +154,16 @@ list in dependency order: first the records others use.
 **c) For each record ask: "Use an existing one, or create a new one?"**
 
 - **Existing:** ask which one (its name). If the user does not know, tell them
-  where to look in the app (`PROJECT.md`, the "List" column).
+  where to look in the app (`PROJECT.md`, the "List" column). On a live site
+  explore hides record names (`…`), so always ask; prefer existing records
+  there, since the site holds real data.
 - **New:** ask for the fields of **the form on its add screen**. Read the
   fields, required ones and limits from the code (`PROJECT.md` > "Finding a
   screen's form"; known forms are listed there) and suggest a value for each.
   For multi-step forms (e.g. choose a type, then that type's form) ask for the
-  type first.
+  type first. On a live site, a step that creates a record also says how it
+  is removed afterwards (a delete step at the end, or by hand), so no test
+  data is left behind.
 - **"I'll give the name, you fill in the rest":** the user may give only a
   name. Fill the other fields yourself: descriptions realistic, matching the
   name and the video's goal and within the limits (e.g. "Northwind Traders"

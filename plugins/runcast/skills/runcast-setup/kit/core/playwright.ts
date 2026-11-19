@@ -13,6 +13,7 @@ import {
   TAB_CAPTURE_IGNORED_ARGS,
 } from "./tab-capture.ts";
 import { ensureDisplay } from "./xvfb.ts";
+import { noSessionMessage, readSession, storageStateFor, type StorageState } from "./session.ts";
 
 export async function definePlaywrightConfig(project: ProjectConfig) {
   // Workers and the scripts find the project through this.
@@ -63,6 +64,18 @@ export async function definePlaywrightConfig(project: ProjectConfig) {
       value,
     }),
   );
+  // REC_SESSION=1: every scenario starts signed in, from the saved session.
+  let storageState: StorageState = {
+    cookies: [],
+    origins: [{ origin, localStorage }],
+  };
+  if (process.env.REC_SESSION === "1") {
+    // The login scenario drops the session's entries but keeps these (core/scenario.ts).
+    process.env.REC_SEED_KEYS = JSON.stringify(Object.keys(project.localStorage ?? {}));
+    const session = readSession(project.dir);
+    if (!session) throw new Error(noSessionMessage(project.dir));
+    storageState = storageStateFor(session, project.baseURL, project.localStorage ?? {});
+  }
 
   // One test at a time, no retries: scenarios write to a real backend, and a
   // retry would repeat those writes (and land in the same video).
@@ -87,7 +100,7 @@ export async function definePlaywrightConfig(project: ProjectConfig) {
           : channel,
       locale: project.locale ?? "en-US",
       colorScheme: project.colorScheme,
-      storageState: { cookies: [], origins: [{ origin, localStorage }] },
+      storageState,
       headless: settings.headless,
       // Video mode: null = the page fills the real window, which the recorder
       // sizes (tab capture records the window's surface, so it must not be
