@@ -56,6 +56,27 @@ test("controls are read without values", async () => {
   assert.ok(s.redacted.values >= 2);
 });
 
+test("ids a framework generates are left out of controls", async () => {
+  site.set(
+    "/ids",
+    "Ids",
+    `<h1>Ids</h1><form aria-label="Ids">
+      <label for="customer-name">Name</label><input id="customer-name">
+      <label for="address-line-2">Address line 2</label><input id="address-line-2">
+      <label for=":r1:">A</label><input id=":r1:">
+      <label for="mat-input-12">B</label><input id="mat-input-12">
+      <label for="ember1234">C</label><input id="ember1234">
+      <label for="f-3f2a9c1e-77b4-4d0e-9a51-0c2b8e6d4f10">D</label><input id="f-3f2a9c1e-77b4-4d0e-9a51-0c2b8e6d4f10">
+      <label for="headlessui-input-7">E</label><input id="headlessui-input-7">
+    </form>`,
+  );
+  const s = await snap("/ids");
+  assert.deepEqual(
+    s.controls.map((c) => c.id ?? null),
+    ["customer-name", "address-line-2", null, null, null, null, null],
+  );
+});
+
 test("links are grouped, data links hidden, skipped links listed", async () => {
   const s = await snap("/app/customers");
   const nav = s.links.filter((l) => l.landmark === "nav").map((l) => l.name);
@@ -67,7 +88,9 @@ test("links are grouped, data links hidden, skipped links listed", async () => {
   assert.ok(s.links.some((l) => l.key === "/app/customers?page=:v" && l.name === "Next page"));
   const skipped = s.skipped.map((l) => [l.href, l.reason]);
   assert.ok(skipped.some(([h, r]) => String(h).endsWith("/logout") && r === "pattern"));
-  assert.ok(skipped.some(([h, r]) => String(h).endsWith("/delete") && r === "pattern"));
+  // The row's delete link: listed, without the record's address.
+  assert.ok(skipped.some(([h, r]) => h === "…" && r === "pattern"));
+  assert.ok(!skipped.some(([h]) => String(h).includes("/customers/")));
   assert.ok(skipped.some(([, r]) => r === "scheme"));
   assert.ok(s.hooks.includes("customer-table"));
   const json = JSON.stringify(s);

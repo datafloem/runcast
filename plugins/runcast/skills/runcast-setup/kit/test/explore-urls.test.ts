@@ -72,6 +72,14 @@ test("slugs keep letters of any script", () => {
   assert.notEqual(slugFor(long), slugFor(`${long}b`));
 });
 
+test("slugs keep combining marks and avoid names Windows reserves", () => {
+  // कि is क plus a vowel sign (a combining mark), not क followed by "_".
+  assert.equal(slugFor("/कि"), "कि");
+  assert.notEqual(slugFor("/कि"), slugFor("/क"));
+  for (const reserved of ["/con", "/CON", "/nul", "/com1", "/lpt9", "/aux", "/prn"])
+    assert.doesNotMatch(slugFor(reserved), /^(con|prn|aux|nul|com\d|lpt\d)$/i, reserved);
+});
+
 test("links that act are skipped by name, verb or method", () => {
   const skip = (href: string, o: { name?: string; method?: boolean } = {}) =>
     skipReason(href, { download: false, base, ...o });

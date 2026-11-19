@@ -416,6 +416,7 @@ finds to `.explore/`:
 ```bash
 node tests/recording/.kit/cli.ts explore /customers/new      # one page
 node tests/recording/.kit/cli.ts explore --crawl --mobile    # from /, two links deep, max 30 pages
+node tests/recording/.kit/cli.ts explore /orders --crawl=1 --max 10   # one link deep from /orders
 node tests/recording/.kit/cli.ts explore --headed            # you browse; every page you reach is taken
 ```
 
@@ -423,14 +424,15 @@ node tests/recording/.kit/cli.ts explore --headed            # you browse; every
   crawl follows same-origin links inside the base URL and skips links that
   look like actions (`logout`, `delete`, `remove`, ...; add your own with
   `--skip <regex>`), downloads and `mailto:`/`tel:`; each skipped link is
-  listed. A page that lands on another origin or shows a password field is
+  listed (a link inside displayed data without its address, once per kind). A page that lands on another origin or shows a password field is
   reported as a sign-in page and not followed. Pages whose network or DOM
   never settles (polling, streams) are taken after 10 s + 5 s and marked.
 - **Per page** (`.explore/pages/<page>/`): `page.json` (controls with role,
   accessible name, label, `name`, type, required, limits, `<select>`
   options and test hooks; links by landmark; headings; localStorage,
   sessionStorage and cookie *names*; brand colours and logo; same-origin
-  frames), `aria.yml` (the accessibility tree), `screenshot.png` and, with
+  frames; ids a framework makes up, like `:r1:` or `mat-input-12`, are left
+  out), `aria.yml` (the accessibility tree), `screenshot.png` and, with
   `--mobile`, `mobile.png` and a 540×960 overflow check. `.explore/summary.md`
   is the overview. Record ids in URLs become `:id` and query values `:v`,
   so a list of 500 records is one page.
@@ -440,12 +442,15 @@ node tests/recording/.kit/cli.ts explore --headed            # you browse; every
   main heading of a record's page (`/customers/:id`). Column headers, menus,
   buttons, labels and `<select>` options stay. **Screenshots are not
   redacted**; `.explore/` is gitignored.
-- **Runs.** Each run is kept in `.explore/runs/<time>/` (the last ten);
-  `.explore/pages/` holds the newest snapshot of every page explored, so a
-  one-page run does not hide the rest. `--forget <path>` drops a page.
-- **Baseline and changes.** `explore --accept` writes the newest run's
-  structure (pages, headings, menus, controls, test hooks; no data, values
-  or screenshots) to `explore/site.json`, which you commit.
+- **Runs.** Each run is kept in `.explore/runs/<time>/` (the last ten), with
+  `run.json` (paths, settings, kit version); `.explore/pages/` holds the
+  newest snapshot of every page explored, so a one-page run does not hide
+  the rest. A page that answers 404 or 410 leaves it (its run keeps it);
+  `--forget <path>` drops a page by hand.
+- **Baseline and changes.** `explore --accept`, on its own after you have
+  reviewed a run or its diff, writes the newest run's structure (pages,
+  headings, menus, controls, test hooks; no data, values or screenshots) to
+  `explore/site.json`, which you commit.
   `explore --diff` explores the baseline's pages again (or the paths given)
   and writes `.explore/diff.md`: pages added, gone or redirecting, controls
   added, removed or changed, test hooks removed, headings and menu links

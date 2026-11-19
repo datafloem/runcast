@@ -70,17 +70,33 @@ export function urlForKey(key: string, base: Base): string {
   return `${base.origin}${base.basePath}${key.replace(/^\//, "")}`;
 }
 
-/** A folder name for a key, safe on every file system. */
+/** Names Windows will not use for a file or folder. */
+const RESERVED = /^(con|prn|aux|nul|com\d|lpt\d)$/i;
+
+const shortHash = (key: string) => createHash("sha1").update(key).digest("hex").slice(0, 8);
+
+/**
+ * A readable folder name for a key, safe on every file system. Two keys can
+ * share one (/a.b and /a/b, /About and /about on a case-insensitive disk):
+ * folders are handed out with uniqueSlug.
+ */
 export function slugFor(key: string): string {
   if (key === "/") return "_root";
   const slug = key
     .normalize("NFC")
-    .replace(/[^\p{L}\p{N}-]/gu, "_")
+    .replace(/[^\p{L}\p{M}\p{N}-]/gu, "_")
     .replace(/_+/g, "_")
     .replace(/^_|_$/g, "");
+  if (RESERVED.test(slug)) return `${slug}_`;
   if (slug.length <= 80) return slug || "_root";
-  const hash = createHash("sha1").update(key).digest("hex").slice(0, 8);
-  return `${slug.slice(0, 80)}-${hash}`;
+  return `${slug.slice(0, 80)}-${shortHash(key)}`;
+}
+
+/** slugFor, or with the key's hash when another key already has that folder (any case). */
+export function uniqueSlug(key: string, taken: Set<string>): string {
+  const slug = slugFor(key);
+  if (!taken.has(slug.toLowerCase())) return slug;
+  return `${slug.slice(0, 80)}-${shortHash(key)}`;
 }
 
 /** Links whose name or address suggests an action: never followed. */

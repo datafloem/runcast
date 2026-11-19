@@ -3,7 +3,7 @@
 // stops the run. A real Playwright run of a made-up project.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { after, before, test } from "node:test";
@@ -86,6 +86,36 @@ function playwright(
     child.on("close", (status) => resolve({ status, stdout, stderr }));
   });
 }
+
+test("session runs only scenarios/login.spec.ts", () => {
+  // A copy of the project with a runtime the CLI accepts (the kit, linked,
+  // plus the marker setup writes) and another scenario whose name ends in
+  // login.spec.ts, which must not run.
+  const copy = mkdtempSync(path.join(tmpdir(), "runcast-session-filter-"));
+  try {
+    const runtime = path.join(copy, "runtime");
+    mkdirSync(runtime);
+    for (const entry of readdirSync(KIT)) symlinkSync(path.join(KIT, entry), path.join(runtime, entry));
+    writeFileSync(path.join(runtime, ".runtime.json"), "{}");
+    const dir = path.join(copy, "rec");
+    cpSync(project, dir, { recursive: true, filter: (src) => !src.endsWith(`${path.sep}.kit`) && !src.includes(".auth") });
+    symlinkSync(runtime, path.join(dir, ".kit"), "dir");
+    writeFileSync(
+      path.join(dir, "scenarios", "admin-login.spec.ts"),
+      `import { scenario, test } from "../kit.ts";\ntest("admin login", scenario({ steps: [] }));\n`,
+    );
+    const { REC_PROJECT: _project, ...env } = process.env;
+    const run = spawnSync(process.execPath, [path.join(dir, ".kit", "cli.ts"), "session", "--list"], {
+      encoding: "utf-8",
+      env,
+    });
+    assert.equal(run.status, 0, `${run.stdout}\n${run.stderr}`);
+    assert.match(run.stdout, /login\.spec\.ts/);
+    assert.doesNotMatch(run.stdout, /admin-login/);
+  } finally {
+    rmSync(copy, { recursive: true, force: true });
+  }
+});
 
 test("the login scenario saves the session", async () => {
   const run = await playwright("login.spec.ts", { REC_SESSION: "0", REC_SAVE_SESSION: "1" });

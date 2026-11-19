@@ -117,8 +117,8 @@ your computer, only when you or your assistant run the command named.
 - `.explore/` (`explore`): per page the structure (controls, links,
   headings, test hooks, brand colours), the accessibility tree with control
   values and displayed data removed, localStorage, sessionStorage and cookie
-  names without values, and screenshots (not redacted). The last ten runs
-  are kept.
+  names without values, screenshots (not redacted), and each run's settings
+  (base URL and options). The last ten runs are kept.
 - `explore/site.json` (`explore --accept`): the site's structure only (no
   data, values or screenshots), meant to be committed so `explore --diff`
   works anywhere. Not gitignored.

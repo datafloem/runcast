@@ -45,7 +45,10 @@ export async function snapshotPage(
       method: link.method,
     });
     if (reason) {
-      skipped.push({ name, href: link.data && reason === "scheme" ? HIDDEN : link.href, reason });
+      // A link in displayed data points at a record (or a person's address).
+      const href = link.data ? HIDDEN : link.href;
+      if (!skipped.some((s) => s.name === name && s.href === href && s.reason === reason))
+        skipped.push({ name, href, reason });
       continue;
     }
     // The URL is for the crawl only; page.json leaves it out (output.ts).
@@ -74,7 +77,7 @@ export async function snapshotPage(
     signIn,
     headings: dom.headings.map((h) => (recordPage && h.level === 1 ? HIDDEN : h.text)),
     aria: aria.text,
-    controls: dom.controls,
+    controls: dom.controls.map(withoutGeneratedId),
     links,
     skipped,
     hooks: dom.hooks,
@@ -83,6 +86,19 @@ export async function snapshotPage(
     frames: await framesOf(page, finalUrl),
     redacted: aria.counts,
   };
+}
+
+/**
+ * Ids a framework makes up (React's ":r1:", "mat-input-12", "ember1234", a
+ * uuid) change between page loads and builds: no selector, no baseline key.
+ */
+const GENERATED_ID =
+  /:|\d{3,}|[0-9a-f]{8}-[0-9a-f]{4}-|^(mat|mui|radix|headlessui|react-select|downshift|rc|el-id|cdk|ng|v)[-_]/i;
+
+function withoutGeneratedId(control: Control): Control {
+  if (!control.id || !GENERATED_ID.test(control.id)) return control;
+  const { id: _id, ...rest } = control;
+  return rest;
 }
 
 /**
@@ -124,7 +140,7 @@ async function framesOf(page: Page, pageUrl: string): Promise<Array<FrameInfo>> 
     if (info.sameOrigin) {
       try {
         info.aria = redactAria(await frame.locator("body").ariaSnapshot()).text;
-        info.controls = (await frame.evaluate(extractDom)).controls as Array<Control>;
+        info.controls = ((await frame.evaluate(extractDom)).controls as Array<Control>).map(withoutGeneratedId);
       } catch {
         // A frame that navigated away while being read.
       }

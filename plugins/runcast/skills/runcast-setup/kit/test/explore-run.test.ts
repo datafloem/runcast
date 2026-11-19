@@ -6,6 +6,7 @@ import path from "node:path";
 import { after, before, beforeEach, test } from "node:test";
 import { explore, parseExploreArgs, type ExploreOptions } from "../scripts/explore/run.ts";
 import type { ProjectConfig } from "../core/project.ts";
+import { writeSession } from "../core/session.ts";
 import { startSite, type Site } from "./explore/server.ts";
 
 let site: Site;
@@ -39,6 +40,99 @@ test("arguments are parsed", () => {
   assert.equal(String(parseExploreArgs(["--skip", "archive"]).skip), "/archive/i");
   assert.equal(parseExploreArgs(["--forget", "/a"]).forget, "/a");
   assert.equal(parseExploreArgs(["--mobile", "--diff"]).mobile, true);
+});
+
+test("depth 0 means only the given pages, and bad numbers are refused", () => {
+  assert.equal(parseExploreArgs(["/a", "--crawl=0"]).crawl, null);
+  for (const bad of [["--crawl=-1"], ["--crawl=two"], ["--max", "0"], ["--max", "many"], ["--max", "2.5"]])
+    assert.throws(() => parseExploreArgs(bad), /whole number/, bad.join(" "));
+});
+
+test("--accept refuses options it would ignore", () => {
+  assert.equal(parseExploreArgs(["--accept"]).accept, true);
+  assert.equal(parseExploreArgs(["--accept", "--no-session"]).accept, true);
+  for (const extra of [["--diff"], ["/a"], ["--crawl"], ["--mobile"], ["--headed"], ["--max", "5"], ["--skip", "x"], ["--forget", "/a"]])
+    assert.throws(() => parseExploreArgs(["--accept", ...extra]), /--accept/, extra.join(" "));
+});
+
+test("run.json records the settings", async () => {
+  const result = await explore(project, options({ paths: ["/help"], max: 5, skip: /archive/i }));
+  const info = JSON.parse(readFileSync(path.join(result.runDir, "run.json"), "utf-8")) as {
+    settings: Record<string, unknown>;
+  };
+  assert.deepEqual(
+    { ...info.settings, channel: undefined },
+    {
+      baseURL: site.url,
+      crawl: null,
+      max: 5,
+      skip: "archive",
+      session: false,
+      headed: false,
+      mobile: false,
+      diff: false,
+      channel: undefined,
+    },
+  );
+});
+
+test("pages whose names differ only in case or punctuation get their own folders", async () => {
+  site.set("/About", "Upper", "<h1>Upper</h1>");
+  site.set("/about", "Lower", "<h1>Lower</h1>");
+  site.set("/a.b", "Dotted", "<h1>Dotted</h1>");
+  site.set("/a/b", "Nested", "<h1>Nested</h1>");
+  await explore(project, options({ paths: ["/About", "/about", "/a.b", "/a/b"] }));
+  const entries = index() as Record<string, { slug: string }>;
+  const slugs = ["/About", "/about", "/a.b", "/a/b"].map((k) => entries[k]!.slug.toLowerCase());
+  assert.equal(new Set(slugs).size, 4, slugs.join(", "));
+  const title = (key: string) =>
+    (JSON.parse(readFileSync(path.join(dir, ".explore", "pages", entries[key]!.slug, "page.json"), "utf-8")) as {
+      title: string;
+    }).title;
+  // The layout adds the app's name to every title.
+  assert.deepEqual(
+    ["/About", "/about", "/a.b", "/a/b"].map((k) => title(k).split(" – ")[0]),
+    ["Upper", "Lower", "Dotted", "Nested"],
+  );
+});
+
+test("the summary lists sessionStorage keys on their own", async () => {
+  site.set("/wizard", "Wizard", "<h1>Wizard</h1><script>sessionStorage.setItem('wizard-step', '2')</script>");
+  await explore(project, options({ paths: ["/wizard"] }));
+  assert.match(readFileSync(path.join(dir, ".explore", "summary.md"), "utf-8"), /wizard-step/);
+});
+
+test("skipped links in data keep neither their address nor repeats", async () => {
+  site.set(
+    "/rows",
+    "Rows",
+    `<h1>Rows</h1><table><tr><th>Name</th><th></th></tr>
+     <tr><td>Ada</td><td><a href="/customers/ada-lovelace/delete">Delete</a> <a href="https://ada-lovelace.example/">Site</a></td></tr>
+     <tr><td>Alan</td><td><a href="/customers/alan-turing/delete">Delete</a> <a href="https://alan-turing.example/">Site</a></td></tr></table>`,
+  );
+  await explore(project, options({ paths: ["/rows"] }));
+  const pageJson = readFileSync(path.join(dir, ".explore", "pages", "rows", "page.json"), "utf-8");
+  const text = pageJson + readFileSync(path.join(dir, ".explore", "summary.md"), "utf-8");
+  assert.doesNotMatch(text, /ada-lovelace|alan-turing/);
+  // One entry per kind, not one per row (the layout's own skipped links aside).
+  const skipped = (JSON.parse(pageJson) as { skipped: Array<{ href: string; reason: string }> }).skipped;
+  assert.deepEqual(skipped.filter((s) => s.href === "…").map((s) => s.reason).sort(), ["other-origin", "pattern"]);
+});
+
+test("--headed knows the saved sign-in page", async () => {
+  writeSession(dir, {
+    version: 1,
+    savedAt: new Date().toISOString(),
+    signIn: { origin: new URL(site.url).origin, pathPattern: "/help" },
+    storageState: { cookies: [], origins: [] },
+    sessionStorage: [],
+  });
+  const result = await explore(project, options({ paths: ["/help"], headed: true, session: true }), {
+    headless: true,
+    stop: Promise.resolve(),
+  });
+  assert.equal(result.pages[0]?.key, "/help");
+  assert.equal(result.pages[0]?.signIn, true);
 });
 
 test("explore writes a run and a merged view", async () => {
@@ -148,6 +242,8 @@ test("records addressed by name collapse to one page", async () => {
       <tr><td><a href="/app/people/grace-hopper" data-testid="person-row-2">Grace</a></td></tr>
     </tbody></table><a href="/app/people/new">New person</a>`,
   );
+  site.set("/app/people/ada-lovelace", "Ada Lovelace", "<h1>Ada Lovelace</h1>");
+  site.set("/app/people/grace-hopper", "Grace Hopper", "<h1>Grace Hopper</h1>");
   const result = await explore(project, options({ paths: ["/app/people"], crawl: 1 }));
   const keys = result.pages.map((p) => p.key);
   assert.deepEqual(keys.filter((k) => k.startsWith("/app/people/")).sort(), ["/app/people/:id", "/app/people/new"]);

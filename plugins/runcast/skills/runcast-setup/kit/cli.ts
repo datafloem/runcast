@@ -448,7 +448,9 @@ function session(): never {
   // The login scenario must sign in itself, even when .env.local says REC_SESSION=1.
   process.env.REC_SESSION = "0";
   process.env.REC_SAVE_SESSION = "1";
-  playwright("test", ["login.spec.ts", ...passThrough]);
+  // A file argument is a pattern Playwright looks for anywhere in the path:
+  // "login.spec.ts" alone would also run admin-login.spec.ts.
+  playwright("test", ["/scenarios/login\\.spec\\.ts$", ...passThrough]);
 }
 
 function script(parts: Array<string>, extra: Array<string>): never {

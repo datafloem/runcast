@@ -12,7 +12,7 @@ import {
 } from "node:fs";
 import path from "node:path";
 import type { PageSnapshot } from "./types.ts";
-import { slugFor } from "./urls.ts";
+import { uniqueSlug } from "./urls.ts";
 
 const KEEP_RUNS = 10;
 
@@ -20,7 +20,12 @@ export interface RunInfo {
   paths: Array<string>;
   crawl: number | null;
   kitVersion: string;
+  /** The options and project settings the run used. */
+  settings: Record<string, unknown>;
 }
+
+/** Answers that mean the page no longer exists: it leaves the merged view. */
+const GONE = new Set([404, 410]);
 
 export interface Shots {
   screenshot: Buffer;
@@ -86,14 +91,26 @@ export function writeRun(
     path.join(runDir, "run.json"),
     `${JSON.stringify({ ...info, at: new Date().toISOString(), pages: pages.map((p) => p.key) }, null, 2)}\n`,
   );
-  for (const page of pages) writePage(path.join(runDir, "pages", slugFor(page.key)), page, shots.get(page.key));
+  const index = readIndex(dir);
+  // A page keeps its folder; a new one gets a folder no other key has.
+  const taken = new Set(Object.values(index).map((e) => e.slug.toLowerCase()));
+  const slugs = new Map<string, string>();
+  for (const page of pages) {
+    const slug = index[page.key]?.slug ?? uniqueSlug(page.key, taken);
+    taken.add(slug.toLowerCase());
+    slugs.set(page.key, slug);
+    writePage(path.join(runDir, "pages", slug), page, shots.get(page.key));
+  }
   writeFileSync(path.join(runDir, "summary.md"), renderSummary(pages));
 
-  const index = readIndex(dir);
   for (const page of pages) {
-    const slug = slugFor(page.key);
+    const slug = slugs.get(page.key)!;
     const merged = path.join(exploreDir(dir), "pages", slug);
     rmSync(merged, { recursive: true, force: true });
+    if (page.status !== null && GONE.has(page.status)) {
+      delete index[page.key];
+      continue;
+    }
     cpSync(path.join(runDir, "pages", slug), merged, { recursive: true });
     index[page.key] = { slug, run: name, url: page.url };
   }
@@ -171,9 +188,10 @@ export function renderSummary(pages: Array<PageSnapshot>): string {
     if (r.rows || r.cells || r.items)
       out.push(`- **Data hidden:** ${r.rows} rows, ${r.cells} cells, ${r.items} items`);
     if (p.hooks.length) out.push(`- **Test hooks:** ${p.hooks.join(", ")}`);
-    if (p.storage.local.length || p.storage.cookies.length)
+    const { local, session, cookies } = p.storage;
+    if (local.length || session.length || cookies.length)
       out.push(
-        `- **Storage keys:** ${[...p.storage.local, ...p.storage.session].join(", ") || "none"}; cookies: ${p.storage.cookies.join(", ") || "none"}`,
+        `- **Storage keys:** localStorage: ${local.join(", ") || "none"}; sessionStorage: ${session.join(", ") || "none"}; cookies: ${cookies.join(", ") || "none"}`,
       );
     if (p.mobile)
       out.push(

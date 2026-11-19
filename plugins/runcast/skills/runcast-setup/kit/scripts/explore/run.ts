@@ -61,7 +61,19 @@ export interface ExploreResult {
 const DEFAULT_DEPTH = 2;
 const DEFAULT_MAX = 30;
 
+/** A whole number of at least `min`, or an error naming the option. */
+function wholeNumber(option: string, text: string, min: number): number {
+  const n = Number(text);
+  if (!/^\d+$/.test(text) || n < min)
+    throw new Error(`${option} needs a whole number${min ? ` of at least ${min}` : ""} (got "${text}").`);
+  return n;
+}
+
+/** Options --accept does not use: it only writes the newest run into the baseline. */
+const NOT_WITH_ACCEPT = ["--crawl", "--max", "--skip", "--headed", "--mobile", "--diff", "--forget"];
+
 export function parseExploreArgs(argv: Array<string>): ExploreOptions {
+  const used: Array<string> = [];
   const options: ExploreOptions = {
     paths: [],
     crawl: null,
@@ -79,9 +91,11 @@ export function parseExploreArgs(argv: Array<string>): ExploreOptions {
       if (v === undefined) throw new Error(`${arg} needs a value.`);
       return v;
     };
+    used.push(arg.startsWith("--crawl=") ? "--crawl" : arg);
     if (arg === "--crawl") options.crawl = DEFAULT_DEPTH;
-    else if (arg.startsWith("--crawl=")) options.crawl = Number(arg.slice(8)) || DEFAULT_DEPTH;
-    else if (arg === "--max") options.max = Number(value()) || DEFAULT_MAX;
+    // Depth 0 follows no links: only the given pages, as without --crawl.
+    else if (arg.startsWith("--crawl=")) options.crawl = wholeNumber("--crawl", arg.slice(8), 0) || null;
+    else if (arg === "--max") options.max = wholeNumber("--max", value(), 1);
     else if (arg === "--skip") options.skip = new RegExp(value(), "i");
     else if (arg === "--no-session") options.session = false;
     else if (arg === "--session") options.session = true;
@@ -92,6 +106,14 @@ export function parseExploreArgs(argv: Array<string>): ExploreOptions {
     else if (arg === "--forget") options.forget = value();
     else if (arg.startsWith("--")) throw new Error(`Unknown option ${arg}.`);
     else options.paths.push(arg);
+  }
+  if (options.accept) {
+    const extra = [...used.filter((a) => NOT_WITH_ACCEPT.includes(a)), ...options.paths];
+    if (extra.length)
+      throw new Error(
+        `--accept takes no other options (got ${extra.join(", ")}): run explore or explore --diff, ` +
+          "review what it found, then run explore --accept on its own.",
+      );
   }
   return options;
 }
@@ -149,7 +171,8 @@ export async function openBrowser(
 export async function explore(
   project: ProjectConfig,
   options: ExploreOptions,
-  launch: { headless?: boolean } = {},
+  /** stop ends --headed instead of the window closing (or Enter). */
+  launch: { headless?: boolean; stop?: Promise<void> } = {},
 ): Promise<ExploreResult> {
   const base = resolveBase(project.baseURL);
   const nothing: ExploreResult = { runDir: "", pages: [], needsSession: [], unsettled: [], failed: [] };
@@ -160,7 +183,8 @@ export async function explore(
     if (!forgetPage(project.dir, key)) console.log(`${key} is not in the explored pages.`);
     if (!options.paths.length && !options.diff) return nothing;
   }
-  if (options.accept && !options.diff && !options.paths.length) {
+  // parseExploreArgs makes sure --accept comes alone.
+  if (options.accept) {
     const { diff } = acceptLatest(project.dir, base, startKeysOf);
     return { ...nothing, diff };
   }
@@ -211,12 +235,13 @@ export async function explore(
             requestedUrl: current,
             baseURL: project.baseURL,
             extraSkip: options.skip,
+            signIn: session?.signIn,
           });
           byKey.set(snapshot.key, snapshot);
           shots.set(snapshot.key, { screenshot: await page.screenshot() });
           console.log(`  ${snapshot.key}`);
         },
-        enterPressed(),
+        launch.stop ?? enterPressed(),
       );
       pages.push(...byKey.values());
     }
@@ -267,7 +292,22 @@ export async function explore(
 
   const runDir = writeRun(
     project.dir,
-    { paths: options.paths, crawl: options.crawl, kitVersion: kitVersion() },
+    {
+      paths: options.paths,
+      crawl: options.crawl,
+      kitVersion: kitVersion(),
+      settings: {
+        baseURL: project.baseURL,
+        crawl: options.crawl,
+        max: options.max,
+        skip: options.skip?.source ?? null,
+        session: options.session,
+        headed: options.headed,
+        mobile: options.mobile,
+        diff: options.diff,
+        channel: process.env.REC_CHANNEL ?? "chrome",
+      },
+    },
     pages,
     shots,
   );

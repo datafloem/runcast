@@ -117,6 +117,25 @@ test("a page that now answers 404 is gone", async () => {
   assert.deepEqual(result.diff?.removed, ["/help"]);
 });
 
+test("a page found gone leaves the merged view, not the run", async () => {
+  await run({ paths: ["/help", "/"] });
+  site.gone("/help");
+  const result = await run({ paths: ["/help"] });
+  const index = JSON.parse(readFileSync(path.join(dir, ".explore", "index.json"), "utf-8")) as Record<string, unknown>;
+  assert.deepEqual(Object.keys(index), ["/"]);
+  assert.ok(!existsSync(path.join(dir, ".explore", "pages", "help")));
+  assert.doesNotMatch(readFileSync(path.join(dir, ".explore", "summary.md"), "utf-8"), /## \/help/);
+  assert.ok(existsSync(path.join(result.runDir, "pages", "help", "page.json")), "the run keeps what it saw");
+});
+
+test("--diff re-checks every baseline page, whatever --max says", async () => {
+  await run({ paths: ["/help", "/", "/app/customers/new"] });
+  await run({ accept: true });
+  const result = await run({ paths: [], diff: true, max: 1 });
+  assert.equal(result.pages.length, 3);
+  assert.deepEqual(result.diff?.notChecked, []);
+});
+
 test("sample URLs keep no search terms", async () => {
   site.set("/search", "Search", "<h1>Search</h1>");
   await run({ paths: ["/search?q=Ada%20Lovelace", "/app/customers?page=2"] });
