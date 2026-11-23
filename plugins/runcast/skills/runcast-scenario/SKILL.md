@@ -343,6 +343,9 @@ element, a wrong record, a stray window).
    `rec.pause(ms, { live: true })`): it is recorded in real time. The kit
    also notices a page that still changes and records that pause live, with
    a warning naming the step; turn each such warning into `rec.watch`.
+   Take no screenshots scaled to CSS pixels in a scenario
+   (`page.screenshot({ scale: "css" })`, `toHaveScreenshot`): during a video
+   take each one records a blank grey frame (a white blink).
    Animated explainers belong in a kit scene (`steps.scene`).
 6. **Changing values are settings.** Names, sources, conditions come from
    `.env.local`: `const env = (name, fallback = "") => process.env[name] ?? fallback`.

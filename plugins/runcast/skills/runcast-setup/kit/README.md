@@ -502,7 +502,11 @@ Steps and helpers move through `rec`, never `page.click`:
 - `rec.pause(ms)`: time for the viewer to read (skipped in tests). Video
   mode records it short and holds the last frame; if the page still changes
   then (an animation, a video, a canvas) the pause is recorded in real time
-  and a warning names the step.
+  and a warning names the step. It compares two page screenshots taken at
+  device pixels: one scaled to CSS pixels (`page.screenshot({ scale: "css" })`,
+  `toHaveScreenshot`) makes Chrome redraw the tab at a device scale above 1,
+  and tab capture records a blank grey frame of it (a white blink in a dark
+  video), so scenarios take none of those during a video take.
 - `rec.watch(ms)` (or `rec.pause(ms, { live: true })`): a pause while
   something moves on the page, always recorded in real time.
 - `rec.show(locator, { ms, transition })`: points the camera at an element

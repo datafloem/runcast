@@ -1177,7 +1177,10 @@ export class Recorder {
       .catch(() => null);
     if (reason) return reason;
     try {
-      const shot = () => this.page.screenshot({ type: "jpeg", quality: 40, scale: "css", caret: "hide" });
+      // At device pixels: a screenshot scaled to CSS pixels (at a device
+      // scale above 1) makes Chrome re-render the tab's surface, and the tab
+      // capture records a blank grey frame of it.
+      const shot = () => this.page.screenshot({ type: "jpeg", quality: 40, scale: "device", caret: "hide" });
       const first = await shot();
       await sleep(CHANGE_PROBE_MS);
       const second = await shot();
