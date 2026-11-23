@@ -119,7 +119,8 @@ export function skipReason(
   opts: {
     download: boolean;
     base: Base;
-    extra?: RegExp;
+    /** Extra text that marks an action, lower case; looked for as it is, not as a pattern. */
+    extra?: Array<string>;
     /** The link's text: "Approve" acts even when its address does not say so. */
     name?: string;
     /** The link sends a request other than GET (data-method, data-turbo-method, data-confirm). */
@@ -140,6 +141,6 @@ export function skipReason(
   const target = `${url.pathname}${url.search}${url.hash}`;
   if (opts.method) return "pattern";
   for (const text of [target, opts.name ?? ""])
-    if (DEFAULT_SKIP.test(text) || opts.extra?.test(text)) return "pattern";
+    if (DEFAULT_SKIP.test(text) || opts.extra?.some((t) => text.toLowerCase().includes(t))) return "pattern";
   return null;
 }

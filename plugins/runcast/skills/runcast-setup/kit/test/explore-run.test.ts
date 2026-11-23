@@ -37,7 +37,7 @@ test("arguments are parsed", () => {
   assert.equal(parseExploreArgs([]).max, 30);
   assert.deepEqual(parseExploreArgs(["/a", "/b"]).paths, ["/a", "/b"]);
   assert.equal(parseExploreArgs(["--no-session"]).session, false);
-  assert.equal(String(parseExploreArgs(["--skip", "archive"]).skip), "/archive/i");
+  assert.deepEqual(parseExploreArgs(["--skip", "Archive", "--skip", "/billing"]).skip, ["archive", "/billing"]);
   assert.equal(parseExploreArgs(["--forget", "/a"]).forget, "/a");
   assert.equal(parseExploreArgs(["--mobile", "--diff"]).mobile, true);
 });
@@ -56,7 +56,7 @@ test("--accept refuses options it would ignore", () => {
 });
 
 test("run.json records the settings", async () => {
-  const result = await explore(project, options({ paths: ["/help"], max: 5, skip: /archive/i }));
+  const result = await explore(project, options({ paths: ["/help"], max: 5, skip: ["archive"] }));
   const info = JSON.parse(readFileSync(path.join(result.runDir, "run.json"), "utf-8")) as {
     settings: Record<string, unknown>;
   };
@@ -66,7 +66,7 @@ test("run.json records the settings", async () => {
       baseURL: site.url,
       crawl: null,
       max: 5,
-      skip: "archive",
+      skip: ["archive"],
       session: false,
       headed: false,
       mobile: false,
@@ -100,6 +100,24 @@ test("the summary lists sessionStorage keys on their own", async () => {
   site.set("/wizard", "Wizard", "<h1>Wizard</h1><script>sessionStorage.setItem('wizard-step', '2')</script>");
   await explore(project, options({ paths: ["/wizard"] }));
   assert.match(readFileSync(path.join(dir, ".explore", "summary.md"), "utf-8"), /wizard-step/);
+});
+
+test("control names with | or \\ keep the summary's table intact", async () => {
+  site.set(
+    "/odd",
+    "Odd",
+    `<h1>Odd</h1><form aria-label="Odd \\ form"><label>Path a\\|b <input name="p"></label></form>`,
+  );
+  await explore(project, options({ paths: ["/odd"] }));
+  const row = readFileSync(path.join(dir, ".explore", "summary.md"), "utf-8")
+    .split("\n")
+    .find((l) => l.includes("`p`") || l.includes("| p |"));
+  assert.ok(row, "no row for the control");
+  // Five columns: six pipes that are not escaped by a backslash.
+  const bare = row.replace(/\\\\/g, "").replace(/\\\|/g, "");
+  assert.equal(bare.split("|").length - 1, 6, row);
+  assert.match(row, /Path a\\\\\\\|b/);
+  assert.match(row, /Odd \\\\ form/);
 });
 
 test("skipped links in data keep neither their address nor repeats", async () => {

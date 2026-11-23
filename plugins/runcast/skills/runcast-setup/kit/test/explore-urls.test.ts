@@ -46,7 +46,7 @@ test("keys are relative to a base path and pages outside it are skipped", () => 
 });
 
 test("skip rules", () => {
-  const skip = (href: string, extra?: RegExp, download = false) =>
+  const skip = (href: string, extra?: Array<string>, download = false) =>
     skipReason(href, { download, base, extra });
   assert.equal(skip("/logout"), "pattern");
   assert.equal(skip("/customers/17/delete"), "pattern");
@@ -57,7 +57,11 @@ test("skip rules", () => {
   assert.equal(skip("/export.csv"), "download");
   assert.equal(skip("/report", undefined, true), "download");
   assert.equal(skip("https://other.example/"), "other-origin");
-  assert.equal(skip("/archive", /archive/), "pattern");
+  assert.equal(skip("/Billing/2024"), null);
+  assert.equal(skip("/Billing/2024", ["billing"]), "pattern");
+  // Text, not a pattern: what is typed is looked for as it is.
+  assert.equal(skip("/billing", ["bill.*"]), null);
+  assert.equal(skip("/a(b", ["a(b"]), "pattern");
   assert.equal(skip("/customers"), null);
   assert.equal(skip("/#/orders"), null);
 });

@@ -2,7 +2,7 @@
 // settings and writes what it finds to <recording folder>/.explore/.
 // Read-only: it only opens URLs, never clicks, types or submits.
 //
-//   node <dir>/.kit/cli.ts explore [paths...] [--crawl[=depth]] [--max n] [--skip regex]
+//   node <dir>/.kit/cli.ts explore [paths...] [--crawl[=depth]] [--max n] [--skip text]...
 //        [--no-session] [--headed] [--mobile] [--diff] [--accept] [--forget path]
 import { chromium, type Browser, type Page } from "@playwright/test";
 import { readFileSync, writeFileSync } from "node:fs";
@@ -38,7 +38,8 @@ export interface ExploreOptions {
   /** Crawl depth, or null for only the given pages. */
   crawl: number | null;
   max: number;
-  skip?: RegExp;
+  /** Extra text that marks a link as an action (address or link text, case ignored). */
+  skip?: Array<string>;
   /** Start from the saved session (default: when REC_SESSION=1). */
   session: boolean;
   headed: boolean;
@@ -96,7 +97,7 @@ export function parseExploreArgs(argv: Array<string>): ExploreOptions {
     // Depth 0 follows no links: only the given pages, as without --crawl.
     else if (arg.startsWith("--crawl=")) options.crawl = wholeNumber("--crawl", arg.slice(8), 0) || null;
     else if (arg === "--max") options.max = wholeNumber("--max", value(), 1);
-    else if (arg === "--skip") options.skip = new RegExp(value(), "i");
+    else if (arg === "--skip") options.skip = [...(options.skip ?? []), value().toLowerCase()];
     else if (arg === "--no-session") options.session = false;
     else if (arg === "--session") options.session = true;
     else if (arg === "--headed") options.headed = true;
@@ -300,7 +301,7 @@ export async function explore(
         baseURL: project.baseURL,
         crawl: options.crawl,
         max: options.max,
-        skip: options.skip?.source ?? null,
+        skip: options.skip ?? null,
         session: options.session,
         headed: options.headed,
         mobile: options.mobile,

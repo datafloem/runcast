@@ -423,7 +423,8 @@ node tests/recording/.kit/cli.ts explore --headed            # you browse; every
 - **Read-only.** It only opens URLs: no clicks, typing or form submits. A
   crawl follows same-origin links inside the base URL and skips links that
   look like actions (`logout`, `delete`, `remove`, ...; add your own with
-  `--skip <regex>`), downloads and `mailto:`/`tel:`; each skipped link is
+  `--skip <text>`, repeatable: a link whose address or text contains it,
+  case ignored), downloads and `mailto:`/`tel:`; each skipped link is
   listed (a link inside displayed data without its address, once per kind). A page that lands on another origin or shows a password field is
   reported as a sign-in page and not followed. Pages whose network or DOM
   never settles (polling, streams) are taken after 10 s + 5 s and marked.

@@ -161,7 +161,8 @@ export function forgetPage(dir: string, key: string): boolean {
   return true;
 }
 
-const cell = (s: string) => s.replace(/\|/g, "\\|");
+/** A Markdown table cell: backslashes and pipes escaped, one line. */
+const cell = (s: string) => s.replace(/[\\|]/g, "\\$&").replace(/\s*\n\s*/g, " ");
 
 /** The overview the skills read first. */
 export function renderSummary(pages: Array<PageSnapshot>): string {

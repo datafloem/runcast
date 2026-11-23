@@ -14,7 +14,7 @@ export interface SnapshotOptions {
   requestedUrl: string;
   baseURL: string;
   signIn?: SignIn | null;
-  extraSkip?: RegExp;
+  extraSkip?: Array<string>;
   /** The page's key when the link that led here gave one (records addressed by name). */
   key?: string;
 }
