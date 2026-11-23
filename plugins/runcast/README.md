@@ -63,7 +63,13 @@ your computer, only when you or your assistant run the command named.
 
 - **Your app**, at the base URL in `recording.config.ts`, in the browser that
   Playwright drives, signed in with the test account you put in
-  `tests/recording/.env.local`.
+  `tests/recording/.env.local`, or with the saved session (`REC_SESSION=1`).
+  `explore` opens only URLs under that base URL and follows only links
+  under it (read-only: no clicks, typing or form submits); a page that
+  redirects elsewhere (a sign-in provider) is recorded where it lands. With
+  `explore --headed` and `session --manual`, you browse in a visible Chrome,
+  and the kit records the pages you open there. As in any browser, the pages
+  themselves load what they load.
 - **The kit's own local pages**, in that same browser, in video mode and
   rehearsal (and, for scenes, `scene preview` / `scene render`, test runs,
   and `render` when a video's scene is new or changed): the recorder (`core/recorder.html` in the runtime folder, opened as
@@ -89,7 +95,7 @@ your computer, only when you or your assistant run the command named.
   description, tags and privacy setting, and a thumbnail frame to your
   channel. Nothing is uploaded until you approve the details.
 
-**Stores, in your project's recording folder (all gitignored by the template)**
+**Stores, in your project's recording folder (all gitignored by the template, except `explore/site.json`)**
 
 - `.env.local`: the test account and the optional ElevenLabs key.
 - `.youtube/`: the Google OAuth client file you download and the refresh token
@@ -108,6 +114,17 @@ your computer, only when you or your assistant run the command named.
   deleted.
 - `scenes/<name>/`: the animated scenes your assistant writes for your
   videos (local files only; committed with your project if you wish).
+- `.explore/` (`explore`): per page the structure (controls, links,
+  headings, test hooks, brand colours), the accessibility tree with control
+  values and displayed data removed, localStorage, sessionStorage and cookie
+  names without values, screenshots (not redacted), and each run's settings
+  (base URL and options). The last ten runs are kept.
+- `explore/site.json` (`explore --accept`): the site's structure only (no
+  data, values or screenshots), meant to be committed so `explore --diff`
+  works anywhere. Not gitignored.
+- `.auth/session.json` (`session`): the saved sign-in session (cookies,
+  localStorage, sessionStorage and IndexedDB), readable by you only. It is
+  a credential: never printed or sent anywhere; `session --clear` removes it.
 - `.captures/<scenario>/`: the latest video recording of each scenario (the
   tab or screen recording, its event log and step times), kept until that scenario
   is recorded again. Each render also writes `render-report.json` there (how

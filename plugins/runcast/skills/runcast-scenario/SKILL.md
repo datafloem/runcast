@@ -31,7 +31,15 @@ the project's `PROJECT.md`.
   new scenario has no text yet, write it with the user using the
   `runcast-plan` skill, then come back here.
 - **The app's own code**: confirm labels, field names and attributes there;
-  never guess a selector.
+  never guess a selector. For a live site (`PROJECT.md` > "Source"), the
+  explore output stands in for it: `.explore/pages/<page>/page.json`
+  (controls with role, accessible name, `name`, required, limits, test hooks)
+  and `aria.yml` (roles and names; displayed data is shown as `…`). Run
+  `node <recording folder>/.kit/cli.ts explore <path>` for a page not
+  explored yet.
+- **Saved session**: with `REC_SESSION=1` scenarios start signed in, from
+  `.auth/session.json`; begin them with `steps.open({ path })` instead of
+  `steps.login()`.
 
 ## Layers
 
@@ -374,12 +382,18 @@ Start from the most stable, using what the app offers (`PROJECT.md` >
 If two elements share a name (e.g. the page header's and the empty list's
 "Add"), use `.first()` and say in a comment which one it is.
 
+On a live site, whose markup can change without notice, prefer in this
+order: role + accessible name, label (`getByLabel`), a test hook if the site
+has them, visible text. Never generated CSS classes or positions
+(`nth-child`).
+
 ## Adding a helper
 
 - Put it in the right module under `helpers/` (a new screen area gets a new
   file, exported from `helpers/index.ts`). Signature `(ui: Ui, ...)`; helpers
   that return a locator take `(page, ...)`.
-- Confirm selectors in the app's code; follow the selector order.
+- Confirm selectors in the app's code (or, for a live site, in the explore
+  output); follow the selector order.
 - Solve the app's quirks (skipped screens, lazy lists, redirects) inside the
   helper with a short comment, so scenarios never need to know them. Record new
   quirks in `PROJECT.md` > "Known behaviours".
@@ -436,6 +450,21 @@ existing → `steps.open*` / `select*` / `assign*`; new → `steps.create*` (wri
 the step first if missing). If a scenario must support both, choose with a
 setting (`<PREFIX>_CUSTOMER_MODE=new|existing`) and write it in the text. Values
 the AI filled in (e.g. descriptions) become the settings' defaults.
+
+## After the site changed (live sites)
+
+When a scenario of a live site fails because the site changed:
+
+1. `node <recording folder>/.kit/cli.ts explore --diff` lists what changed
+   against the committed baseline (`explore/site.json`): pages gone or
+   redirecting, controls added, removed or renamed, test hooks removed.
+2. Fix the helpers (not the scenarios) and update `PROJECT.md`.
+3. Run the scenarios again in test mode.
+4. With the user's OK, `explore --accept` updates the baseline; the user
+   commits it with the fixes.
+
+"The saved session has expired" is not a site change: save the session
+again (`session`, or `session --manual`, which the user runs).
 
 ## Before finishing
 

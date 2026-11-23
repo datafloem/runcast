@@ -1,0 +1,12 @@
+<h1>New customer</h1>
+<form aria-label="New customer" action="/app/customers" method="post">
+  <label for="name">Name</label>
+  <input id="name" name="name" required maxlength="80" data-testid="customer-name" {{NAME_VALUE}}>
+  <label>Email <input name="email" type="email" required placeholder="name@company.com" {{EMAIL_VALUE}}></label>
+  <label>Country
+    <select name="country"><option>France</option><option>Germany</option></select>
+  </label>
+  <label>Note <textarea name="note">{{NOTE_VALUE}}</textarea></label>
+  <input type="hidden" name="csrf" value="token-123">
+  <button class="primary" type="submit">Save</button>
+</form>

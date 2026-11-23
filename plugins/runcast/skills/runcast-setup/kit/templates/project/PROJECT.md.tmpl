@@ -1,8 +1,18 @@
 # {{APP_NAME}} — recording notes
 
 What scenarios need to know about {{APP_NAME}}. Written by the `runcast-setup`
-skill from the app's code; keep it current when screens change or a helper or
-step is added. Sections marked TODO are still to be filled in.
+skill from the app's code (or, without code, from the live site with
+`explore`); keep it current when screens change or a helper or step is added.
+Sections marked TODO are still to be filled in.
+
+## Source
+
+- **Source:** TODO (`code`: the app's repository; or `live site`: no code, studied with `explore`)
+<!-- Live site only; delete these lines for a code project. -->
+- **Permission:** TODO (who confirmed the site may be recorded and published, for which site, on which date)
+- **Environment:** TODO (live site or test environment; the demo account used)
+- **Sign-in:** TODO (login scenario, or a saved session a person makes with `session --manual`)
+- **Baseline:** TODO (date of the last `explore --accept`; `explore/site.json` is committed)
 
 ## App
 
@@ -28,7 +38,10 @@ form for a new one.
 
 TODO: the steps from a URL to its form component, its fields (`name=...`),
 labels, required fields and limits (validation schema), and where it navigates
-after saving.
+after saving. For a live site: `node {{DIR}}/.kit/cli.ts explore <path>`, then
+the controls in `.explore/pages/<page>/page.json` (role, accessible name,
+`name`, required, limits); where saving goes is seen by doing it once with
+the user.
 
 ## Known forms
 

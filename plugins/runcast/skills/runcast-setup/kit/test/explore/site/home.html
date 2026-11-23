@@ -1,0 +1,10 @@
+<h1>Dashboard</h1>
+<p>Welcome back.</p>
+<a href="/app/customers/new">New customer</a>
+<a href="/export.csv">Export</a>
+<a href="/report" download>Report</a>
+<a href="https://other.example/docs">Docs</a>
+<script>
+  const route = () => { if (location.hash === "#/orders") document.querySelector("main h1").textContent = "Orders"; };
+  route(); addEventListener("hashchange", route);
+</script>

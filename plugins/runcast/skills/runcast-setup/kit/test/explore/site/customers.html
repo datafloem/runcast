@@ -1,0 +1,13 @@
+<h1>Customers</h1>
+<a href="/app/customers/new">Add customer</a>
+<table data-testid="customer-table">
+  <thead><tr><th>Name</th><th>Email</th><th>Actions</th></tr></thead>
+  <tbody>
+    <tr><td><a href="/app/customers/17">Ada Lovelace</a></td><td>ada@example.com</td><td><a href="/app/customers/17/delete">Delete</a></td></tr>
+    <tr><td><a href="/app/customers/42">Grace Hopper</a></td><td>grace@example.com</td><td></td></tr>
+    <tr><td>Alan Turing</td><td>alan@example.com</td><td></td></tr>
+    <tr><td>Edsger Dijkstra</td><td>edsger@example.com</td><td></td></tr>
+  </tbody>
+</table>
+<a href="/app/customers?page=2">Next page</a>
+<script>localStorage.setItem("theme", "dark"); sessionStorage.setItem("draft", "secret-draft");</script>

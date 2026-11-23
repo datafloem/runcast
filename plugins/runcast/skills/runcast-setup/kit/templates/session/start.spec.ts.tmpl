@@ -1,0 +1,15 @@
+import { scenario, test } from "../kit.ts";
+import * as steps from "../steps/index.ts";
+
+/**
+ * Opens the app from the saved session (REC_SESSION=1). The smallest
+ * scenario of a project whose sign-in a person does (session --manual):
+ * a check that the setup and the session work. It fails with "the saved
+ * session has expired" when the session needs saving again.
+ */
+test(
+  "start",
+  scenario({
+    steps: [steps.open({ path: "/", note: "Home" }), steps.hold({ ms: 1500 })],
+  }),
+);

@@ -26,6 +26,7 @@ the browser runs hidden, in the background.
 - [Install the plugin](#install-the-plugin)
 - [Your first video, step by step](#your-first-video-step-by-step)
 - [Everyday commands](#everyday-commands)
+- [Recording a site without its source](#recording-a-site-without-its-source)
 - [What is added to your project](#what-is-added-to-your-project)
 - [Updating and removing](#updating-and-removing)
 - [Troubleshooting](#troubleshooting)
@@ -354,6 +355,9 @@ Run these from your project's root folder. If your recording folder is not
 | `node tests/recording/.kit/cli.ts render <name> --draft --steps 3-5` | A quick half-size video of steps 3 to 5 only       |
 | `node tests/recording/.kit/cli.ts narration plan <name>` | Shows how many words of voice-over fit each step               |
 | `node tests/recording/.kit/cli.ts youtube check`         | Shows what is missing for YouTube uploads                      |
+| `node tests/recording/.kit/cli.ts explore <path>`        | Looks at a page (read-only) and writes what it finds to `.explore/` |
+| `node tests/recording/.kit/cli.ts explore --diff`        | Lists what changed on the site since the saved baseline        |
+| `node tests/recording/.kit/cli.ts session --manual`      | Opens Chrome so you can sign in by hand; saves the session     |
 
 To record only part of a scenario, name the first and last step to record.
 Earlier steps still run, quickly and off camera:
@@ -377,6 +381,42 @@ A few settings you may want, in `tests/recording/.env.local`:
 
 All settings are listed in `tests/recording/.env.example` and in the
 [kit guide](plugins/runcast/skills/runcast-setup/kit/README.md#settings-envlocal).
+
+## Recording a site without its source
+
+Runcast also records apps whose code you do not have: a customer's site, a
+partner's app. Ask your assistant to set up recordings in an empty folder (or
+any folder you like). When it finds no app code there, it asks you:
+
+1. **The site's address**, e.g. `https://app.example.com`, and whether it is
+   the live site or a test environment.
+2. **Whether you may record it** and publish videos of it. Runcast always
+   asks, and stops without a yes.
+3. **Where the recording folder should go.**
+
+Instead of reading code, your assistant runs `explore`: it opens the site's
+pages in a hidden browser, without clicking or typing anything, and writes
+down the buttons, fields, menus and labels. What the site shows from its
+records (names in tables, e-mail addresses) is hidden as `…` in those notes;
+the screenshots it takes stay on your computer.
+
+**Signing in.** If the site has a normal username and password form, your
+assistant writes a login step as usual. If it uses single sign-on, a
+two-factor code or a captcha, you sign in once yourself:
+
+```bash
+node tests/recording/.kit/cli.ts session --manual
+```
+
+A Chrome window opens; sign in, then close it. The session is saved in
+`.auth/` (never committed) and `REC_SESSION=1` in `.env.local` makes every
+scenario start from it. When it expires, a run says so; sign in again.
+
+**Keeping videos up to date.** The site can change without notice. Your
+assistant saves the site's structure in `explore/site.json` (commit it).
+Later, `explore --diff` lists what changed (a renamed field, a removed
+button, a moved page), your assistant fixes the scenarios, and the
+baseline is updated with your OK.
 
 ## What is added to your project
 

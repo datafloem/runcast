@@ -13,6 +13,10 @@
 //   render [scenario]        render the last capture again; --check (a picture per step),
 //                            --draft (half size, quick), --steps a-b (only those steps)
 //   scene <cmd> <name>       a scene alone (preview: draft + beats sheet; render [--gif] [--bare])
+//   explore [paths]          look at the app's pages (read-only) and write .explore/
+//                            (--crawl[=depth], --mobile, --headed, --diff, --accept)
+//   session                  save the sign-in session (runs the login scenario);
+//                            --manual: a person signs in; --clear: remove it
 //   narration <cmd> <name>   voice-over tools (plan, generate, measure, script, split)
 //   youtube <cmd> [name]     YouTube upload (check, auth, upload)
 //
@@ -57,9 +61,15 @@ const KEEP_RUNTIMES = 3;
 
 const [command = "help", ...rest] = process.argv.slice(2);
 const { options: args, rest: passThrough } = parseArgs(rest);
+// Run as <recording folder>/.kit/cli.ts, the link names the folder (argv
+// keeps the link's path; import.meta resolves it to the runtime).
+const viaLink = path.basename(path.dirname(process.argv[1] ?? "")) === ".kit"
+  ? path.dirname(path.dirname(process.argv[1]!))
+  : undefined;
 const projectDir = path.resolve(
   args.dir ??
     process.env.REC_PROJECT ??
+    viaLink ??
     path.join(process.cwd(), "tests", "recording"),
 );
 
@@ -88,16 +98,23 @@ switch (command) {
   case "scene":
     script(["scripts", "scene.ts"], passThrough);
     break;
+  case "explore":
+    script(["scripts", "explore", "run.ts"], passThrough);
+    break;
+  case "session":
+    session();
+    break;
   case "youtube":
     script(["scripts", "youtube.ts"], passThrough);
     break;
   default:
-    console.log(
-      readFileSync(import.meta.filename, "utf-8")
-        .split("\n")
-        .slice(0, 21)
-        .join("\n"),
-    );
+  {
+    // The header comment above the first import, without its last
+    // paragraph (a note for people reading the code).
+    const lines = readFileSync(import.meta.filename, "utf-8").split("\n");
+    const header = lines.slice(0, lines.findIndex((l) => !l.startsWith("//")));
+    console.log(header.slice(0, header.lastIndexOf("//")).join("\n"));
+  }
     process.exit(command === "help" ? 0 : 1);
 }
 
@@ -235,6 +252,14 @@ function link(runtime: string): void {
     {
       names: [".captures", ".captures/"],
       add: "# Runcast video recordings (render reads them)\n.captures/\n",
+    },
+    {
+      names: [".explore", ".explore/"],
+      add: "# Runcast explore snapshots (screenshots show real data)\n.explore/\n",
+    },
+    {
+      names: [".auth", ".auth/"],
+      add: "# Runcast saved sign-in session (a credential)\n.auth/\n",
     },
   ].filter(({ names }) => !lines.some((line) => names.includes(line.trim())));
   if (missing.length > 0) {
@@ -410,6 +435,22 @@ function playwright(mode: "test" | "rehearsal", extra: Array<string>): never {
   run(process.execPath, [cli, "test", "-c", projectDir, ...extra], {
     REC_MODE: mode,
   });
+}
+
+/** The saved session: the login scenario saves it, or a person signs in (--manual). */
+function session(): never {
+  if (passThrough.includes("--manual") || passThrough.includes("--clear"))
+    script(["scripts", "session.ts"], passThrough);
+  if (!existsSync(path.join(projectDir, "scenarios", "login.spec.ts")))
+    fail(
+      `No login scenario: sign in by hand with \`node ${path.join(rel(projectDir), ".kit", "cli.ts")} session --manual\`.`,
+    );
+  // The login scenario must sign in itself, even when .env.local says REC_SESSION=1.
+  process.env.REC_SESSION = "0";
+  process.env.REC_SAVE_SESSION = "1";
+  // A file argument is a pattern Playwright looks for anywhere in the path:
+  // "login.spec.ts" alone would also run admin-login.spec.ts.
+  playwright("test", ["/scenarios/login\\.spec\\.ts$", ...passThrough]);
 }
 
 function script(parts: Array<string>, extra: Array<string>): never {
